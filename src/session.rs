@@ -1298,8 +1298,10 @@ mod tests {
             .unwrap();
         });
         let (release_tx, release_rx) = mpsc::channel();
+        let (started_tx, started_rx) = mpsc::channel();
         let slow_worker = std::thread::spawn(move || {
             let req = slow.recv().unwrap();
+            started_tx.send(()).unwrap();
             release_rx.recv().unwrap();
             let _ = req.respond(Response::empty(500));
         });
@@ -1325,6 +1327,9 @@ mod tests {
                 break;
             }
         }
+        // The cancellation check needs an in-flight request, otherwise the mock
+        // server can wait forever for a request cancelled before connecting.
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         let started = std::time::Instant::now();
         token.stop();
         assert!(worker.join().unwrap().is_err());

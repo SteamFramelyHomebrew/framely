@@ -11,7 +11,7 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
  const[error,setError]=useState(''),[busy,setBusy]=useState(false),[job,setJob]=useState<Job|null>(null),[release,setRelease]=useState<any>(null),[ready,setReady]=useState(false),[checked,setChecked]=useState(false),[confirm,setConfirm]=useState<'apply'|'rollback'|null>(null),[installing,setInstalling]=useState(false);
  function reset(){setRelease(null);setReady(false);setChecked(false);setConfirm(null);}
  useEffect(reset,[source?.url,channel]);
- const progress=status.systemUpdate;
+ const progress=job?.kind==='system.download'?job:status.systemUpdate;
  const older=release&&compareVersions(release.targetVersion??release.version,status.version)===-1;
  async function switchChannel(value:string){
   if(!source||busy||installing||value===channel)return;
@@ -26,6 +26,25 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
   catch(e){setError(String(e));}
   finally{setBusy(false);setJob(null);await refresh();}
  }
+ async function confirmUpdate(){
+  if(!confirm||busy||installing)return;
+  const action=confirm,version=release?.version;
+  setConfirm(null);setBusy(true);setError('');
+  let started=false;
+  try{
+   if(action==='apply'&&!ready){
+    await runJob('system.download.start',{},setJob,'system.job.status');
+    setReady(true);setJob(null);
+   }
+   setInstalling(true);
+   await api(action==='apply'?'system.apply':'system.rollback',{approve:true,version});
+   started=true;
+  }catch(e){setError(String(e));setInstalling(false);}
+  finally{
+   setBusy(false);setJob(null);
+   if(!started)await refresh().catch(()=>{});
+  }
+ }
  return <section className="settings-card system-updates">
   <h2>{t('Framely 更新')}</h2>
   <p>{t('当前版本：')}<b>{status.build??status.version}</b></p>
@@ -38,8 +57,9 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
    <button disabled={busy||installing||!status.previousRelease} onClick={()=>setConfirm('rollback')}>{t('回滚上一版本')}</button>
   </div>
   {checked&&!release&&<p className="banner" role="status">{t('所选渠道暂无可用发行版本。')}</p>}
-  {job&&<p className="banner">{job.kind==='system.check'?t('正在读取更新清单…'):t('正在下载并校验发行包…')}</p>}
-  {progress?.phase==='downloading'&&<div className="download-progress"><progress max={progress.total??1} value={progress.received??0}/><p>{((progress.received??0)/1024/1024).toFixed(1)} / {((progress.total??0)/1024/1024).toFixed(1)} MiB</p></div>}
+  {job&&<p className="banner" role="status">{job.kind==='system.check'?t('正在读取更新清单…'):job.phase==='verifying'?t('下载完成，正在校验发行包…'):t('正在下载发行包…')}</p>}
+  {progress?.phase==='downloading'&&<div className="download-progress"><progress aria-label={t('下载进度')} max={progress.total??1} value={progress.received??0}/><p>{((progress.received??0)/1024/1024).toFixed(1)} / {((progress.total??0)/1024/1024).toFixed(1)} MiB</p></div>}
+  {progress?.phase==='verifying'&&<div className="download-progress"><progress aria-label={t('校验进度')} max={progress.total??1} value={progress.verified??0}/><p>{t('已校验 {0} / {1} MiB',{'0':((progress.verified??0)/1024/1024).toFixed(1),'1':((progress.total??0)/1024/1024).toFixed(1)})}</p></div>}
   {progress?.phase==='failed'&&<p className="error">{t('上次更新失败：')}{progress.error}<small>{t('诊断日志：/var/lib/framely/logs/update.log')}</small></p>}
   {progress?.phase==='done'&&<p className="banner">{t('上次更新操作已完成。')}</p>}
   {release&&<div className="release-card">
@@ -47,16 +67,17 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
    <p>{release.version===(status.build??status.version)?t('当前已是此发行版本'):t('发行包大小：{0} MiB',{'0':(release.size/1024/1024).toFixed(1)})}</p>
    {older&&<p className="banner">{t('所选版本早于当前版本，安装将切换到较旧版本。')}</p>}
    <p className="prose">{release.changelog||t('发布者未提供更新说明。')}</p>
-   {release.version!==(status.build??status.version)&&<button className="primary" disabled={busy||installing} onClick={()=>ready?setConfirm('apply'):void run('system.download.start',{},()=>setReady(true))}>{ready?t('安装已校验版本'):t('下载并校验')}</button>}
+   {release.version!==(status.build??status.version)&&<button className="primary" disabled={busy||installing} onClick={()=>setConfirm('apply')}>{ready?t('安装已校验版本'):t('下载并安装')}</button>}
   </div>}
   {error&&<p className="error" role="alert">{error}</p>}
   {installing&&<p className="banner">{t('正在切换版本。Framely 入口会在服务恢复后重新出现。')}</p>}
   {confirm&&<div className="confirm-box">
    <h3>{confirm==='apply'?t('安装 Framely {0}？',{'0':release.version}):t('回滚 Framely？')}</h3>
+   {confirm==='apply'&&!ready&&<p>{t('确认后将下载并校验发行包，校验通过后自动安装。')}</p>}
    <p>{t('插件和数据会保留，Framely 界面会暂时关闭。SteamVR 不会被重启。')}</p>
    {confirm==='apply'&&older&&<p className="banner">{t('所选版本早于当前版本，安装将切换到较旧版本。')}</p>}
    <div className="row">
-    <button className="primary" disabled={installing||busy} onClick={()=>void(async()=>{setInstalling(true);setError('');try{await api(confirm==='apply'?'system.apply':'system.rollback',{approve:true,version:release?.version});setConfirm(null);}catch(e){setError(String(e));setInstalling(false);}})()}>{confirm==='apply'?t('确认安装'):t('确认回滚')}</button>
+    <button className="primary" disabled={installing||busy} onClick={()=>void confirmUpdate()}>{confirm==='apply'?(ready?t('确认安装'):t('确认下载并安装')):t('确认回滚')}</button>
     <button disabled={installing} onClick={()=>setConfirm(null)}>{t('取消')}</button>
    </div>
   </div>}

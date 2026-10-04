@@ -30,18 +30,22 @@ pub fn validate_repo(repo: &str) -> Result<()> {
     );
     Ok(())
 }
-fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
+fn agent(url: &url::Url) -> Result<ureq::Agent> {
+    let mut builder = ureq::AgentBuilder::new()
+        .try_proxy_from_env(false)
         .timeout(Duration::from_secs(120))
-        .redirects(0)
-        .build()
+        .redirects(0);
+    if let Some(proxy) = crate::proxy::for_url(url)? {
+        builder = builder.proxy(proxy);
+    }
+    Ok(builder.build())
 }
 fn get(url: &str) -> Result<ureq::Response> {
-    let agent = agent();
     let mut url = url::Url::parse(url)?;
     for _ in 0..=5 {
         ensure!(url.scheme() == "https", "下载地址必须使用 HTTPS");
-        let response = agent
+        // Re-evaluate bypass rules for every redirect target.
+        let response = agent(&url)?
             .get(url.as_str())
             .set("User-Agent", "Framely-Installer")
             .call()?;
@@ -136,6 +140,13 @@ pub fn expected_hash(checksums: &str, name: &str) -> Result<String> {
     matched.context("校验文件中没有该压缩包的条目")
 }
 pub fn verify(archive: &Path, checksums: &Path) -> Result<()> {
+    verify_with_progress(archive, checksums, &mut |_| {})
+}
+pub fn verify_with_progress(
+    archive: &Path,
+    checksums: &Path,
+    report: &mut dyn FnMut(crate::progress::Progress),
+) -> Result<()> {
     ensure!(
         archive.is_file() && checksums.is_file(),
         "请选择压缩包及外部 SHA256SUMS"
@@ -157,17 +168,30 @@ pub fn verify(archive: &Path, checksums: &Path) -> Result<()> {
     let mut file = File::open(archive)?;
     let mut digest = Sha256::new();
     let mut block = [0; 256 * 1024];
+    let mut progress =
+        crate::progress::Progress::new(crate::progress::Stage::Verify, "校验本地安装包 SHA256");
+    let total = file.metadata()?.len();
+    progress.total = Some(total);
+    report(progress.clone());
+    let mut last_update = std::time::Instant::now();
     loop {
         let n = file.read(&mut block)?;
         if n == 0 {
             break;
         }
         digest.update(&block[..n]);
+        progress.completed += n as u64;
+        if progress.completed < total && last_update.elapsed() >= Duration::from_millis(200) {
+            report(progress.clone());
+            last_update = std::time::Instant::now();
+        }
     }
     ensure!(
         hex::encode(digest.finalize()) == expected,
         "SHA256 不匹配，已停止安装"
     );
+    ensure!(progress.completed == total, "校验期间安装包长度发生变化");
+    report(progress);
     Ok(())
 }
 pub fn download(
@@ -199,6 +223,100 @@ pub fn download(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn https_requests_use_discovered_desktop_proxy() {
+        use std::{
+            io::Write,
+            net::TcpListener,
+            os::unix::fs::PermissionsExt,
+            process::{Command, Stdio},
+            time::Instant,
+        };
+        if std::env::var_os("FRAMELY_PROXY_TEST_CHILD").is_some() {
+            assert!(get("https://example.invalid/installer-proxy-check").is_err());
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mock = work.path().join("gsettings");
+        std::fs::write(&mock, format!("#!/bin/sh\nprintf '%s\\n' \"org.gnome.system.proxy mode 'manual'\" \"org.gnome.system.proxy.https host '127.0.0.1'\" \"org.gnome.system.proxy.https port {port}\"\n")).unwrap();
+        std::fs::set_permissions(&mock, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "release::tests::https_requests_use_discovered_desktop_proxy",
+                "--nocapture",
+            ])
+            .env("FRAMELY_PROXY_TEST_CHILD", "1")
+            .env("XDG_CURRENT_DESKTOP", "GNOME")
+            .env("XDG_CONFIG_HOME", work.path())
+            .env("XDG_CONFIG_DIRS", work.path())
+            .env(
+                "PATH",
+                std::env::join_paths(std::iter::once(work.path().to_path_buf()).chain(
+                    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+                ))
+                .unwrap(),
+            )
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for key in [
+            "http_proxy",
+            "HTTP_PROXY",
+            "https_proxy",
+            "HTTPS_PROXY",
+            "all_proxy",
+            "ALL_PROXY",
+            "no_proxy",
+            "NO_PROXY",
+        ] {
+            command.env_remove(key);
+        }
+        let mut child = command.spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut connection = loop {
+            if let Ok((connection, _)) = listener.accept() {
+                break connection;
+            }
+            if Instant::now() >= deadline || child.try_wait().unwrap().is_some() {
+                let _ = child.kill();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "Installer did not connect through detected proxy: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        connection
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 1024];
+        while !request.ends_with(b"\r\n\r\n") {
+            match connection.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => request.extend_from_slice(&buffer[..n]),
+            }
+        }
+        connection
+            .write_all(
+                b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+        drop(connection);
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(request.starts_with(b"CONNECT example.invalid:443 HTTP/1.1\r\n"));
+    }
     #[test]
     fn checksum_rejects_ambiguity_and_tampering() {
         let dir = tempfile::tempdir().unwrap();
@@ -211,9 +329,19 @@ mod tests {
             archive.file_name().unwrap().to_str().unwrap()
         );
         std::fs::write(&sums, &line).unwrap();
-        verify(&archive, &sums).unwrap();
+        let mut progress = Vec::new();
+        verify_with_progress(&archive, &sums, &mut |value| progress.push(value)).unwrap();
+        assert_eq!(progress.first().unwrap().completed, 0);
+        assert_eq!(progress.last().unwrap().fraction(), Some(1.0));
+        assert!(
+            progress
+                .iter()
+                .all(|value| value.stage == crate::progress::Stage::Verify)
+        );
         std::fs::write(&archive, b"changed").unwrap();
-        assert!(verify(&archive, &sums).is_err());
+        progress.clear();
+        assert!(verify_with_progress(&archive, &sums, &mut |value| progress.push(value)).is_err());
+        assert!(!progress.iter().any(|value| value.fraction() == Some(1.0)));
         assert!(
             expected_hash(
                 &(line.clone() + &line),

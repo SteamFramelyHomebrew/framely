@@ -34,6 +34,8 @@ Scanning, downloads, and SSH work run on background threads, with progress and l
 
 Online first installation always downloads the complete `*-offline-linux-arm64.tar.gz` package with CEF. Online updates download the core package without CEF and reuse the device runtime. A missing or newly required CEF runtime is downloaded separately by the device. For local first installation, choose the complete offline package. See [package selection](../docs/user-guide/installation.md#release-packages-and-cef).
 
+Release queries, checksum files and package downloads automatically use the computer's manual system proxy: Windows Internet Settings, macOS network settings, or Linux GNOME/KDE settings. `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY` (or their lowercase forms) override desktop settings; `NO_PROXY` and desktop bypass rules are respected, including on redirects. HTTP CONNECT and SOCKS proxies are supported. PAC scripts and IPv6 proxy endpoints are currently unsupported; use a manual proxy with a hostname or IPv4 address. SSH/SFTP and downloads initiated by Frame use the device connection and network rather than the computer's HTTP proxy.
+
 ## Build
 
 Linux requires C/C++ build tools, CMake, pkg-config, and development libraries for Fontconfig/Freetype, X11/XCB, XKBCommon, Wayland, and Vulkan. macOS requires Xcode command-line tools. Windows requires MSVC, CMake, and Perl for built-in OpenSSL. GPUI Kit is pinned to 0.7.0; matching dependencies are locked in `Cargo.lock`.
@@ -60,7 +62,7 @@ FRAMELY_INSTALLER_PREVIEW_DIR=installer/dist/previews installer/target/debug/fra
 
 Preview requires an available GPU or software Vulkan renderer. Default release builds do not include preview support.
 
-Installer versions are managed independently in this directory's `Cargo.toml` and `Cargo.lock`. Pushing an `installer-v<VERSION>` tag (currently `installer-v0.4.1-preview.7`) triggers `.github/workflows/installer-release.yml` to build and publish only the installer. The core uses `v<VERSION>` tags and a separate workflow. Manual Actions runs produce build artifacts only. Installer releases do not become the repository's Latest release, preserving Frame's default install/update URLs.
+Installer versions are managed independently in this directory's `Cargo.toml` and `Cargo.lock`. Pushing an `installer-v<VERSION>` tag (currently `installer-v0.4.1-preview.8`) triggers `.github/workflows/installer-release.yml` to build and publish only the installer. The core uses `v<VERSION>` tags and a separate workflow. Manual Actions runs produce build artifacts only. Installer releases do not become the repository's Latest release, preserving Frame's default install/update URLs.
 
 Actions builds Linux x64/ARM64, Windows x64, and macOS Intel/Apple Silicon. macOS produces an `.app` ZIP, Windows an EXE ZIP, and Linux a tar.gz. Apple notarization and Windows code signing are not configured; verify first-launch behavior on each system before publishing.
 

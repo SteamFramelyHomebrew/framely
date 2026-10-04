@@ -26,4 +26,6 @@ Settings provides language, network panel and proxy configuration. HTTP and GitH
 
 Safe mode pauses third-party plugins for troubleshooting; leave it after resolving the problem. About shows the device version, updates and terms. Revoking consent disables all plugins; accepting again does not automatically re-enable them.
 
+In About, select the Stable or Testing update channel and check for updates. Choose **Download and install**, then confirm once: Framely downloads and verifies the release and automatically starts installation. Download and verification are displayed as separate stages, with byte progress for each. Download or verification failure stops installation and displays an error. Plugins and data remain; the Framely interface briefly closes and restarts.
+
 Log commands are in the [installation guide](installation.md). A working manager does not establish that all plugins work. Enable plugins individually and verify their sources and runtime users.

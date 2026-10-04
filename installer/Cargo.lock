@@ -1985,7 +1985,7 @@ dependencies = [
 
 [[package]]
 name = "framely-installer"
-version = "0.4.1-preview.7"
+version = "0.4.1-preview.8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2003,6 +2003,7 @@ dependencies = [
  "tempfile",
  "ureq",
  "url",
+ "winreg",
  "winresource",
  "zeroize",
 ]
@@ -6550,6 +6551,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "socks"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0c3dbbd9ae980613c6dd8e28a9407b50509d3803b57624d5dfe8315218cd58b"
+dependencies = [
+ "byteorder",
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7450,6 +7462,7 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
+ "socks",
  "url",
  "webpki-roots 0.26.11",
 ]

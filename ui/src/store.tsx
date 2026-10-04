@@ -9,7 +9,7 @@ export type Source={id:string;name:string;url:string;enabled:boolean;allowHttp:b
 export type Presentation={authorUrl?:string|null;documentationUrl?:string|null;homepage?:string|null;icon?:string|null;details?:string;tags?:string[];screenshots?:string[];changelog?:string;dependencies?:Record<string,string|{version:string;source:string}>;optionalDependencies?:Record<string,string|{version:string;source:string}>;conflicts?:Record<string,string>;exclusiveResources?:string[]};
 export type Entry=Presentation&{id:string;name:string;author:string;description:string;version:string;apiVersion:number;url:string;sha256:string;runAs?:RuntimeUser|null};
 export type CatalogResult={source:Source;catalog?:{name:string;plugins:Entry[]};error?:string;cached?:boolean;fetchedAt?:number};
-export type Job={id:string;kind:string;phase:string;received:number;total?:number;result?:any;error?:string;completedSources?:number;totalSources?:number;partial?:CatalogResult[]};
+export type Job={id:string;kind:string;phase:string;received:number;verified?:number;total?:number;result?:any;error?:string;completedSources?:number;totalSources?:number;partial?:CatalogResult[]};
 export async function runJob(method:string,params:unknown={},onUpdate?:(job:Job)=>void,statusMethod='job.status'):Promise<{job:string;result:any}>{
  const started=await api<{job:string}>(method,params);
  const deadline=Date.now()+35*60*1000;

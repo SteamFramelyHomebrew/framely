@@ -89,17 +89,53 @@ pub fn create_descriptor(archive: &Path, url: &str, output: &Path, changelog: &s
     Ok(())
 }
 fn file_digest(path: &Path) -> Result<String> {
+    file_digest_progress(path, |_| Ok(()))
+}
+fn file_digest_progress(
+    path: &Path,
+    mut progress: impl FnMut(u64) -> Result<()>,
+) -> Result<String> {
     let mut f = fs::File::open(path)?;
     let mut hash = Sha256::new();
     let mut b = [0u8; 65536];
+    let mut verified = 0;
+    progress(verified)?;
     loop {
         let n = f.read(&mut b)?;
         if n == 0 {
             break;
         }
         hash.update(&b[..n]);
+        verified += n as u64;
+        progress(verified)?;
     }
     Ok(hex::encode(hash.finalize()))
+}
+fn verify_archive(
+    archive: &Path,
+    release: &Release,
+    cancel: &crate::jobs::Cancellation,
+    mut progress: impl FnMut(Value) -> Result<()>,
+) -> Result<()> {
+    let mut last_update = std::time::Instant::now();
+    let digest = file_digest_progress(archive, |verified| {
+        cancel.check()?;
+        ensure!(verified <= release.size, "发行包超过声明长度");
+        if verified == 0
+            || verified == release.size
+            || last_update.elapsed() >= Duration::from_millis(250)
+        {
+            progress(
+                json!({"phase":"verifying","verified":verified,"total":release.size,"version":release.version}),
+            )?;
+            last_update = std::time::Instant::now();
+        }
+        Ok(())
+    })?;
+    cancel.check()?;
+    ensure!(fs::metadata(archive)?.len() == release.size, "下载未完成");
+    ensure!(digest == release.sha256, "发行包 SHA256 不匹配");
+    Ok(())
 }
 #[derive(Clone, Deserialize)]
 struct GitHubAsset {
@@ -296,27 +332,66 @@ impl Updater {
             .context("请先检查更新")?;
         let updater = self.clone();
         let state_path = root.join("update-status.json");
-        self.jobs.task("system.download",move |cancel| {
-            let _busy=busy;cancel.check()?;
-            let cache=PathBuf::from("/home/.framely/update-cache");fs::create_dir_all(&cache)?;let metadata=fs::symlink_metadata(&cache)?;ensure!(metadata.is_dir()&&!metadata.file_type().is_symlink()&&metadata.uid()==0,"更新缓存权限无效");fs::set_permissions(&cache,fs::Permissions::from_mode(0o700))?;
-            let stage=cache.join(format!("{:032x}",rand::random::<u128>()));fs::create_dir(&stage)?;fs::set_permissions(&stage,fs::Permissions::from_mode(0o700))?;
-            let result=(||->Result<Value>{
-                write_status(&state_path,json!({"phase":"downloading","received":0,"total":release.size,"version":release.version}))?;
-                let response=crate::http::get_with_proxy(&release.url, false, Duration::from_secs(120), &[], &proxy)?;
-                if let Some(length)=response.header("Content-Length"){ensure!(length.parse::<u64>()?==release.size,"下载长度与更新清单不一致");}
-                let mut input=response.into_reader();let mut output=fs::File::create(stage.join("release.tar.gz"))?;let mut buffer=[0u8;262144];let mut received=0u64;let mut update_at=std::time::Instant::now();
-                loop{cancel.check()?;let n=input.read(&mut buffer)?;if n==0{break;}received+=n as u64;ensure!(received<=release.size,"发行包超过声明长度");output.write_all(&buffer[..n])?;
-                    if update_at.elapsed()>=Duration::from_millis(250){write_status(&state_path,json!({"phase":"downloading","received":received,"total":release.size,"version":release.version}))?;update_at=std::time::Instant::now();}}
-                output.sync_all()?;ensure!(received==release.size,"下载未完成");ensure!(file_digest(&stage.join("release.tar.gz"))?==release.sha256,"发行包 SHA256 不匹配");
-                fs::write(stage.join("descriptor.json"),descriptor)?;
-                cancel.commit(|| { *updater.prepared.lock().unwrap()=Some((stage.clone(),release.clone(),source_url));Ok(()) })?;
-                write_status(&state_path,json!({"phase":"ready","version":release.version,"received":received,"total":release.size}))?;
+        self.jobs.task_progress("system.download", move |cancel, progress| {
+            let _busy = busy;
+            cancel.check()?;
+            let cache = PathBuf::from("/home/.framely/update-cache");
+            fs::create_dir_all(&cache)?;
+            let metadata = fs::symlink_metadata(&cache)?;
+            ensure!(metadata.is_dir() && !metadata.file_type().is_symlink() && metadata.uid() == 0, "更新缓存权限无效");
+            fs::set_permissions(&cache, fs::Permissions::from_mode(0o700))?;
+            let stage = cache.join(format!("{:032x}", rand::random::<u128>()));
+            fs::create_dir(&stage)?;
+            fs::set_permissions(&stage, fs::Permissions::from_mode(0o700))?;
+            let report = |value: Value| -> Result<()> {
+                write_status(&state_path, value.clone())?;
+                progress(value);
+                Ok(())
+            };
+            let result = (|| -> Result<Value> {
+                report(json!({"phase":"downloading","received":0,"total":release.size,"version":release.version}))?;
+                let response = crate::http::get_with_proxy(&release.url, false, Duration::from_secs(120), &[], &proxy)?;
+                if let Some(length) = response.header("Content-Length") {
+                    ensure!(length.parse::<u64>()? == release.size, "下载长度与更新清单不一致");
+                }
+                let mut input = response.into_reader();
+                let archive = stage.join("release.tar.gz");
+                let mut output = fs::File::create(&archive)?;
+                let mut buffer = [0u8; 262144];
+                let mut received = 0u64;
+                let mut update_at = std::time::Instant::now();
+                loop {
+                    cancel.check()?;
+                    let n = input.read(&mut buffer)?;
+                    if n == 0 { break; }
+                    received += n as u64;
+                    ensure!(received <= release.size, "发行包超过声明长度");
+                    output.write_all(&buffer[..n])?;
+                    if received == release.size || update_at.elapsed() >= Duration::from_millis(250) {
+                        report(json!({"phase":"downloading","received":received,"total":release.size,"version":release.version}))?;
+                        update_at = std::time::Instant::now();
+                    }
+                }
+                output.sync_all()?;
+                drop(output);
+                ensure!(received == release.size, "下载未完成");
+                verify_archive(&archive, &release, &cancel, report)?;
+                fs::write(stage.join("descriptor.json"), descriptor)?;
+                cancel.commit(|| {
+                    report(json!({"phase":"ready","version":release.version,"received":received,"verified":received,"total":release.size}))?;
+                    *updater.prepared.lock().unwrap() = Some((stage.clone(), release.clone(), source_url));
+                    Ok(())
+                })?;
                 Ok(json!(release))
             })();
-            if let Err(e)=&result {let _=fs::remove_dir_all(stage);let _=write_status(&state_path,json!({"phase":"failed","error":e.to_string()}));}
+            if let Err(e) = &result {
+                let _ = fs::remove_dir_all(stage);
+                let _ = write_status(&state_path, json!({"phase":"failed","error":e.to_string()}));
+            }
             result
         })
     }
+
     pub fn apply(
         &self,
         root: &Path,
@@ -488,6 +563,58 @@ pub fn apply(root: &Path, manager: u32, stage: Option<PathBuf>, rollback: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn archive_verification_reports_bytes_and_rejects_tampering_or_cancellation() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("release.tar.gz");
+        let payload = vec![42u8; 150_000];
+        fs::write(&archive, &payload).unwrap();
+        let release = Release {
+            schema_version: 1,
+            version: "0.4.2".into(),
+            api_version: API_VERSION,
+            arch: "aarch64".into(),
+            url: "https://example.org/release.tar.gz".into(),
+            sha256: hex::encode(Sha256::digest(&payload)),
+            size: payload.len() as u64,
+            changelog: String::new(),
+        };
+        let mut events = Vec::new();
+        verify_archive(&archive, &release, &Default::default(), |event| {
+            events.push(event);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(events.first().unwrap()["verified"], 0);
+        assert_eq!(events.last().unwrap()["verified"], release.size);
+        assert!(events
+            .iter()
+            .all(|event| event["phase"] == "verifying" && event["total"] == release.size));
+        let cancel = crate::jobs::Cancellation::default();
+        assert!(verify_archive(&archive, &release, &cancel, |event| {
+            if event["verified"] == release.size {
+                cancel.stop();
+            }
+            Ok(())
+        })
+        .unwrap_err()
+        .to_string()
+        .contains("取消"));
+        fs::write(&archive, vec![43u8; payload.len()]).unwrap();
+        assert!(
+            verify_archive(&archive, &release, &Default::default(), |_| Ok(()))
+                .unwrap_err()
+                .to_string()
+                .contains("SHA256")
+        );
+        fs::write(&archive, b"truncated").unwrap();
+        assert!(
+            verify_archive(&archive, &release, &Default::default(), |_| Ok(()))
+                .unwrap_err()
+                .to_string()
+                .contains("下载未完成")
+        );
+    }
     fn source() -> UpdateSource {
         UpdateSource {
             url: "https://github.com/example/framely/releases/latest/download/framely-release.json"

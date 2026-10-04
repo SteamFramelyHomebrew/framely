@@ -615,8 +615,7 @@ impl Installer {
                     (None, None)
                 };
                 if let (Some(archive), Some(sums)) = (&archive, &sums) {
-                    progress(Progress::new(Stage::Verify, "校验本地安装包 SHA256"));
-                    release::verify(archive, sums)?;
+                    release::verify_with_progress(archive, sums, &mut progress)?;
                     log("电脑端 SHA256 校验通过，开始传输；设备端将再次校验。".into());
                 }
                 remote::operate(
