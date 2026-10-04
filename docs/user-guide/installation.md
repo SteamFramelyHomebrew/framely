@@ -6,7 +6,7 @@
 
 ## Before installation
 
-The target is Linux ARM64 Steam Frame. The development baseline is SteamOS VR 0.4.2 and SteamVR build 20260928.6175029; other versions need validation. The runtime includes CEF, so users do not need Node.js or Rust on the device.
+The target is Linux ARM64 Steam Frame. The development baseline is SteamOS VR 0.4.2 and SteamVR build 20260928.6175029; other versions need validation. The complete offline installation package includes CEF, so users do not need Node.js or Rust on the device.
 
 Connect your computer and Frame to the same network. Enable developer mode and SSH on Frame, and prepare the `steamos` account password. Verify the SSH fingerprint. Installation uses sudo to create an account, systemd services and release directories. It does not automatically disable SteamOS read-only protection; it stops if required directories cannot be written.
 
@@ -40,13 +40,25 @@ Replace the example with an existing device release tag. An explicit tag selects
 
 ## Option 3: local archive
 
-Download `framely-<version-and-build>-linux-arm64.tar.gz`, the external `SHA256SUMS`, and `bootstrap.py` from the same Release. Place them together on Frame:
+Download `framely-<version-and-build>-offline-linux-arm64.tar.gz`, the external `SHA256SUMS`, and `bootstrap.py` from the same Release. Place them together on Frame:
 
 ```bash
-python3 bootstrap.py install --archive "./framely-<version-and-build>-linux-arm64.tar.gz" --checksums ./SHA256SUMS
+python3 bootstrap.py install --archive "./framely-<version-and-build>-offline-linux-arm64.tar.gz" --checksums ./SHA256SUMS
 ```
 
 Angle brackets are placeholders; substitute the actual filename. The engine verifies, stages and extracts under `/home`, then checks internal hashes, avoiding the device's limited `/tmp`.
+
+## Release packages and CEF
+
+Each device release provides three archives:
+
+- `framely-<version-and-build>-offline-linux-arm64.tar.gz`: complete offline package including CEF; always used for first installation.
+- `framely-<version-and-build>-linux-arm64.tar.gz`: core package without CEF; selected automatically for updates by the desktop installer, SSH engine and in-app updater.
+- `framely-cef-<runtime-id>-linux-arm64.tar.gz`: separate CEF runtime, available as an online download. `framely-cef.json` provides its URL, size and SHA256.
+
+CEF is stored under `/home/.framely/cef/<runtime-id>`. Updates reuse the exact verified runtime; matching CEF files from older full installations migrate automatically. If the required runtime is missing or a release changes CEF, the core installation downloads the separate matching CEF archive over HTTPS and verifies its size, SHA256 and internal checksums. A complete offline package supplies the runtime without downloading it.
+
+Each release refers to its own CEF version, so rollback retains the previous runtime. Repair verifies it; uninstall removes the CEF cache with the programs. Local first installation must use the offline package. Local updates can use the core package when its required CEF is already installed; otherwise runtime recovery needs network access.
 
 ## Verify installation
 

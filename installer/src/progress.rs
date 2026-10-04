@@ -102,6 +102,7 @@ impl DeviceProgress {
                 "stage" => (2, "准备设备安装目录"),
                 "extract" => (3, "解压并校验发行文件"),
                 "configure" => (4, "配置账号、安装文件与系统服务"),
+                "cef-download" => (4, "设备下载 CEF 运行库"),
                 "activate" => (5, "启动服务并检查安装状态"),
                 _ => continue,
             };
@@ -111,8 +112,17 @@ impl DeviceProgress {
             {
                 continue;
             }
-            let mut value = Progress::new(Stage::Install, detail);
-            value.step = Some((index, 5));
+            let mut value = Progress::new(
+                if step.step == "cef-download" {
+                    Stage::Download
+                } else {
+                    Stage::Install
+                },
+                detail,
+            );
+            if step.step != "cef-download" {
+                value.step = Some((index, 5));
+            }
             value.completed = step.completed.unwrap_or(0);
             value.total = step.total;
             report(value);
@@ -188,5 +198,12 @@ mod tests {
         assert_eq!(reports[0].step, Some((3, 5)));
         assert_eq!(reports[1].step, Some((4, 5)));
         assert_eq!(reports[1].fraction(), None);
+        decoder.push(
+            "FRAMELY_PROGRESS {\"step\":\"cef-download\",\"completed\":50,\"total\":100}\n",
+            &mut |p| reports.push(p),
+        );
+        assert_eq!(reports[2].stage, Stage::Download);
+        assert_eq!(reports[2].fraction(), Some(0.5));
+        assert_eq!(reports[2].step, None);
     }
 }

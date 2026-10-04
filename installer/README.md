@@ -32,6 +32,8 @@ After an operation, maintenance shows a separate success/failure card and a reco
 
 Scanning, downloads, and SSH work run on background threads, with progress and logs in the UI. The network panel button assumes port 15915; use the actual address if the device port has changed.
 
+Online first installation always downloads the complete `*-offline-linux-arm64.tar.gz` package with CEF. Online updates download the core package without CEF and reuse the device runtime. A missing or newly required CEF runtime is downloaded separately by the device. For local first installation, choose the complete offline package. See [package selection](../docs/user-guide/installation.md#release-packages-and-cef).
+
 ## Build
 
 Linux requires C/C++ build tools, CMake, pkg-config, and development libraries for Fontconfig/Freetype, X11/XCB, XKBCommon, Wayland, and Vulkan. macOS requires Xcode command-line tools. Windows requires MSVC, CMake, and Perl for built-in OpenSSL. GPUI Kit is pinned to 0.7.0; matching dependencies are locked in `Cargo.lock`.
@@ -58,7 +60,7 @@ FRAMELY_INSTALLER_PREVIEW_DIR=installer/dist/previews installer/target/debug/fra
 
 Preview requires an available GPU or software Vulkan renderer. Default release builds do not include preview support.
 
-Installer versions are managed independently in this directory's `Cargo.toml` and `Cargo.lock`. Pushing an `installer-v<VERSION>` tag (currently `installer-v0.4.1-preview.6`) triggers `.github/workflows/installer-release.yml` to build and publish only the installer. The core uses `v<VERSION>` tags and a separate workflow. Manual Actions runs produce build artifacts only. Installer releases do not become the repository's Latest release, preserving Frame's default install/update URLs.
+Installer versions are managed independently in this directory's `Cargo.toml` and `Cargo.lock`. Pushing an `installer-v<VERSION>` tag (currently `installer-v0.4.1-preview.7`) triggers `.github/workflows/installer-release.yml` to build and publish only the installer. The core uses `v<VERSION>` tags and a separate workflow. Manual Actions runs produce build artifacts only. Installer releases do not become the repository's Latest release, preserving Frame's default install/update URLs.
 
 Actions builds Linux x64/ARM64, Windows x64, and macOS Intel/Apple Silicon. macOS produces an `.app` ZIP, Windows an EXE ZIP, and Linux a tar.gz. Apple notarization and Windows code signing are not configured; verify first-launch behavior on each system before publishing.
 

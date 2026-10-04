@@ -27,9 +27,10 @@ impl Installation {
         }
     }
     pub fn same_package(&self, name: &str) -> bool {
-        self.current_version
-            .as_ref()
-            .is_some_and(|version| name == format!("framely-{version}-linux-arm64.tar.gz"))
+        self.current_version.as_ref().is_some_and(|version| {
+            name == format!("framely-{version}-linux-arm64.tar.gz")
+                || name == format!("framely-{version}-offline-linux-arm64.tar.gz")
+        })
     }
 }
 pub fn requires_package(action: &str) -> bool {

@@ -43,13 +43,10 @@ cp -a assets/branding "$stage/tools/source/assets/"
 cp -a examples/showcase "$stage/tools/source/examples/"
 cp -a ui/src ui/locales ui/index.html ui/package.json "$stage/tools/source/ui/"
 cp tools/build-ui.mjs tools/build-branding.mjs tools/plugin-dev.mjs "$stage/tools/source/tools/"
-cp tools/extract-release.py tools/bootstrap.py "$stage/tools/"
+cp tools/extract-release.py tools/bootstrap.py tools/cef-runtime.py "$stage/tools/"
 find "$stage/tools/source" -type d -name __pycache__ -prune -exec rm -rf -- {} +
 cp -a docs "$stage/share/"
 printf '%s\n' "$build_id" > "$stage/VERSION"
 chmod 755 "$stage"/*.sh "$stage/bin/"* "$stage/lib/cef/framely-vr"
-(cd "$stage" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
-tar -C "$base/release" -czf "$base/release/framely-$build_id-linux-arm64.tar.gz" "framely-$build_id"
-(cd "$base/release" && sha256sum "framely-$build_id-linux-arm64.tar.gz" > "framely-$build_id-linux-arm64.tar.gz.sha256")
-(cd "$base/release" && cp "framely-$build_id-linux-arm64.tar.gz.sha256" SHA256SUMS)
+python3 tools/package-runtime.py "$stage" "$cef" "${RELEASE_REPO:-SteamFramelyHomebrew/framely}" "${RELEASE_TAG:-v$version}"
 echo "Package: release/framely-$build_id-linux-arm64.tar.gz"

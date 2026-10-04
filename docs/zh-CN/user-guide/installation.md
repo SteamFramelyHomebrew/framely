@@ -6,7 +6,7 @@
 
 ## 安装前
 
-目标设备为 Linux ARM64 Steam Frame。当前开发基线为 SteamOS VR 0.4.2、SteamVR build 20260928.6175029；其他系统版本需验证。运行包自带 CEF，设备使用时无需安装 Node.js 或 Rust。
+目标设备为 Linux ARM64 Steam Frame。当前开发基线为 SteamOS VR 0.4.2、SteamVR build 20260928.6175029；其他系统版本需验证。完整离线安装包自带 CEF，设备使用时无需安装 Node.js 或 Rust。
 
 电脑与 Frame 连接同一网络，在 Frame 开启开发者模式并启用 SSH，准备 Steam 用户 `steamos` 的登录密码。安装会使用 sudo 创建账号、systemd 服务和发行目录；请核对 SSH 指纹。安装器不会自动解除 SteamOS 只读保护；实际所需目录不可写时会停止。
 
@@ -40,13 +40,25 @@ curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/i
 
 ## 方式三：本地发行包
 
-下载设备运行包 `framely-<版本及构建号>-linux-arm64.tar.gz`、外部 `SHA256SUMS` 和同一 Release 的 `bootstrap.py`，放入 Frame 的同一目录：
+下载完整离线包 `framely-<版本及构建号>-offline-linux-arm64.tar.gz`、外部 `SHA256SUMS` 和同一 Release 的 `bootstrap.py`，放入 Frame 的同一目录：
 
 ```bash
-python3 bootstrap.py install --archive "./framely-<版本及构建号>-linux-arm64.tar.gz" --checksums ./SHA256SUMS
+python3 bootstrap.py install --archive "./framely-<版本及构建号>-offline-linux-arm64.tar.gz" --checksums ./SHA256SUMS
 ```
 
 尖括号是占位符，执行前替换为真实文件名。引擎校验后在 `/home` 暂存、解压并检查包内哈希，避免耗尽设备的 `/tmp`。
+
+## 发行包与 CEF
+
+每个本体 Release 提供三种压缩包：
+
+- `framely-<版本及构建号>-offline-linux-arm64.tar.gz`：包含 CEF 的完整离线包，首次安装固定使用此包。
+- `framely-<版本及构建号>-linux-arm64.tar.gz`：不含 CEF 的本体包；桌面安装器、SSH 引擎及本体更新器在更新时自动选择此包。
+- `framely-cef-<运行库标识>-linux-arm64.tar.gz`：单独的 CEF 运行库，提供在线下载；`framely-cef.json` 包含下载 URL、大小和 SHA256。
+
+CEF 保存在 `/home/.framely/cef/<运行库标识>`。更新复用经过校验的对应运行库；旧完整安装中相同的 CEF 文件会自动迁移。所需运行库缺失或发行更换 CEF 时，本体安装流程通过 HTTPS 下载单独的匹配 CEF 包，并校验大小、SHA256 和包内哈希。完整离线包直接提供运行库，无需下载 CEF。
+
+各发行引用自己的 CEF 版本，回滚时仍保留之前的运行库；修复会校验运行库，卸载则与程序一起移除 CEF 缓存。本地首次安装必须选择完整离线包；本地更新可使用不含 CEF 的包，前提是对应运行库已安装，否则恢复运行库需要联网。
 
 ## 验证安装
 

@@ -29,7 +29,7 @@ rm -f /etc/systemd/system/framely.service /etc/systemd/system/framely-session.se
 systemctl daemon-reload
 rm -f "$root/current" "$root/previous-release"
 rm -f /home/.framely/state/current /home/.framely/state/previous-release /home/.framely/repair.sh
-rm -rf /home/.framely/releases /run/framely
+rm -rf /home/.framely/releases /home/.framely/cef /run/framely
 rm -f "$root/releases" /home/.framely/state/releases
 # External plugin effects cannot be reliably erased; retain data for recovery.
 echo 'All plugins and Framely were uninstalled. Saved settings and plugin data were retained.'

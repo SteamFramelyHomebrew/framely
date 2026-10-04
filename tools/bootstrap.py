@@ -40,14 +40,22 @@ def fetch(url):
         urllib.request.Request(url, headers={'User-Agent': 'Framely-Installer', 'Accept': 'application/vnd.github+json'}), timeout=60)
 
 
-def download(url, destination, limit):
+def download(url, destination, limit, progress=None):
     with fetch(url) as response, open(destination, 'xb') as output:
         size = 0
+        reported_at = time.monotonic()
+        if progress:
+            progress(0)
         while block := response.read(256 * 1024):
             size += len(block)
             if size > limit:
                 raise ValueError('Download exceeds size limit')
             output.write(block)
+            if progress and time.monotonic() - reported_at >= 0.2:
+                progress(size)
+                reported_at = time.monotonic()
+        if progress:
+            progress(size)
 
 
 def verify_archive(archive, checksums):
@@ -75,7 +83,7 @@ def verify_archive(archive, checksums):
         raise ValueError('Archive SHA256 mismatch; installation stopped')
 
 
-def extract_archive(archive, destination, progress=None):
+def extract_archive(archive, destination, progress=None, runtime=False):
     # Check all headers before writing, and never use tar's link extraction.
     with tarfile.open(archive, 'r:gz') as source:
         members = source.getmembers()
@@ -115,14 +123,27 @@ def extract_archive(archive, destination, progress=None):
                 path.chmod(0o755 if member.mode & 0o111 else 0o644)
         base = destination / prefixes.pop()
         version = (base / 'VERSION').read_text().strip()
-        if base.name != 'framely-' + version:
+        if base.name != ('framely-cef-' if runtime else 'framely-') + version:
             raise ValueError('Release VERSION does not match directory')
-        for required in ['SHA256SUMS', 'install.sh', 'uninstall.sh', 'bin/framely']:
+        required_files = ['SHA256SUMS', 'lib/cef/libcef.so'] if runtime else ['SHA256SUMS', 'install.sh', 'uninstall.sh', 'bin/framely']
+        for required in required_files:
             if not (base / required).is_file():
                 raise ValueError('Missing release file: ' + required)
         if progress:
             progress('extract', completed, total)
         return base
+
+
+def select_package(assets, action):
+    packages = [name for name in assets if re.fullmatch(r'framely-[0-9][a-zA-Z0-9.+-]*-linux-arm64\.tar\.gz', name)]
+    offline = [name for name in packages if name.endswith('-offline-linux-arm64.tar.gz')]
+    core = [name for name in packages if name not in offline]
+    selected = offline if action == 'install' and offline else core
+    if action == 'install' and not offline and 'framely-cef.json' in assets:
+        raise ValueError('First installation requires the complete offline package')
+    if len(selected) != 1 or 'SHA256SUMS' not in assets:
+        raise ValueError('Release must contain one matching ARM64 package and SHA256SUMS')
+    return selected[0]
 
 
 def current_release():
@@ -172,6 +193,8 @@ def root_operation(args):
                 shutil.copyfile(args.checksums, staged_checksums)
                 verify_archive(staged_archive, staged_checksums)
                 base = extract_archive(staged_archive, pathlib.Path(work) / 'unpacked', report)
+                if args.action == 'install' and (base / 'CEF_RUNTIME.json').exists() and not (base / 'lib/cef/libcef.so').is_file():
+                    raise ValueError('First installation requires the complete offline package with CEF')
                 report('extract')
                 subprocess.run(['sha256sum', '--quiet', '-c', 'SHA256SUMS'], cwd=base, check=True)
             else:
@@ -185,7 +208,8 @@ def root_operation(args):
                     same = False
                 if same:
                     command.append('--repair')
-                subprocess.run(command + [args.user], check=True)
+                subprocess.run(command + [args.user], check=True,
+                               env=dict(os.environ, FRAMELY_PROGRESS_JSON='1' if getattr(args, 'progress_json', False) else '0'))
                 report('activate')
                 # Preconfigure the official update source without requiring agreement acceptance.
                 state = pathlib.Path('/home/.framely/state')
@@ -256,13 +280,11 @@ def main(argv=None):
                     raise ValueError('Release metadata too large')
                 release = json.loads(metadata)
                 assets = {asset['name']: asset for asset in release['assets']}
-                packages = [name for name in assets if re.fullmatch(r'framely-[0-9][a-zA-Z0-9.+-]*-linux-arm64\.tar\.gz', name)]
-                if len(packages) != 1 or 'SHA256SUMS' not in assets:
-                    raise ValueError('Release must contain one ARM64 package and SHA256SUMS')
-                args.archive = pathlib.Path(folder) / packages[0]
+                package = select_package(assets, args.action)
+                args.archive = pathlib.Path(folder) / package
                 args.checksums = pathlib.Path(folder) / 'SHA256SUMS'
-                print('Downloading ' + packages[0], flush=True)
-                download(assets[packages[0]]['browser_download_url'], args.archive, MAX_ARCHIVE)
+                print('Downloading ' + package, flush=True)
+                download(assets[package]['browser_download_url'], args.archive, MAX_ARCHIVE)
                 download(assets['SHA256SUMS']['browser_download_url'], args.checksums, 1024**2)
             args.archive, args.checksums = args.archive.resolve(), args.checksums.resolve()
             if args.progress_json:

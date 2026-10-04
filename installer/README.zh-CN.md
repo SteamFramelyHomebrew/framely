@@ -32,6 +32,8 @@ Rust + GPUI Kit 的桌面安装器，连接 Steam Frame，安装、更新、修�
 
 扫描、下载和 SSH 工作在后台线程运行，界面展示进度和日志。默认网络管理面板按钮使用端口 15915；设备修改端口后应使用实际地址。
 
+在线首次安装固定下载包含 CEF 的完整 `*-offline-linux-arm64.tar.gz` 包；在线更新下载不含 CEF 的本体包并复用设备运行库。所需 CEF 缺失或版本更换时，由设备单独下载。本地首次安装也需选择完整离线包，参见[发行包说明](../docs/zh-CN/user-guide/installation.md#发行包与-cef)。
+
 ## 构建
 
 Linux 需要 C/C++ 构建工具、CMake、pkg-config、Fontconfig/Freetype、X11/XCB、XKBCommon、Wayland 和 Vulkan 开发库。macOS 需要 Xcode 命令行工具；Windows 需要 MSVC、CMake 和 Perl（用于内置 OpenSSL）。GPUI Kit 固定为 0.7.0，配套依赖由 `Cargo.lock` 锁定。
@@ -58,7 +60,7 @@ FRAMELY_INSTALLER_PREVIEW_DIR=installer/dist/previews installer/target/debug/fra
 
 预览依赖可用的 GPU 或软件 Vulkan 渲染器；默认发行构建不包含此预览功能。
 
-安装器版本由本目录的 `Cargo.toml` 和 `Cargo.lock` 独立管理，不跟随 Framely 本体版本。推送 `installer-v<版本>` 标签（当前 `installer-v0.4.1-preview.6`）触发 `.github/workflows/installer-release.yml`，只构建并发布安装器；本体使用 `v<版本>` 标签和独立工作流。也可在 Actions 手动运行安装器工作流，仅生成构建产物。安装器 Release 不占用仓库的 Latest，以免影响 Frame 的默认安装和更新地址。
+安装器版本由本目录的 `Cargo.toml` 和 `Cargo.lock` 独立管理，不跟随 Framely 本体版本。推送 `installer-v<版本>` 标签（当前 `installer-v0.4.1-preview.7`）触发 `.github/workflows/installer-release.yml`，只构建并发布安装器；本体使用 `v<版本>` 标签和独立工作流。也可在 Actions 手动运行安装器工作流，仅生成构建产物。安装器 Release 不占用仓库的 Latest，以免影响 Frame 的默认安装和更新地址。
 
 Actions 构建 Linux x64/ARM64、Windows x64、macOS Intel/Apple Silicon。macOS 输出 `.app` ZIP，Windows 输出 EXE ZIP，Linux 输出 tar.gz。当前未配置 Apple 公证或 Windows 代码签名，发布前应分别验证系统的首次启动体验。
 

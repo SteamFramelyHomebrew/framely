@@ -69,6 +69,10 @@ pub fn create_descriptor(archive: &Path, url: &str, output: &Path, changelog: &s
         .strip_prefix("framely-")
         .and_then(|n| n.strip_suffix("-linux-arm64.tar.gz"))
         .context("必须使用 Framely 发行包命名")?;
+    ensure!(
+        !version.ends_with("-offline"),
+        "更新清单必须使用不含 CEF 的本体包"
+    );
     let release = Release {
         schema_version: 1,
         version: version.into(),
@@ -606,6 +610,21 @@ mod tests {
                 "{field}"
             );
         }
+    }
+    #[test]
+    fn split_release_always_resolves_the_core_archive() {
+        let mut item = fixture("0.4.2-preview.1", false);
+        item.0["assets"].as_array_mut().unwrap().extend([
+            json!({"name":"framely-0.4.2-preview.1-012345abcdef-offline-linux-arm64.tar.gz","browser_download_url":"https://example.org/offline","size":900}),
+            json!({"name":"framely-cef-154-build-linux-arm64.tar.gz","browser_download_url":"https://example.org/cef","size":800}),
+        ]);
+        let resolved = resolve_fixture(UpdateChannel::Testing, vec![item])
+            .unwrap()
+            .unwrap();
+        assert!(resolved
+            .0
+            .url
+            .ends_with("framely-0.4.2-preview.1-012345abcdef-linux-arm64.tar.gz"));
     }
     #[test]
     fn custom_descriptors_distinguish_channels_and_ignore_packaging_hashes() {

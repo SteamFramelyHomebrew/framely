@@ -463,7 +463,7 @@ impl Installer {
         } else {
             self.selected
                 .and_then(|i| self.releases.get(i))
-                .is_some_and(|r| release::package(r).is_ok())
+                .is_some_and(|r| release::package_for(r, &self.chosen_action).is_ok())
         }
     }
     fn action_available(&self, action: &str) -> bool {
@@ -480,7 +480,7 @@ impl Installer {
         } else {
             self.selected
                 .and_then(|i| self.releases.get(i))
-                .and_then(|r| release::package(r).ok())
+                .and_then(|r| release::package_for(r, "update").ok())
                 .map(|(package, _)| package.name.as_str())
         };
         self.chosen_action == "update"
@@ -592,7 +592,7 @@ impl Installer {
                     } else {
                         let selected =
                             selected.ok_or_else(|| anyhow::anyhow!("请选择 Release 版本"))?;
-                        let (package, checksum) = release::package(&selected)?;
+                        let (package, checksum) = release::package_for(&selected, &action)?;
                         let archive = folder.path().join(&package.name);
                         let sums = folder.path().join("SHA256SUMS");
                         let total = checksum

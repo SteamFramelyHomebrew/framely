@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/i
 curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install --version v0.4.2-preview.3
 ```
 
-运行包包含 CEF，设备无需 Node.js 或 Rust。安装会请求 sudo；不会自动解除 SteamOS 只读保护。打开 SteamVR Dashboard 的 Framely Dock 图标进入快捷菜单，从“设置 → 管理插件”打开管理窗口。
+首次安装使用包含 CEF 的完整离线包，更新使用不含 CEF 的本体包并复用运行库；同时提供独立 CEF 在线下载。设备无需 Node.js 或 Rust。安装会请求 sudo；不会自动解除 SteamOS 只读保护。打开 SteamVR Dashboard 的 Framely Dock 图标进入快捷菜单，从“设置 → 管理插件”打开管理窗口。
 
 网络面板默认端口 `15915`，手机/电脑访问 `http://设备IP:15915`。未配置密码时首次访问必须设置并确认密码，保存后登录。设备密码与面板密码相互独立。
 

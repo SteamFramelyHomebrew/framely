@@ -15,7 +15,7 @@ steam_home=$(getent passwd "$steam_user" | cut -d: -f6)
 [[ -w /etc/systemd/system && -w /etc && -w /var/lib ]] || { echo 'System configuration is not writable. Framely did not change the read-only setting; installation stopped.' >&2; exit 1; }
 cd "$base"
 sha256sum --quiet -c SHA256SUMS
-for binary in bin/framely lib/cef/framely-vr; do
+for binary in bin/framely; do
   dependencies=$(ldd "$binary" 2>&1)
   [[ $dependencies != *'not found'* ]] || { echo "$dependencies" >&2; exit 1; }
 done
@@ -74,6 +74,9 @@ mkdir -p "$root/logs"
 chmod 755 "$root" "$root/releases" "$root/plugins" "$root/data"
 chmod 700 "$root/logs"
 old=$(readlink "$root/current" || true)
+if ! $repair && [[ -z $old && -f CEF_RUNTIME.json && ! -f lib/cef/libcef.so ]]; then
+  echo 'First installation requires the complete offline package with CEF.' >&2; exit 1
+fi
 if $repair; then
   [[ $old == "releases/$version" && -d $release && ! -L $release ]] || { echo 'Repair requires the currently installed release.' >&2; exit 1; }
   (cd "$release" && sha256sum --quiet -c SHA256SUMS)
@@ -95,9 +98,23 @@ cleanup_install() {
 }
 trap cleanup_install EXIT
 if ! $repair; then
-  cp -a bin lib share tools VERSION SHA256SUMS ./*.sh "$stage/"
+  # Preserve every checksummed file, including documentation and runtime metadata.
+  cp -a "$base/." "$stage/"
   chown -R root:root "$stage"
   find "$stage" -type d -exec chmod 755 {} +
+fi
+if [[ -f CEF_RUNTIME.json ]]; then
+  # Cache exact runtimes outside releases so upgrades and rollback share files.
+  cef_runtime=$(python3 "$base/tools/cef-runtime.py" prepare "$base" "$store")
+  if $repair; then cef_release="$release"; else cef_release="$stage"; fi
+  python3 "$base/tools/cef-runtime.py" attach "$cef_release" "$cef_runtime"
+  (cd "$cef_release" && sha256sum --quiet -c SHA256SUMS)
+  dependencies=$(ldd "$cef_release/lib/cef/framely-vr" 2>&1)
+else
+  dependencies=$(ldd "$base/lib/cef/framely-vr" 2>&1)
+fi
+[[ $dependencies != *'not found'* ]] || { echo "$dependencies" >&2; exit 1; }
+if ! $repair; then
   mv "$stage" "$release"
   release_created=true
 fi

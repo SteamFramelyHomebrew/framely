@@ -38,12 +38,18 @@ framely call system.source.save '{"source":{"url":"https://example.org/framely-r
 
 该机制不能恢复已被系统清除的 `/home` 数据，也不保证操作系统更新后无需人工操作。回滚到不支持修复模式的旧发行后，需要使用支持该模式的新发行包恢复安装。正式发布前应进行一次真实 SteamOS 更新，验证设置、插件数据、账号身份、服务恢复和 SteamVR 宿主兼容性。
 
+## 本体包与独立 CEF
+
+每次构建生成不含 CEF 的本体包 `framely-<版本及构建号>-linux-arm64.tar.gz`、完整离线包 `framely-<版本及构建号>-offline-linux-arm64.tar.gz`、独立运行库 `framely-cef-<运行库标识>-linux-arm64.tar.gz`。更新清单 `framely-release.json` 固定指向不含 CEF 的本体包；首次安装固定选择完整离线包。`framely-cef.json` 提供独立 CEF 的 HTTPS 下载地址、大小及 SHA256。
+
+CEF 按内容哈希保存在 `/home/.framely/cef/<运行库标识>`，更新时复用；旧安装中相同的运行库自动迁移。所需运行库缺失或 CEF 版本更换时单独下载并校验，各发行的运行库保留用于回滚。完整包可离线提供 CEF。参见[发行包与运行库恢复](user-guide/installation.md#发行包与-cef)。
+
 ## GitHub Actions 发布
 
 Framely 和桌面安装器保留在同一仓库，使用独立的版本号、标签和发布工作流：
 
-- Framely：版本由根 `Cargo.toml` 定义，标签为 `v<版本>`（当前 `v0.4.2-preview.8`）；`.github/workflows/release.yml` 只构建 Frame Linux ARM64 发行，使用锁定的 CEF 并执行自动检查。
-- 安装器：版本由 `installer/Cargo.toml` 定义，标签为 `installer-v<版本>`（当前 `installer-v0.4.1-preview.6`）；`.github/workflows/installer-release.yml` 只构建 Linux x64/ARM64、Windows x64、macOS x64/ARM64 的原生安装器，使用锁定的 GPUI Kit。
+- Framely：版本由根 `Cargo.toml` 定义，标签为 `v<版本>`（当前 `v0.4.2-preview.9`）；`.github/workflows/release.yml` 只构建 Frame Linux ARM64 发行，使用锁定的 CEF 并执行自动检查。
+- 安装器：版本由 `installer/Cargo.toml` 定义，标签为 `installer-v<版本>`（当前 `installer-v0.4.1-preview.7`）；`.github/workflows/installer-release.yml` 只构建 Linux x64/ARM64、Windows x64、macOS x64/ARM64 的原生安装器，使用锁定的 GPUI Kit。
 
 两个版本不需要相同，也不需要同时发布。修改各自版本时同步对应的 `Cargo.lock`；安装器包名及 macOS 应用版本使用安装器版本。
 
@@ -53,19 +59,19 @@ Framely 和桌面安装器保留在同一仓库，使用独立的版本号、标
 
 ```bash
 # 提交并推送代码后，选择需要发布的产品
-git tag v0.4.2-preview.8
-git push origin v0.4.2-preview.8
+git tag v0.4.2-preview.9
+git push origin v0.4.2-preview.9
 
 # 独立发布安装器，不触发 Framely 构建
-git tag installer-v0.4.1-preview.6
-git push origin installer-v0.4.1-preview.6
+git tag installer-v0.4.1-preview.7
+git push origin installer-v0.4.1-preview.7
 ```
 
 带 `-preview.N` 等预发布后缀的标签会发布为 GitHub Prerelease，不设置为 Latest。安装器 Release 始终设置为非 Latest；只有 Framely 正式 Release 设置为 Latest。因此设备安装入口和默认更新清单的 `releases/latest/download/...` 继续指向 Framely 本体。安装器读取发行列表时按本体包名筛选，不把 Linux ARM64 安装器误当成设备发行包。安装器下载应使用具体的 `installer-v<版本>` Release。
 
 只有标签触发会发布。各工作流在自己的构建全部成功后创建草稿 Release，上传本产品产物及外部 `SHA256SUMS`，最后公开草稿。Framely Release 额外包含 `bootstrap.py`、入口脚本和更新清单；安装器 Release 只包含五个平台的安装器包和校验文件。失败的草稿不作为最新稳定版提供下载。手动触发用于验证，仅保留 Actions artifacts。
 
-Framely 本体 Release 附件用途：`framely-*-linux-arm64.tar.gz` 为设备运行包；`framely-release.json` 为内置更新功能的版本清单；`install.sh` 是命令行入口，调用 `bootstrap.py` 完成下载、校验和维护；`SHA256SUMS` 为附件校验清单。桌面安装器只需自动下载运行包和校验清单，用户无需手动下载脚本。安装器的五个平台包发布在独立的安装器 Release 中。
+Framely 本体 Release 附件用途：`framely-*-linux-arm64.tar.gz` 为不含 CEF 的更新包，`framely-*-offline-linux-arm64.tar.gz` 为首次安装用的完整离线包，`framely-cef-*` 为独立运行库，`framely-cef.json` 提供运行库下载信息；`framely-release.json` 为内置更新功能的版本清单；`install.sh` 是命令行入口，调用 `bootstrap.py` 完成下载、校验和维护；`SHA256SUMS` 为附件校验清单。桌面安装器只需自动下载运行包和校验清单，用户无需手动下载脚本。安装器的五个平台包发布在独立的安装器 Release 中。
 
 外部 `SHA256SUMS` 包含压缩包哈希，校验传输内容；包内同名文件校验解压后的载荷。哈希不能独立证明作者身份，在线安装依赖指定 GitHub 仓库与 HTTPS；本地安装依赖用户提供的可信包与校验文件。下载遵循 HTTPS 重定向，不允许降级。
 

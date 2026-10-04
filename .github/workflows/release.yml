@@ -63,8 +63,8 @@ jobs:
         run: |
           bash tools/package-release.sh target/cef
           mkdir -p release-assets
-          archive=$(find release -maxdepth 1 -name 'framely-*-linux-arm64.tar.gz' -print -quit)
-          cp "$archive" release-assets/
+          archive=$(find release -maxdepth 1 -name 'framely-*-linux-arm64.tar.gz' ! -name '*-offline-linux-arm64.tar.gz' ! -name 'framely-cef-*' -print -quit)
+          cp release/*.tar.gz release/framely-cef.json release-assets/
           cp tools/bootstrap.py release-assets/bootstrap.py
           cp install.sh release-assets/install.sh
           "$CARGO_TARGET_DIR/release/framely" release-manifest --archive "$archive" --url "https://github.com/$RELEASE_REPO/releases/download/$RELEASE_TAG/$(basename "$archive")" --output release-assets/framely-release.json --changelog "Framely $RELEASE_TAG"
@@ -93,8 +93,8 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           cd release-assets
-          sha256sum -- *.tar.gz bootstrap.py install.sh framely-release.json > SHA256SUMS
-          printf 'Framely %s\n\nInstall on Frame over SSH using the repository install.sh.\n\nSHA256SUMS verifies downloaded archives; each Framely archive also includes an internal SHA256SUMS.\n' "$RELEASE_TAG" > release-notes.txt
+          sha256sum -- *.tar.gz bootstrap.py install.sh framely-release.json framely-cef.json > SHA256SUMS
+          printf 'Framely %s\n\nFirst install: choose the complete *-offline-linux-arm64.tar.gz package. Updates: choose the smaller Framely package without CEF. A separate framely-cef-* archive is available for runtime downloads.\n\nInstall on Frame over SSH using the repository install.sh. SHA256SUMS verifies archives; each archive also includes internal checksums.\n' "$RELEASE_TAG" > release-notes.txt
           prerelease=false
           latest=true
           if [[ "$RELEASE_TAG" == *-* ]]; then
@@ -102,5 +102,5 @@ jobs:
             latest=false
           fi
           gh release create "$RELEASE_TAG" --verify-tag --title "Framely $RELEASE_TAG" --notes-file release-notes.txt --draft --latest=false --prerelease="$prerelease"
-          gh release upload "$RELEASE_TAG" -- *.tar.gz SHA256SUMS bootstrap.py install.sh framely-release.json
+          gh release upload "$RELEASE_TAG" -- *.tar.gz SHA256SUMS bootstrap.py install.sh framely-release.json framely-cef.json
           gh release edit "$RELEASE_TAG" --draft=false --latest="$latest" --prerelease="$prerelease"

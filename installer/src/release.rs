@@ -68,7 +68,11 @@ pub fn list(repo: &str) -> Result<Vec<Release>> {
         ensure!(bytes.len() <= 4 * 1024 * 1024, "Release 列表过大");
         let items: Vec<Release> = serde_json::from_slice(&bytes)?;
         let finished = items.len() < 100;
-        all.extend(items.into_iter().filter(|r| !r.draft && package(r).is_ok()));
+        all.extend(
+            items
+                .into_iter()
+                .filter(|r| !r.draft && (package(r).is_ok() || package_for(r, "update").is_ok())),
+        );
         if finished {
             return Ok(all);
         }
@@ -76,10 +80,26 @@ pub fn list(repo: &str) -> Result<Vec<Release>> {
     Ok(all)
 }
 pub fn package(release: &Release) -> Result<(&Asset, &Asset)> {
+    package_for(release, "install")
+}
+pub fn package_for<'a>(release: &'a Release, action: &str) -> Result<(&'a Asset, &'a Asset)> {
+    let offline = action == "install"
+        && release
+            .assets
+            .iter()
+            .any(|a| safe_archive_name(&a.name) && a.name.ends_with("-offline-linux-arm64.tar.gz"));
+    ensure!(
+        action != "install"
+            || offline
+            || !release.assets.iter().any(|a| a.name == "framely-cef.json"),
+        "首次安装需要包含 CEF 的完整离线包"
+    );
     let packages: Vec<_> = release
         .assets
         .iter()
-        .filter(|a| safe_archive_name(&a.name))
+        .filter(|a| {
+            safe_archive_name(&a.name) && a.name.ends_with("-offline-linux-arm64.tar.gz") == offline
+        })
         .collect();
     ensure!(packages.len() == 1, "该版本缺少唯一的 Framely ARM64 发行包");
     let checksum = release
@@ -233,5 +253,47 @@ mod tests {
         assert!(package(&release).is_err());
         release.assets[0].name = "framely-0.4.2-build-linux-arm64.tar.gz".into();
         assert!(package(&release).is_ok());
+    }
+
+    #[test]
+    fn first_install_uses_offline_and_updates_use_core_with_three_archives() {
+        let mut release = Release {
+            tag_name: "v0.4.2".into(),
+            name: None,
+            published_at: None,
+            body: None,
+            prerelease: false,
+            draft: false,
+            assets: [
+                "framely-0.4.2-build-linux-arm64.tar.gz",
+                "framely-0.4.2-build-offline-linux-arm64.tar.gz",
+                "framely-cef-154-build-linux-arm64.tar.gz",
+                "framely-cef.json",
+                "SHA256SUMS",
+            ]
+            .into_iter()
+            .map(|name| Asset {
+                name: name.into(),
+                browser_download_url: format!("https://example.org/{name}"),
+                size: 1,
+            })
+            .collect(),
+        };
+        assert!(
+            package_for(&release, "install")
+                .unwrap()
+                .0
+                .name
+                .ends_with("-offline-linux-arm64.tar.gz")
+        );
+        assert_eq!(
+            package_for(&release, "update").unwrap().0.name,
+            "framely-0.4.2-build-linux-arm64.tar.gz"
+        );
+        release
+            .assets
+            .retain(|a| !a.name.ends_with("-offline-linux-arm64.tar.gz"));
+        assert!(package_for(&release, "install").is_err());
+        assert!(package_for(&release, "update").is_ok());
     }
 }
