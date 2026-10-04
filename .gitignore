@@ -1,0 +1,17 @@
+/target/
+/release/
+**/node_modules/
+**/dist/
+**/__pycache__/
+*.tmp
+
+/examples/showcase/payload/page.js
+/examples/showcase/payload/backend.py
+
+/examples/showcase/payload/framely.py
+
+/installer/target/
+
+# Generated UI review screenshots
+/docs/previews/
+/templates/plugin/payload/

@@ -1,0 +1,10 @@
+{
+  "license": "AGPL-3.0-only",
+  "name": "@framely/showcase",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@framely/sdk": "0.4.0"
+  }
+}

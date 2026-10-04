@@ -1,0 +1,11 @@
+import {t} from './i18n';
+import React,{useEffect,useState} from 'react';
+import {api} from './api';
+export type ProxyConfig={http:string;github:string;httpEnabled?:boolean;githubEnabled?:boolean};
+export function ProxySettings({config,refresh}:{config:ProxyConfig;refresh:()=>Promise<void>}){
+ const[http,setHttp]=useState(config.http),[github,setGithub]=useState(config.github),[httpEnabled,setHttpEnabled]=useState(config.httpEnabled??false),[githubEnabled,setGithubEnabled]=useState(config.githubEnabled??false),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ useEffect(()=>{setHttp(config.http);setGithub(config.github);setHttpEnabled(config.httpEnabled??false);setGithubEnabled(config.githubEnabled??false);},[config.http,config.github,config.httpEnabled,config.githubEnabled]);
+ async function save(){setBusy(true);setError('');try{await api('proxy.save',{http:http.trim(),github:github.trim(),httpEnabled,githubEnabled});await refresh();}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
+ const unchanged=http===config.http&&github===config.github&&httpEnabled===(config.httpEnabled??false)&&githubEnabled===(config.githubEnabled??false);
+ return <section className="settings-card"><h2>{t("代理设置")}</h2><div className="proxy-fields"><div><label className="network-switch"><input type="checkbox" checked={httpEnabled} onChange={e=>setHttpEnabled(e.target.checked)}/>{t("启用 HTTP 代理")}</label><label><input aria-label={t("HTTP 代理地址")} disabled={!httpEnabled} maxLength={2048} type="url" value={http} placeholder="http://192.168.1.2:7890" onChange={e=>setHttp(e.target.value)}/></label></div><div><label className="network-switch"><input type="checkbox" checked={githubEnabled} onChange={e=>setGithubEnabled(e.target.checked)}/>{t("启用 GitHub 代理")}</label><label><input aria-label={t("GitHub 代理地址")} disabled={!githubEnabled} maxLength={2048} type="url" value={github} placeholder="https://gh-proxy.com" onChange={e=>setGithub(e.target.value)}/></label></div></div><div className="row"><button disabled={busy||unchanged||(httpEnabled&&!http.trim())||(githubEnabled&&!github.trim())} onClick={()=>void save()}>{busy?t("保存中…"):t("保存")}</button></div>{error&&<p className="error" role="alert">{error}</p>}</section>;
+}

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "apiVersion": 1,
+  "id": "example.my-plugin",
+  "name": "我的插件",
+  "version": "0.1.0",
+  "author": "Your name",
+  "description": "一个可保存文字、打开窗口和发送通知的插件。",
+  "details": "使用 React 编写界面，使用 Python 后端保存插件数据。",
+  "tags": ["工具"],
+  "changelog": "首次发布。",
+  "backend": {
+    "entry": "backend.py", "runAs": "steamos", "autostart": false,
+    "restart": "on-failure", "restartLimit": 3
+  },
+  "lifecycle": {
+    "onInstall": {"entry": "backend.py"},
+    "onUpdate": {"entry": "backend.py"},
+    "onStart": true, "onStop": true,
+    "onUninstall": {"entry": "backend.py"},
+    "timeoutSeconds": 10
+  },
+  "ui": {
+    "quickPage": "page.js",
+    "windows": {"main": {"entry": "page.js", "title": "我的插件", "dockIcon": true}}
+  },
+  "dependencies": {}, "optionalDependencies": {}, "conflicts": {},
+  "exclusiveResources": [], "files": {}
+}

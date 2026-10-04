@@ -1,0 +1,7 @@
+{
+  "license": "AGPL-3.0-only",
+  "name": "@framely/ui",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module"
+}

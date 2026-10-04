@@ -1,0 +1,6 @@
+node_modules/
+payload/
+dist/
+*.framely
+__pycache__/
+.framely-build/

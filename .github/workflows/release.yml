@@ -1,0 +1,106 @@
+name: Build Framely release
+run-name: "${{ startsWith(github.ref, 'refs/tags/') && format('Release Framely {0}', github.ref_name) || format('Build Framely {0}', github.ref_name) }}"
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: framely-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  frame:
+    runs-on: ubuntu-24.04-arm
+    env:
+      CARGO_HOME: ${{ github.workspace }}/target/framely-cargo
+      CARGO_TARGET_DIR: target/cargo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: framely-frame
+          workspaces: ". -> target/cargo"
+          cache-on-failure: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y g++ libgl1-mesa-dev libx11-dev
+      - name: Check release version
+        env:
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, tomllib
+          version = tomllib.load(open('Cargo.toml', 'rb'))['package']['version']
+          if os.environ['RELEASE_REF'].startswith('refs/tags/'):
+              assert os.environ['RELEASE_TAG'] == 'v' + version, 'Tag must match Cargo.toml'
+          PY
+      - name: Cache pinned CEF
+        uses: actions/cache@v4
+        with:
+          path: target/cef
+          key: cef-linux-arm64-154.0.32-682c378
+      - name: Fetch pinned CEF
+        run: test -d target/cef || bash tools/fetch-cef.sh
+      - name: Validate
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+          cargo test --locked
+          python3 -m unittest discover -s tests -p 'test_*.py'
+          bash tools/test-native.sh
+      - name: Build release and update descriptor
+        env:
+          RELEASE_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          bash tools/package-release.sh target/cef
+          mkdir -p release-assets
+          archive=$(find release -maxdepth 1 -name 'framely-*-linux-arm64.tar.gz' -print -quit)
+          cp "$archive" release-assets/
+          cp tools/bootstrap.py release-assets/bootstrap.py
+          cp install.sh release-assets/install.sh
+          "$CARGO_TARGET_DIR/release/framely" release-manifest --archive "$archive" --url "https://github.com/$RELEASE_REPO/releases/download/$RELEASE_TAG/$(basename "$archive")" --output release-assets/framely-release.json --changelog "Framely $RELEASE_TAG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: framely-frame
+          path: release-assets/*
+          if-no-files-found: error
+  publish:
+    # Manual runs only build downloadable Actions artifacts; tags publish.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [frame]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: framely-frame
+          merge-multiple: true
+          path: release-assets
+      - name: Generate archive checksums and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cd release-assets
+          sha256sum -- *.tar.gz bootstrap.py install.sh framely-release.json > SHA256SUMS
+          printf 'Framely %s\n\nInstall on Frame over SSH using the repository install.sh.\n\nSHA256SUMS verifies downloaded archives; each Framely archive also includes an internal SHA256SUMS.\n' "$RELEASE_TAG" > release-notes.txt
+          prerelease=false
+          latest=true
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            prerelease=true
+            latest=false
+          fi
+          gh release create "$RELEASE_TAG" --verify-tag --title "Framely $RELEASE_TAG" --notes-file release-notes.txt --draft --latest=false --prerelease="$prerelease"
+          gh release upload "$RELEASE_TAG" -- *.tar.gz SHA256SUMS bootstrap.py install.sh framely-release.json
+          gh release edit "$RELEASE_TAG" --draft=false --latest="$latest" --prerelease="$prerelease"

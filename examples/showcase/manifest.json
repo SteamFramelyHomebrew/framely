@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "apiVersion": 1,
+  "id": "framely.showcase",
+  "name": "Framely 功能测试",
+  "version": "0.4.0",
+  "description": "验证后端身份、输入、大窗口和通知。",
+  "author": "Framely examples",
+  "backend": {
+    "entry": "backend.py",
+    "runAs": "steamos",
+    "autostart": false
+  },
+  "ui": {
+    "quickPage": "page.js",
+    "windows": {
+      "main": {
+        "entry": "page.js",
+        "title": "Framely 测试窗口",
+        "dockIcon": true
+      },
+      "temporary": {
+        "entry": "page.js",
+        "title": "Framely 临时窗口",
+        "dockIcon": false
+      }
+    }
+  },
+  "files": {},
+  "icon": "icon.png",
+  "details": "验证插件运行身份、持久数据、SteamVR 键盘、独立窗口与通知按钮。此插件用于安装后的功能检查。",
+  "tags": [
+    "示例",
+    "验证"
+  ],
+  "changelog": "切换为无签名插件包，使用当前 SDK 的键盘、滚动条与悬停反馈。",
+  "lifecycle": {
+    "onInstall": {
+      "entry": "backend.py"
+    },
+    "onUpdate": {
+      "entry": "backend.py"
+    },
+    "onStart": true,
+    "onStop": true,
+    "onUninstall": {
+      "entry": "backend.py"
+    },
+    "onCrashCleanup": {
+      "entry": "backend.py"
+    },
+    "timeoutSeconds": 10
+  }
+}
