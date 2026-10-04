@@ -66,6 +66,8 @@ Actions builds Linux x64/ARM64, Windows x64, and macOS Intel/Apple Silicon. macO
 
 The titlebar and application icons share the pixel logo. Windows builds embed the ICO in the EXE; macOS packaging uses the system `iconutil` to generate and configure `.icns`. On Linux, run `bash install-desktop-entry.sh` from the extracted archive to register an icon-bearing entry in the current user's application menu. The entry points to that directory; rerun the script after moving it.
 
+Installer archives do not include a separate `assets` directory. The UI logo is embedded in the executable; the Linux registration script embeds its menu icon, while macOS keeps its application icon inside the `.app` bundle.
+
 Automated tests and Actions builds validate software and artifacts. Discovery, login, permissions, update, rollback, and uninstall still need acceptance testing on actual computers and Frame hardware.
 
 Discovery queries `frame.local` mDNS address records directly. It does not require an advertised SSH service or system DNS support for `.local`. Run the same discovery logic independently for diagnosis:

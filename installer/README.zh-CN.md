@@ -66,6 +66,8 @@ Actions 构建 Linux x64/ARM64、Windows x64、macOS Intel/Apple Silicon。macOS
 
 安装器标题栏和应用图标使用统一的像素 Logo。Windows 构建将 ICO 嵌入 EXE，macOS 打包使用系统 `iconutil` 生成并配置 `.icns`。Linux 解压后可在解压目录执行 `bash install-desktop-entry.sh`，把带图标的入口注册到当前用户的应用菜单；入口指向该目录，移动后需重新执行脚本。
 
+安装器压缩包不包含独立的 `assets` 目录。界面 Logo 内嵌在可执行文件中，Linux 注册脚本内嵌菜单图标，macOS 的应用图标保存在 `.app` 内部。
+
 所有自动测试和 Actions 构建只能验证软件及产物；仍需在真实电脑和 Frame 上完成扫描、登录、权限、升级回滚及卸载验收。
 
 扫描会直接查询 `frame.local` 的 mDNS 地址记录，不要求设备广播 SSH 服务，也不依赖电脑的系统 DNS 支持 `.local`。可单独运行与界面相同的发现逻辑进行诊断：

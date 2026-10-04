@@ -39,11 +39,13 @@ with __import__('tempfile').TemporaryDirectory() as temp:
         shutil.copy2(binary, stage / exe)
         if not platform.startswith('windows'):
             (stage / exe).chmod(0o755)
-            shutil.copy2(root / 'installer/install-desktop-entry.sh', stage / 'install-desktop-entry.sh')
+            desktop_script = (root / 'installer/install-desktop-entry.sh').read_text()
+            marker = 'icon = None  # Embedded by tools/package-installer.py.'
+            if desktop_script.count(marker) != 1:
+                raise ValueError('Desktop registration script is missing its icon marker')
+            icon = (root / 'assets/branding/framely-app-icon.svg').read_bytes()
+            (stage / 'install-desktop-entry.sh').write_text(desktop_script.replace(marker, f'icon = {icon!r}'))
             (stage / 'install-desktop-entry.sh').chmod(0o755)
-    (stage / 'assets/branding').mkdir(parents=True)
-    for asset in ('framely-logo.svg', 'framely-logo-light.svg', 'framely-app-icon.svg', 'framely-app-icon.png', 'framely.ico'):
-        shutil.copy2(root / 'assets/branding' / asset, stage / 'assets/branding' / asset)
     shutil.copy2(root / 'installer/README.md', stage / 'README.md')
     shutil.copy2(root / 'installer/README.zh-CN.md', stage / 'README.zh-CN.md')
     shutil.copy2(root / 'LICENSE', stage / 'LICENSE')

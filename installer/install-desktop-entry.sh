@@ -3,7 +3,7 @@
 set -euo pipefail
 base=$(cd -- "$(dirname -- "$0")" && pwd)
 python3 - "$base" <<'PY'
-import os, pathlib, shutil
+import os, pathlib
 base = pathlib.Path(__import__('sys').argv[1])
 binary = base / 'framely-installer'
 if not binary.is_file():
@@ -13,7 +13,10 @@ apps = data / 'applications'
 icons = data / 'icons/hicolor/scalable/apps'
 apps.mkdir(parents=True, exist_ok=True)
 icons.mkdir(parents=True, exist_ok=True)
-shutil.copy2(base / 'assets/branding/framely-app-icon.svg', icons / 'org.framely.installer.svg')
+icon = None  # Embedded by tools/package-installer.py.
+if icon is None:
+    icon = (base.parent / 'assets/branding/framely-app-icon.svg').read_bytes()
+(icons / 'org.framely.installer.svg').write_bytes(icon)
 # Desktop entries parse backslash escapes before parsing the quoted Exec value.
 quoted = str(binary).replace('%', '%%').replace('\\', '\\\\')
 for character in ('"', '`', '$'):
