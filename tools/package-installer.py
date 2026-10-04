@@ -45,7 +45,7 @@ with __import__('tempfile').TemporaryDirectory() as temp:
     for asset in ('framely-logo.svg', 'framely-logo-light.svg', 'framely-app-icon.svg', 'framely-app-icon.png', 'framely.ico'):
         shutil.copy2(root / 'assets/branding' / asset, stage / 'assets/branding' / asset)
     shutil.copy2(root / 'installer/README.md', stage / 'README.md')
-    shutil.copy2(root / 'installer/README.en.md', stage / 'README.en.md')
+    shutil.copy2(root / 'installer/README.zh-CN.md', stage / 'README.zh-CN.md')
     shutil.copy2(root / 'LICENSE', stage / 'LICENSE')
     name = f'framely-installer-{version}-{platform}'
     if platform.startswith('linux'):

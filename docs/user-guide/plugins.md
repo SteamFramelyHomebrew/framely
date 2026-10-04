@@ -1,56 +1,56 @@
-# 安装与管理插件
+# Install and manage plugins
 
-[English](../en/user-guide/plugins.md)
+[简体中文](../zh-CN/user-guide/plugins.md)
 
-[文档首页](../README.md) · [网络面板](network-panel.md)
+[Documentation](../README.md) · [Network panel](network-panel.md)
 
-## 从商店安装
+## Install from the store
 
-1. 打开管理窗口“商店”。当前代码首次初始化加入社区 stable/testing 来源；来源内容取决于服务和设备配置。没有目录或插件时，进入“插件源”添加开发者提供的完整 HTTPS `catalog.json` 地址。
-2. 可按关键词、标签、来源或安装状态筛选。
-3. 打开详情，查看作者、介绍、更新记录、运行用户和依赖。默认显示推荐版本，历史版本会按需加载。
-4. 点击安装或检查所选版本。下载、校验和依赖解析完成后，阅读确认页。
-5. 检查包内实际运行用户以及依赖带来的 root 权限，确认后安装。安装后在插件列表启用或打开。
+1. Open **Store** in the manager. Current code initializes community stable/testing sources; availability depends on the actual service and device configuration. If no catalog is available, add a developer's complete HTTPS `catalog.json` URL in Sources.
+2. Filter by keywords, tags, source or installation state.
+3. Open details and review author, description, changes, runtime user and dependencies. The recommended version is shown first; history loads on demand.
+4. Install or inspect the selected version. Read the confirmation after download, verification and dependency resolution.
+5. Check actual package runtime users, including any root dependencies, then confirm. Enable or open the plugin from the installed list.
 
-商店提供的运行用户只是目录资料，最终确认以下载包内声明为准。`steamos` 使用 Steam 会话用户，`root` 可修改系统和设备设置。包哈希用于校验内容，不等于对作者身份或安全性的担保。
+Catalog runtime users are informational; final confirmation uses the downloaded package. `steamos` runs as the Steam session user; `root` can change system and device settings. Hashes check content, not developer identity or safety.
 
-## 添加源与订阅
+## Sources and subscriptions
 
-单个目录地址：在“插件源”添加名称和 `https://.../catalog.json`，测试连接后保存。
+For one catalog, add a name and `https://.../catalog.json` URL in Sources, test the connection, then save.
 
-多个源的订阅：在“源订阅”粘贴开发者提供的订阅 JSON 地址，预览所含来源后确认添加。它和单个目录不是同一种文件。订阅刷新仅更新来源和商店资料，不自动安装或更新插件。
+For multiple catalogs, add a subscription JSON URL in Source subscriptions, preview its sources, then confirm. A subscription is different from a catalog. Refreshing it changes source lists and metadata, not installed plugins.
 
-停用或删除来源不会自动卸载已安装插件；订阅管理的 URL 变更需另行确认。格式与刷新行为见[源订阅参考](../source-subscriptions.md)。
+Disabling or deleting a source does not uninstall its plugins. Subscription URL changes require confirmation. See the [subscription reference](../source-subscriptions.md).
 
-## 导入本地包或包 URL
+## Import a file or package URL
 
-插件包扩展名为 `.framely`，无需自行解压。进入管理窗口“插件”，打开导入入口：
+Packages use the `.framely` extension and need no manual extraction. Open import in the manager's Plugins page:
 
-- **本地文件**：在手机/电脑网络面板选择本机下载的 `.framely` 文件；文件上传后校验。
-- **包 URL**：粘贴作者提供的固定版本 HTTPS 下载地址，等待下载和检查。
+- **Local file**: select a downloaded `.framely` file on your phone/computer in the web panel; it uploads and is verified.
+- **Package URL**: paste a fixed-version HTTPS download URL from the author and wait for verification.
 
-两种方式都需要阅读安装确认，涉及运行用户变更时另行确认。导入的是插件包；Framely 本体 tar.gz 和普通 ZIP 不能作为插件安装。
+Both require reviewing confirmation, with an additional confirmation for changed runtime users. Device tar.gz archives and ordinary ZIP files are not plugin packages.
 
-在 Frame 的 SSH 终端也可安装：
+You can also install from Frame's SSH terminal:
 
 ```bash
 sudo /var/lib/framely/current/bin/framely install ./plugin.framely --approve
 ```
 
-只有在确认旧版到新版确实需要改变运行用户时才增加 `--approve-run-as`。命令行不会代替你判断来源是否可信。
+Add `--approve-run-as` only when you have verified that changing the runtime user is intended. CLI approval does not assess the source's trustworthiness.
 
-## 更新、选择旧版与卸载
+## Updates, older versions and removal
 
-商店提示“可更新”时进入详情，查看变化后按安装确认流程更新。需要旧版时，在详情选择历史版本再检查；换来源也会明确提示。设置和收藏通常保留，但运行用户改变会使用另一份数据目录，不自动迁移旧身份的数据。
+Open details for plugins marked updatable, review changes and confirm. Select history to inspect an older version. Switching sources is explicitly disclosed. Settings and favorites are generally retained; a different runtime user uses a different data directory and does not automatically migrate the old one.
 
-从插件管理弹窗卸载。卸载钩子负责清理该插件的外部资源，保存的数据保留；不要直接删除系统中的插件目录。停用只停止使用，不卸载程序和数据。
+Uninstall through the management dialog. Hooks handle external cleanup and saved data is retained. Do not remove system plugin directories manually. Disabling stops use without removing programs or data.
 
-## 常见问题
+## Troubleshooting
 
-| 现象 | 处理 |
+| Symptom | Action |
 | --- | --- |
-| 商店空白 | 检查是否添加并启用了来源、连接能否成功、筛选是否过窄 |
-| 下载或校验失败 | 检查网络和包地址，重新下载；不要跳过哈希校验 |
-| 历史版本不可用 | 来源可能没有历史文件，可先安装最新版或导入可信旧包 |
-| 插件无法启用 | 查看依赖、冲突和错误说明，确认其他必要插件已安装 |
-| 插件反复崩溃 | 停用后检查日志，必要时进入安全模式，再向插件作者反馈 |
+| Empty store | Check enabled sources, connectivity and filters |
+| Download/hash failure | Check network and URL; download again without bypassing verification |
+| Missing history | The source may lack its history file; use latest or a trusted local old package |
+| Cannot enable | Read dependency/conflict errors and install required plugins |
+| Repeated crashes | Disable, inspect logs, use safe mode if needed, and report to the author |

@@ -1,19 +1,19 @@
-# Manifest 配置说明
+# Manifest configuration
 
-[English](../en/developer-guide/manifest.md)
+[简体中文](../zh-CN/developer-guide/manifest.md)
 
-[开发流程](README.md) · [SDK](sdk.md) · [生命周期](../plugin-lifecycle.md)
+[Development](README.md) · [SDK](sdk.md) · [Lifecycle](../plugin-lifecycle.md)
 
-项目根目录 `manifest.json` 描述插件；打包后同名文件位于包内。字段采用 camelCase，安装包清单拒绝未知字段，不要添加已废弃的 `permissions`。以[模板清单](../../templates/plugin/manifest.json)为起点。
+The repository-root `manifest.json` describes a plugin and is included in its archive. Fields use camelCase. Package Manifests reject unknown fields; do not add retired `permissions`. Start from the [template](../../templates/plugin/manifest.json).
 
-## 最小示例
+## Minimal example
 
 ```json
 {
   "schemaVersion": 1,
   "apiVersion": 1,
   "id": "yourname.my-plugin",
-  "name": "我的插件",
+  "name": "My plugin",
   "version": "0.1.0",
   "author": "Your name",
   "backend": {"entry": "backend.py", "runAs": "steamos"},
@@ -22,75 +22,75 @@
 }
 ```
 
-源码清单的 `files` 留空；`framely pack` 遍历 payload 并生成实际文件哈希。至少一个载荷文件，每个入口必须存在于 payload。完整模板见 [manifest.json](../../templates/plugin/manifest.json)。
+Leave source `files` empty. `framely pack` scans payload and supplies hashes. At least one payload file is required; all declared entries must be included. See the [complete template](../../templates/plugin/manifest.json).
 
-## 顶层字段
+## Top-level fields
 
-| 字段 | 要求与默认值 |
+| Field | Requirements/default |
 | --- | --- |
-| `schemaVersion` / `apiVersion` | 必填，目前均为 `1` |
-| `id` | 必填，最多 80 字符；允许小写字母、数字、点、短横线、下划线；不能以点开头，禁止 `..`；脚手架要求字母/数字开头，推荐 `namespace.name` |
-| `name` / `author` | 必填且非空，各最多 120 字节 |
-| `version` | 必填，最多 64 字节，仅 ASCII 字母、数字和 `.-+`；建议完整 SemVer，声明关系时必须 SemVer |
-| `description` | 简介，默认空字符串；社区数据库要求最多 4096 字节 |
-| `details` / `changelog` | 详细说明/本版本变化，默认空字符串；分别最多 32768 / 16384 字节 |
-| `tags` | 标签字符串数组，默认空；最多 12 项，每项非空且最多 80 字节；用于搜索与筛选 |
-| `icon` | 可选，payload 内 PNG 路径；最大 1 MiB、1024×1024 |
-| `screenshots` | 默认空数组，最多 8 个 payload 内 PNG/JPEG 路径 |
-| `authorUrl` / `documentationUrl` / `homepage` | 可选 HTTP/HTTPS 地址，禁止 URL 内用户名密码 |
-| `downloadUrl` | 可选，固定版本 HTTPS 包下载地址；GitHub 数据库源码可省略，按仓库/版本/ID 拼接，社区登记的包内需补全；见发布指南 |
-| `publish` | 可选外部商店图片配置，见下文 |
-| `backend` / `lifecycle` / `ui` | 可选，配置后端、钩子和页面 |
-| `dependencies` / `optionalDependencies` / `conflicts` | 默认空对象，见关系参考 |
-| `exclusiveResources` | 默认空数组，禁止同时启用占用同名资源的插件 |
-| `files` | 必填对象，打包自动生成路径到 SHA256 的映射，最多 2048 个文件 |
+| `schemaVersion` / `apiVersion` | Required, currently both 1 |
+| `id` | Required, max 80 characters; lowercase letters/digits/dots/hyphens/underscores; no leading dot or `..`; the scaffold requires a letter/digit first; prefer `namespace.name` |
+| `name` / `author` | Required, nonempty, max 120 bytes each |
+| `version` | Required, max 64 bytes, ASCII letters/digits and `.-+` only; full SemVer recommended and required when declaring relationships |
+| `description` | Short summary, default empty; database registration limits it to 4096 bytes |
+| `details` / `changelog` | Full description/version changes, default empty; max 32768 / 16384 bytes respectively |
+| `tags` | String array, default empty; max 12 nonempty entries of at most 80 bytes each; search/filter tags |
+| `icon` | Optional payload PNG path, max 1 MiB and 1024×1024 |
+| `screenshots` | Default empty; up to eight payload PNG/JPEG paths |
+| `authorUrl` / `documentationUrl` / `homepage` | Optional HTTP/HTTPS links, no embedded credentials |
+| `downloadUrl` | Optional fixed-version HTTPS package URL; GitHub database source may omit it for repository/version/ID derivation, but community packages need the resolved URL; see publishing |
+| `publish` | Optional external store image configuration |
+| `backend` / `lifecycle` / `ui` | Optional backend/hooks/pages |
+| `dependencies` / `optionalDependencies` / `conflicts` | Default empty maps |
+| `exclusiveResources` | Default empty array; matching names prevent simultaneous enabling |
+| `files` | Required path-to-SHA256 map, generated during packaging, max 2048 files |
 
-旧 `category` 字段仅兼容读取，不再导出；新插件使用 `tags`。`downloadSha256` 是数据库源码登记专用的整包 SHA256，不能放入严格校验的包内清单。默认 GitHub Release 模式从附件 `digest` 读取整包哈希；自定义 HTTPS 地址需要填写源码专用哈希，打包时移除。省略源码 `downloadUrl` 时，社区登记会补全，但当前 `framely pack` 不会自动补全；[发布指南](publishing.md)提供临时清单命令。社区登记还有比本体严格的 ID、简介长度等校验，不能将本体校验通过等同于登记成功。
+Legacy `category` is accepted only for compatibility and no longer exported; use tags. `downloadSha256` is a database source-registration field for whole-package SHA256, not a package field. Default GitHub Releases use asset digests; custom HTTPS URLs require a declared source hash, removed before packaging. The database resolves omitted source `downloadUrl`, but current `framely pack` does not. See [publishing](publishing.md) for a temporary-Manifest command. Database IDs and description lengths have stricter constraints than core validation; passing the core does not guarantee registration.
 
-## `backend`
+## Backend
 
-| 字段 | 说明 |
+| Field | Meaning |
 | --- | --- |
-| `entry` | 必填，包内可执行入口，脚本需有效 shebang |
-| `args` | 默认空数组，最多 64 项，每项最多 4096 字节且无 NUL；每项是独立参数，不是 Shell 命令 |
-| `runAs` | `steamos`（默认）或 `root` |
-| `autostart` | 默认 false，按需启动；true 表示启动时常驻 |
-| `restart` | `on-failure`（默认）或 `never` |
-| `restartLimit` | 连续失败阈值 1–10，默认 3 |
-| `memoryLimitMiB` | 内存上限，默认 512 MiB；1–4294967295 的整数，不能用 0 或 null 取消限制 |
+| `entry` | Required executable payload entry; scripts need a valid shebang |
+| `args` | Default empty; at most 64 independent args, each ≤4096 bytes without NUL; not a shell command |
+| `runAs` | `steamos` (default) or `root` |
+| `autostart` | false by default for on-demand startup; true for resident startup |
+| `restart` | `on-failure` (default) or `never` |
+| `restartLimit` | Consecutive failure threshold 1–10, default 3 |
+| `memoryLimitMiB` | Memory limit, default 512 MiB; integer 1–4294967295, no 0/null for unlimited memory |
 
-省略 backend 可制作纯 UI 插件。系统/Python 第三方依赖不会自动安装。运行用户变化需用户确认，数据目录按运行身份区分，不自动迁移。
+Omit backend for UI-only plugins. System/third-party Python dependencies are not installed automatically. Runtime-user changes require confirmation and use separate data directories without automatic migration.
 
-`backend.memoryLimitMiB` 映射到 systemd 的 `MemoryMax`，限制后端及其所有子进程的合计内存；它是上限，不会预分配内存。独立生命周期钩子沿用该值，没有后端的钩子使用 512 MiB。安装计划、CLI 和已安装插件管理页展示上限。省略或填写 512 时打包省略该字段，保持旧包兼容；使用其他值需要支持此字段的新版宿主及插件数据库。
+`backend.memoryLimitMiB` maps to systemd `MemoryMax` for the combined memory of the backend and all its child processes. It is a ceiling, not a memory reservation. Independent lifecycle hooks inherit this limit; hooks without a backend use 512 MiB. The install plan, CLI and installed-plugin management view display the limit. Omitted or explicit 512 values are omitted when packing to preserve compatibility with older hosts; other values require a host and plugin database supporting this field.
 
-例如，为较长回放声明 2 GiB：
+For example, declare 2 GiB for a longer replay buffer:
 
 ```json
 {"backend": {"entry": "backend", "memoryLimitMiB": 2048}}
 ```
 
-## `ui`
+## UI
 
-`quickPage` 是可选包内页面 bundle 路径；`windows` 默认空对象，最多 8 个窗口，key 必须是合法 ID。每个窗口：
+Optional `quickPage` points to a payload bundle. `windows` defaults to an empty map with at most eight windows; keys must be valid IDs:
 
-| 字段 | 说明 |
+| Field | Meaning |
 | --- | --- |
-| `entry` / `title` | 必填；入口需在 payload；标题非空且最多 120 字节 |
-| `dockIcon` | 默认 false，true 为独立 Dock 窗口 |
-| `width` / `height` | 默认 1600×900；宽 640–2560，高 360–1440 |
-| `widthMeters` | 默认 3.0；有效值 0.4–4.0 米。源码可读取 null，但打包会省略，再读取采用默认 3.0 |
-| `localWeb` | 默认 false；特殊本机网页窗口由后端 `window.get` 提供 localhost URL |
+| `entry` / `title` | Required payload entry and nonempty title ≤120 bytes |
+| `dockIcon` | false by default; true creates a Dock window |
+| `width` / `height` | Default 1600×900; width 640–2560, height 360–1440 |
+| `widthMeters` | Default 3.0; finite 0.4–4.0 meters. Source null is accepted but omitted during packaging, then reads back as default 3.0 |
+| `localWeb` | false by default; specialized localhost windows obtain a URL from backend `window.get` |
 
-`localWeb` 只支持 Frame 本机打开，后端 `window.get` 参数为 `{window: key}`，返回 `{url: "http://localhost:<port>/framely-window/<key>"}`；不得有查询串、锚点或使用管理面板端口。它使用本机网页所需的不同 sandbox 标志。普通 React 插件无需 `localWeb`。窗口 key 与 `framely.windows.open(key)` 及注册的组件映射一致。尺寸在重新打开窗口时生效。
+`localWeb` opens on Frame only: backend `window.get` receives `{window: key}` and returns `{url: "http://localhost:<port>/framely-window/<key>"}` without query/fragment or the management port. It uses different sandbox flags for local web apps. Ordinary React plugins do not need `localWeb`. Match window keys to `framely.windows.open(key)` and component registration. Size changes apply when reopening.
 
-## `lifecycle`
+## Lifecycle
 
-`onInstall`、`onUpdate`、`onUninstall`、`onCrashCleanup` 是可选 `{entry, args?}` 独立命令；`onStart` / `onStop` 是默认 false 的布尔开关，需要 backend。`timeoutSeconds` 默认 10，范围 1–15 秒。`runAs` 可选，有后端时必须与后端一致，纯 UI 插件独立钩子可用它声明身份。独立命令的 `args` 限制与 backend 相同。执行时机、失败行为和上下文见[生命周期](../plugin-lifecycle.md)。
+`onInstall`, `onUpdate`, `onUninstall`, `onCrashCleanup` are optional independent `{entry, args?}` commands. `onStart` / `onStop` are booleans defaulting to false and require a backend. `timeoutSeconds` is 1–15, default 10. Optional `runAs` must match the backend when present and can specify identity for UI-only standalone hooks. Standalone command `args` have the same limits as backend args. See [lifecycle](../plugin-lifecycle.md) for timing, errors and context.
 
-## 发布资料与关系
+## Publication and relationships
 
-`publish.icon` 为 HTTPS 外部图标 URL，`publish.screenshots` 为最多 8 个 HTTPS 截图 URL。包内 `icon` 和 `screenshots` 是文件路径，不能混用。下载地址优先使用 `downloadUrl`，同版本内容必须保持不变。[发布指南](publishing.md)
+`publish.icon` is an external HTTPS icon, `publish.screenshots` contains up to eight external HTTPS images. Package `icon` and `screenshots` are paths; do not confuse them. Download URLs prefer `downloadUrl`; published versions must remain immutable. See [publishing](publishing.md).
 
-依赖值可为版本范围字符串，或 `{version, source}`；source 是 HTTPS `catalog.json` 地址。冲突值是版本范围。可选依赖缺失不阻止安装，独占资源只按作者声明校验。[依赖与冲突](../plugin-relationships.md)
+Dependencies use ranges or `{version, source}`, with source pointing to an HTTPS catalog. Conflicts use ranges. Missing optional dependencies do not prevent installation; exclusive resources rely on author declarations. See [relationships](../plugin-relationships.md).
 
-清单 JSON 最大 256 KiB，载荷路径最多 512 字节。载荷路径仅允许 ASCII 字母、数字及 `/._-+`，禁止绝对路径、空段、`.`、`..`、软链接和未声明的附加包文件。清单通过校验后，运行权限仍需用户判断；文件哈希不代表插件安全审核。
+Manifest JSON is limited to 256 KiB and payload paths to 512 bytes. Payload paths allow ASCII letters/digits and `/._-+` only. Absolute paths, empty segments, `.`/`..`, symlinks and undeclared archive files are forbidden. Successful validation is not a safety review; users still assess runtime privileges.

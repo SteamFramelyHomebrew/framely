@@ -1,24 +1,24 @@
-# 发布插件与插件源
+# Publish plugins and catalogs
 
-[English](../en/developer-guide/publishing.md)
+[简体中文](../zh-CN/developer-guide/publishing.md)
 
-[文档首页](../README.md) · [开发全流程](README.md)
+[Documentation](../README.md) · [Development workflow](README.md)
 
-## GitHub Release 默认地址
+## Default GitHub Release URL
 
-公开 GitHub 插件仓库的**源码 `manifest.json` 可以省略 `downloadUrl`**。社区数据库从登记的仓库地址、版本和插件 ID 自动生成：
+A public GitHub plugin repository's **source `manifest.json` may omit `downloadUrl`**. The community database derives it from the registered repository, version and plugin ID:
 
 ```text
 https://github.com/<owner>/<repo>/releases/download/v<version>/<id>-<version>.framely
 ```
 
-例如仓库 `yourname/my-plugin`、ID `yourname.my-plugin`、版本 `0.1.0` 对应标签 `v0.1.0` 和附件 `yourname.my-plugin-0.1.0.framely`。仓库名不必与 ID 相同。必须真正省略字段；空字符串或 null 不表示自动生成。不要使用 `latest`，不要替换同版本附件。
+Repository `yourname/my-plugin`, ID `yourname.my-plugin`, version `0.1.0` means tag `v0.1.0` and asset `yourname.my-plugin-0.1.0.framely`. Repository names need not match IDs. Omit the field entirely; empty strings or null do not select automatic generation. Avoid `latest` and never replace same-version assets.
 
-源码登记与打包有一项区别：数据库会补全源码清单的下载地址，并要求**包内清单含相同的最终 `downloadUrl`**。当前 `framely pack` 只计算载荷哈希，不读取 Git remote、不自动拼接 Release URL。若源码省略该字段，打包前生成临时清单；无需把地址手写回源码。
+Source registration and packaging differ: the database normalizes the source URL and requires **the same final `downloadUrl` in the packaged Manifest**. Current `framely pack` computes payload hashes but does not inspect Git remotes or derive Release URLs. If your source omits the field, prepare a temporary Manifest before packaging; you do not need to write the URL back into source.
 
-## 生成发布包
+## Prepare the release package
 
-先按[开发流程](README.md)创建插件、执行 `npm run build`，在自己的插件 Git 仓库配置正确的 GitHub `origin`。以下命令在插件目录执行，从源码生成 `.framely-build/manifest.json`，支持 HTTPS、SSH 两种常用 remote 写法；已有显式 `downloadUrl` 会保留，源码不会改写：
+Follow the [development workflow](README.md), run `npm run build`, and configure the plugin repository's GitHub `origin`. Run this inside your plugin to create `.framely-build/manifest.json`. It supports common HTTPS/SSH remotes, preserves explicit `downloadUrl`, and leaves source unchanged:
 
 ```bash
 python3 - <<'PY'
@@ -48,7 +48,7 @@ print(manifest['downloadUrl'])
 PY
 ```
 
-`.framely-build/` 是临时输出，应加入插件 `.gitignore`。模板已忽略它。包名必须与默认规则一致；在插件目录继续执行：
+Ignore temporary `.framely-build/` in your plugin Git repository; the template already does so. Asset filenames must match the default rule. Continue inside your plugin:
 
 ```bash
 FRAMELY_REPO=/absolute/path/to/framely
@@ -59,42 +59,42 @@ cargo run --manifest-path "$FRAMELY_REPO/Cargo.toml" --locked -- pack --manifest
 cargo run --manifest-path "$FRAMELY_REPO/Cargo.toml" --locked -- verify "dist/$PLUGIN_ID-$PLUGIN_VERSION.framely"
 ```
 
-提交源码、SDK、锁文件和许可证，将该提交标记为 `v<version>`；创建对应 GitHub Release，上传 `dist/` 内的 `.framely`，并公开 Release。包内清单和源码登记清单在补全默认地址、去掉源码专用字段后应一致。用于登记的 submodule 必须指向这个实际发布版本的源码提交。
+Commit source, SDK, lockfile and license; tag that commit `v<version>`, create its GitHub Release, upload the `.framely` from `dist/`, and publish. Source and packaged declarations must match after normalizing the default URL and removing registration-only fields. Pin database submodules to the actual released source commit.
 
-发行说明包含功能和使用方法、运行用户及 root 的原因、依赖、变化、实际 Frame 测试和已知限制。提供与包匹配的源码和构建脚本，遵守模板、SDK及依赖许可证。
+Release notes describe usage, runtime user and reasons for root, dependencies, changes, actual Frame tests and limitations. Provide matching source/build scripts and comply with template, SDK and dependency licenses.
 
-### 整包哈希与自定义地址
+### Whole-package hashes and custom URLs
 
-| 方式 | 源码登记 | 校验的预期整包哈希 |
+| Method | Source registration | Expected whole-package hash |
 | --- | --- | --- |
-| 默认 GitHub Release | 省略 `downloadUrl`；标签和附件遵守上述命名 | 从对应 Release 附件的 `digest` 读取 SHA256，无需手写 |
-| 显式固定 GitHub Release | 填 `downloadUrl`，可改变标签或附件名 | 未提供 `downloadSha256` 时读取 Release digest；显式提供时以该哈希校验 |
-| 其他 HTTPS 下载地址 | 填 `downloadUrl` 和 `downloadSha256` | 使用源码登记中声明的 64 位整包 SHA256 |
+| Default GitHub Release | Omit `downloadUrl`; use the tag/asset naming above | Read SHA256 from the Release asset `digest`; no handwritten hash needed |
+| Explicit fixed GitHub Release | Set `downloadUrl` to choose a different tag/asset name | Read Release digest if `downloadSha256` is absent; otherwise validate against the declared hash |
+| Other HTTPS download | Set `downloadUrl` and `downloadSha256` | Use the declared 64-character whole-package SHA256 |
 
-自动地址模式即使另填 `downloadSha256`，也必须与 Release digest 相同。缺少 Release digest、附件未公开、无法下载或哈希不符会阻止登记，不会退回到信任刚下载的文件。
+Automatic URLs always require a Release digest, even when a hash is supplied, and both must match. Missing digests, unpublished/missing assets, download failures or hash mismatches block registration; there is no fallback to trusting the downloaded bytes.
 
-`downloadSha256` 只属于数据库源码登记，指完整 `.framely` 的哈希；不是载荷的 `files` 哈希，也不是 Framely 包内字段。先生成包，执行 `sha256sum dist/<id>-<version>.framely`，再把结果写入源码登记。打包必须移除它，上面的临时清单命令已处理；不要向包内写入自身哈希。直接给 `framely pack` 传含此字段的源码清单会被未知字段校验拒绝。
+`downloadSha256` belongs only to database source registration, covers the complete `.framely`, and differs from payload `files` hashes. It is not a Framely package field. Build first, run `sha256sum dist/<id>-<version>.framely`, then add it to source registration. Remove it before packaging, as the temporary-Manifest command does. Do not embed a package's own hash inside it. Passing source containing this field directly to `framely pack` fails unknown-field validation.
 
-### 图标与窗口兼容
+### Icons and window compatibility
 
-社区数据库的图标通常只需顶层 `icon: "icon.png"`：同一路径 PNG 同时提交到源码仓库和 `payload/`。数据库从登记的仓库、固定提交及路径生成 GitHub Raw 地址，并下载比较包内图标；不需要额外填写 `publish.icon`。自行托管目录的图片由 `publish.icon` / `publish.screenshots` 提供固定 HTTPS 地址。[商店资料参考](../plugin-development.md#商店资料与图标)
+For the community database, set top-level `icon: "icon.png"` and include the same PNG path in source and payload. The database derives a GitHub Raw URL from the pinned repository/commit/path and verifies it against the packaged icon; `publish.icon` is unnecessary. Self-hosted catalogs use fixed HTTPS `publish.icon` / `publish.screenshots`. See [store metadata](../plugin-development.md).
 
-社区数据库支持窗口 `entry`、`title`、`dockIcon`、`localWeb`、`width`、`height`、`widthMeters`。像素宽度为整数 640–2560，高度为整数 360–1440，物理宽度按本体 float32 规则校验 0.4–4.0 米。源码省略尺寸时，数据库会按 1600×900、3 米补全，与 pack 输出一致；自定义尺寸也会参与源码和包内清单比较，未声明的变化会被拒绝。模板包含的默认独立窗口已通过实际打包和数据库校验；登记仍需完成整包哈希、归属及其他字段检查。
+The community database supports window `entry`, `title`, `dockIcon`, `localWeb`, `width`, `height`, `widthMeters`. Pixel width is an integer 640–2560, height an integer 360–1440, and physical width follows the core's float32 validation for 0.4–4.0 meters. Omitted dimensions normalize to 1600×900 and 3 meters, matching pack output. Custom dimensions participate in source/package comparison; undeclared changes are rejected. The template's default standalone window passed actual packaging and database validation. Registration still requires whole-package hash, ownership and other field checks.
 
-## 方式一：自行托管插件源
+## Option 1: host your own catalog
 
-自托管不要求社区登记，也不要求 GitHub Release digest。可以省略包内 `downloadUrl`，由 `framely catalog` 使用 `--base-url` 与实际包文件名拼接；填写时优先采用包内地址。若包名来自默认 GitHub 规则，按前述方式发布即可。
+Self-hosting requires neither community registration nor GitHub Release digests. You may omit packaged `downloadUrl`: `framely catalog` joins `--base-url` with the actual archive filename. Explicit package URLs take precedence. For default GitHub names, use the workflow above.
 
-把要保留的各版本 `.framely` 放入 `packages/`，在 Framely 仓库执行：
+Put all versions to retain in `packages/`. From the Framely repository:
 
 ```bash
 mkdir -p target/plugin-catalog
-cargo run --locked -- catalog --name '我的插件源' --base-url https://example.org/packages --packages ./packages --output ./target/plugin-catalog/catalog.json
+cargo run --locked -- catalog --name 'My source' --base-url https://example.org/packages --packages ./packages --output ./target/plugin-catalog/catalog.json
 ```
 
-将 `example.org` 换成实际 HTTPS 地址。CLI 计算完整包的 SHA256并生成 JSON，不上传包、不复制图片。没有外部 `publish.icon` 时，本地 CLI 不会把包内图标转换成商店 URL。
+Replace `example.org` with your HTTPS address. The CLI computes whole-package SHA256 and generates JSON; it does not upload packages or copy images. Without external `publish.icon`, the local CLI does not convert a packaged icon into a store URL.
 
-**上传整个生成目录，不能只上传 `catalog.json`：**
+**Upload the entire generated directory, not only `catalog.json`:**
 
 ```text
 catalog.json
@@ -103,15 +103,15 @@ plugins/
     versions.json
 ```
 
-主目录每个 ID 一条推荐最新版；历史条目在相对 `plugins/<ID>/versions.json`，不包含主目录当前条目。每次生成需提供要保留的所有版本，本地 CLI 不合并之前的历史。社区数据库会延续之前发布的历史，当前每插件最多保留 19 个历史条目。不要混淆两种工具的保留规则。
+The main catalog has one recommended entry per ID. Relative `plugins/<ID>/versions.json` contains historical entries, excluding the current main entry. Supply every retained version each time; the CLI does not merge prior history. The community database does preserve previous history, currently up to 19 historical entries per plugin. These retention rules differ.
 
-将目录放在 HTTPS 静态服务，用户添加完整 `catalog.json` URL；各条目指向的包和图片也必须可访问。多个渠道可再发布[源订阅文件](../source-subscriptions.md)。
+Host the catalog over HTTPS and share its full `catalog.json` URL. Package/image URLs must also be reachable. Multiple channels may use a [source subscription](../source-subscriptions.md).
 
-## 方式二：登记社区数据库
+## Option 2: register in the community database
 
-登记入口为 [framely-plugin-database](https://github.com/SteamFramelyHomebrew/framely-plugin-database)，具体规则以其 [CONTRIBUTING.md](https://github.com/SteamFramelyHomebrew/framely-plugin-database/blob/testing/CONTRIBUTING.md) 和当前校验器为准。源码根目录须有 `manifest.json`，作者 Release 及附件须先公开，登记使用 Git submodule 固定提交；数据库不镜像包或证明源码与二进制可复现一致。
+Use [framely-plugin-database](https://github.com/SteamFramelyHomebrew/framely-plugin-database) and its current [CONTRIBUTING.md](https://github.com/SteamFramelyHomebrew/framely-plugin-database/blob/testing/CONTRIBUTING.md)/validator. Plugin roots require `manifest.json`. Publish the author's Release/assets first, then register pinned Git submodule commits. The database does not mirror packages or establish reproducible source/binary equivalence.
 
-首次登记：先 fork 数据库，使用自己 fork 的同名 `testing` 分支：
+Fork the database and use your fork's matching `testing` branch:
 
 ```bash
 git clone --branch testing https://github.com/yourname/framely-plugin-database.git
@@ -123,11 +123,11 @@ git commit -m 'Add yourname.my-plugin 0.1.0'
 git push origin testing
 ```
 
-向上游 `testing` 提交 PR，附实际 Frame 测试记录。只改 `.gitmodules` 与 `plugins/<ID>` 的 submodule 固定提交，其他文件变更不会走登记自动合并。
+Open a PR to upstream `testing` with actual Frame test records. Change only `.gitmodules` and `plugins/<ID>` submodule pins; ordinary file changes do not qualify for registration auto-merge.
 
-数据库 ID 要求 `namespace.name`：小写字母和数字，名称部分可带点、连字符；它比本体 ID 校验严格。路径必须是 `plugins/<ID>`，仓库必须是公开 GitHub 仓库。首次登记确认仓库归属和作者维护权限；命名空间绑定 GitHub 所有者数字 ID，每个所有者最多五个历史前缀，删除插件不释放归属。已登记 ID 不能换源仓库。协作者需要可验证的 write/maintain/admin 权限，不能以 manifest 的 `author` 或 Git 提交作者替代。[完整归属规则](https://github.com/SteamFramelyHomebrew/framely-plugin-database/blob/testing/CONTRIBUTING.md#插件归属与自动合并)
+Database IDs use `namespace.name`, lowercase letters/digits and dots/hyphens in the name, stricter than core IDs. Paths must be `plugins/<ID>` and source repositories public GitHub repositories. Initial registration verifies ownership and maintenance permission. Namespaces bind to GitHub owner numeric IDs; each owner may reserve at most five historical prefixes, and removal does not release ownership. Registered IDs cannot change source repositories. Collaborators require verifiable write/maintain/admin permission; Manifest authors or Git commit authors do not establish permission. See [full ownership rules](https://github.com/SteamFramelyHomebrew/framely-plugin-database/blob/testing/CONTRIBUTING.md#插件归属与自动合并).
 
-更新登记：
+Update registration:
 
 ```bash
 git -C plugins/yourname.my-plugin fetch --tags
@@ -137,8 +137,8 @@ git commit -m 'Update yourname.my-plugin to 0.2.0'
 git push origin testing
 ```
 
-stable 对应数据库 `main`，testing 对应 `testing`。自动合并要求 `testing → testing` 或 `main → main`，跨渠道 PR 留给人工处理。测试后按数据库规则提升到稳定渠道；`publish` 是生成分支，不提交插件变更。
+Stable corresponds to `main`, testing to `testing`. Auto-merge requires `testing → testing` or `main → main`; cross-channel PRs require manual handling. Promote after tests under database rules. `publish` is generated, not a target for plugin changes.
 
-## 发布后验证
+## Verify publication
 
-检查用户实际能访问的包、目录、图标、历史选择、确认安装、更新及数据保留。只有本体 `verify` 通过还不够，登记还须通过数据库对源码、整包哈希和字段的检查。后续按“提升版本 → 重新生成临时清单 → 构建打包 → 实机测试 → 新 Release → 更新固定登记”发布；不要覆盖旧附件。
+Check public packages/catalogs/icons/history, installation confirmation, updates and retained data. Core `verify` alone is insufficient: registration must pass database source, whole-package hash and field checks. For updates: bump version → regenerate temporary Manifest → build/package → device test → new Release → update the source pin. Never overwrite old assets.

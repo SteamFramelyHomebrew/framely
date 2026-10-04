@@ -1,26 +1,26 @@
-# 插件源订阅（Framely 0.4）
+# Plugin source subscriptions
 
-[English](en/source-subscriptions.md)
+[简体中文](zh-CN/source-subscriptions.md)
 
-在管理窗口“插件源 → 源订阅”粘贴 HTTPS JSON 地址，预览后确认添加：
+In Sources → Source subscriptions, paste an HTTPS JSON URL, preview and confirm:
 
 ```json
 {
   "schemaVersion": 1,
-  "name": "Framely 社区源",
+  "name": "Community sources",
   "sources": [
-    {"id":"stable", "name":"社区稳定版", "url":"https://example.org/stable/catalog.json"},
-    {"id":"testing", "name":"社区测试版", "url":"https://example.org/testing/catalog.json"}
+    {"id":"stable", "name":"Stable", "url":"https://example.org/stable/catalog.json"},
+    {"id":"testing", "name":"Testing", "url":"https://example.org/testing/catalog.json"}
   ]
 }
 ```
 
-每个源 id 在订阅内唯一且稳定，用于识别地址变更。禁止重复 URL、嵌套订阅、HTTP、带认证信息的 URL，最多 100 个源、512 KiB；每台设备最多 20 个订阅、200 个插件源。目录、包、图片继续由各源或作者托管，订阅只聚合目录地址。
+Source IDs must remain stable and unique within a subscription. Duplicate URLs, nested subscriptions, HTTP or credential-bearing URLs are forbidden. Limits: 100 sources/512 KiB per subscription, 20 subscriptions/200 sources per device. Subscriptions aggregate catalog URLs, not packages or images.
 
-默认每天自动刷新，也可关闭自动刷新或立即刷新。自动检查在 Framely 会话运行期间进行，启动后检查到期项；支持 ETag/Last-Modified 和最多五次 HTTPS 重定向。离线/失败保留已持久化的上次成功源列表，记录错误，按一分钟起的指数退避重试，最多一天。
+Automatic refresh defaults to daily and can be disabled or triggered manually. The running session checks due entries at startup, uses ETag/Last-Modified, and follows at most five HTTPS redirects. Failures preserve persisted source lists and retry with exponential backoff from one minute up to one day.
 
-新增源自动纳入；名称自动更新。相同 id 的 URL 改变时保留旧地址，显示待确认变更，确认后才采用新地址。刷新订阅后同时刷新插件目录。目录缓存沿用会话内缓存，重启后的离线商店不保证有目录缓存。
+New sources join automatically; names update. URL changes keep the old address until confirmed. Refreshing also refreshes catalogs. Catalog caches are session-local; offline catalogs after restart are not guaranteed.
 
-目录 URL 规范化后去重，一个源可由多个订阅和手动添加共同引用。删除订阅或移除订阅中的源只移除对应引用；没有任何引用才从源列表移除。已安装插件、来源记录和数据保留，不静默切换来源。
+Canonical URLs deduplicate references from subscriptions and manual additions. Removing a subscription/source removes only its reference; sources disappear only without references. Installed plugins, origins and data remain; origins do not silently switch.
 
-可在插件源列表单独停用源，刷新不会重新开启；即使移除后又加入同一 URL，也保留停用偏好。订阅源的 URL 在待确认变更中管理。刷新只更新源列表、商店资料和更新提示，不自动安装、更新或启用插件。
+Disabled preferences persist across refresh/removal/readdition. Manage subscription URL changes through pending changes. Refreshing changes source metadata and update hints, never automatically installs, updates or enables plugins.

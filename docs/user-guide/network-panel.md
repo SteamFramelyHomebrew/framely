@@ -1,37 +1,37 @@
-# 网络管理面板
+# Network management panel
 
-[English](../en/user-guide/network-panel.md)
+[简体中文](../zh-CN/user-guide/network-panel.md)
 
-[文档首页](../README.md) · [插件安装](plugins.md)
+[Documentation](../README.md) · [Plugin installation](plugins.md)
 
-## 找到地址
+## Find the address
 
-网络面板默认开启，监听 IPv4 端口 `15915`，不依赖 SteamVR 正在运行。手机/电脑与 Frame 连接同一网络，在浏览器打开：
+The panel is enabled by default on IPv4 port `15915` and does not require SteamVR to run. Connect your phone/computer to Frame's network and open:
 
 ```text
-http://设备IP:15915
+http://DEVICE_IP:15915
 ```
 
-管理窗口“设置 → 网络管理面板”显示设备当前 IP 和完整地址，也可在桌面安装器连接设备后使用网络面板入口。没有检测到 IP 时先检查 Wi-Fi/网线；端口被占用时设置中会提示错误。
+Settings → Network panel shows current IP addresses and full URLs. The desktop installer also provides an entry after connecting. If no IP is detected, check Wi-Fi/Ethernet. Port conflicts are reported in settings.
 
-## 首次设置密码
+## First password setup
 
-尚未配置访问密码时，首次访问只显示设置页面，不能进入管理 API。输入至少 8 个字符的密码并再次确认，保存后使用该密码登录。密码设置可以先于用户协议确认；登录后仍需阅读并同意协议才能管理插件。
+With no configured password, first access shows setup only and does not expose management APIs. Enter at least eight characters and confirm the password, save, then log in. Password setup may precede terms acceptance; consent is still required to manage plugins.
 
-密码以带随机盐的 PBKDF2 哈希保存，重启保留，不会在界面中回显。首次设置入口不能覆盖已有密码。网络面板密码和设备 SSH/sudo 密码相互独立。
+A randomly salted PBKDF2 hash is stored, survives reboot, and is not displayed by the UI. Unauthenticated setup cannot overwrite an existing password. The panel password is independent of SSH/sudo credentials.
 
-后续在已登录的设置页面修改密码，或从设备原生界面修改。忘记密码时优先从 Frame 的原生管理窗口设置新密码。已有版本的密码保留；用户已明确关闭密码验证且已有密码记录的配置保持其选择。网络面板使用 HTTP，请只在可信网络使用，不要把端口直接转发到公网。
+Change passwords from authenticated settings or the device's native manager. If forgotten, prefer changing it from Frame's native window. Existing passwords are retained; a previously configured password with verification explicitly disabled retains that choice. The panel uses HTTP: use a trusted network and do not forward the port directly to the public internet.
 
-## 可以做什么
+## Available operations
 
-登录后可以管理来源和订阅、浏览商店、导入本地插件包、确认安装、启停插件、修改设置及检查本体更新。插件后端始终运行在 Frame，上传本地包只是从手机/电脑把文件传到设备。
+Manage sources and subscriptions, browse the store, upload local packages, confirm installation, enable/disable plugins, change settings and check device updates. Backends always run on Frame; uploading a file transfers it from your phone/computer.
 
-VR 窗口、手柄振动和 SteamVR 虚拟键盘需要头显端验收；浏览器无法替代这些设备交互。部分外部链接由设备默认浏览器打开。
+VR windows, controller vibration and SteamVR keyboard need headset validation; a browser cannot replace those interactions. Some external links open in the device's default browser.
 
-## 更改端口、关闭与登录过期
+## Port changes, shutdown and expired sessions
 
-在“设置 → 网络管理面板”修改端口或开关，保存后生效。修改认证设置或密码会使旧登录会话失效；端口改变后访问新的地址，关闭面板后网络连接断开。本机原生界面不因此关闭。
+Change the port or switch in Settings → Network panel. Password/authentication changes invalidate old sessions; use the new address after a port change. Turning the panel off disconnects web access without closing the native manager.
 
-会话服务重启也会使旧登录失效，需要重新登录。保存完全相同的设置不会撤销当前会话。错误密码验证有速率限制，提示尝试过多时稍后再试。
+Restarting the session service also invalidates old logins. Saving identical settings retains the session. Incorrect password checks are rate-limited; retry later when asked.
 
-无法访问时检查设备 IP 是否变化、两台设备是否处于可互通的网络、面板是否开启以及端口是否正确。设置/密码保存在 `/home/.framely/state`，卸载本体保留这些状态，重装后可能仍需原密码。
+If unreachable, check changing device IPs, network reachability, enabled state and port. Settings and passwords live in `/home/.framely/state` and are retained by uninstall; reinstalling may still require the old password.

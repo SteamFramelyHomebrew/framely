@@ -11,7 +11,7 @@ npm run build
 bash tools/build-native.sh "$cef"
 binary=${CARGO_TARGET_DIR:-target}/release/framely
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-build_id="$version-$(find "$binary" target/native ui/dist sdk templates/plugin examples/showcase packaging tools docs assets/branding README.md README.en.md LICENSE -type f ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)"
+build_id="$version-$(find "$binary" target/native ui/dist sdk templates/plugin examples/showcase packaging tools docs assets/branding README.md README.zh-CN.md LICENSE -type f ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)"
 stage="$base/release/framely-$build_id"
 [[ ! -e $stage ]] || { echo 'Release already exists.' >&2; exit 1; }
 mkdir -p "$stage"/{bin,lib/cef,lib/openvr,share/ui,share/licenses,tools}
@@ -29,7 +29,7 @@ cp native/vendor/openvr/LICENSE "$stage/share/licenses/openvr.txt"
 [[ ! -f $cef/CREDITS.html ]] || cp "$cef/CREDITS.html" "$stage/share/licenses/cef-credits.html"
 cp native/vendor/json.hpp "$stage/share/licenses/nlohmann-json.hpp"
 cp packaging/*.sh "$stage/"
-cp README.md README.en.md "$stage/"
+cp README.md README.zh-CN.md "$stage/"
 mkdir -p "$stage/assets"
 cp -a assets/branding "$stage/assets/"
 cp LICENSE "$stage/LICENSE"

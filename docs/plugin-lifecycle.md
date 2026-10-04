@@ -1,23 +1,16 @@
-# 插件生命周期
+# Plugin lifecycle
 
-[English](en/plugin-lifecycle.md)
+[简体中文](zh-CN/plugin-lifecycle.md)
 
-生命周期由 root 核心服务调度，但钩子使用插件声明的运行身份；省略身份为 `steamos`。有后端时，独立钩子与后端身份必须一致；纯 UI 插件可在 `lifecycle.runAs` 声明身份，安装时展示运行用户。
+Lifecycle is scheduled by the root core, but hooks run as the plugin's declared user, defaulting to `steamos`. Standalone hooks must match backend identity. UI-only plugins can set `lifecycle.runAs` for standalone commands; users see this identity during installation.
 
 ```json
 {
-  "backend": {
-    "entry": "backend.py",
-    "runAs": "steamos",
-    "autostart": false,
-    "restart": "on-failure",
-    "restartLimit": 3
-  },
+  "backend": {"entry": "backend.py", "runAs": "steamos", "autostart": false, "restart": "on-failure", "restartLimit": 3},
   "lifecycle": {
     "onInstall": {"entry": "backend.py"},
     "onUpdate": {"entry": "backend.py"},
-    "onStart": true,
-    "onStop": true,
+    "onStart": true, "onStop": true,
     "onUninstall": {"entry": "backend.py"},
     "onCrashCleanup": {"entry": "backend.py", "args": ["--cleanup"]},
     "timeoutSeconds": 10
@@ -25,22 +18,20 @@
 }
 ```
 
-所有钩子可省略。独立命令的 entry 必须是包内文件并包含在 files 哈希清单；不能指定 shell 字符串或包外路径。没有为插件增加身份或网络权限。timeoutSeconds 为 1–15 秒，默认 10 秒，每个钩子分别计时。
+All hooks are optional. Command entries must be hashed payload files, never shell strings or outside paths. Hooks do not introduce extra network/identity permissions. Timeouts are per hook, 1–15 seconds, default 10.
 
-| 钩子 | 执行时机与方式 |
+| Hook | Timing and execution |
 | --- | --- |
-| onInstall | 第一次安装，新版本激活前执行独立命令 |
-| onUpdate | 更新或回退，停止旧后端后、新版本激活前执行目标版本的独立命令 |
-| onStart | 启动后端后发送 `framely.lifecycle.start` RPC，成功后才接受业务调用 |
-| onStop | 禁用、重启、更新、回退、卸载和管理器正常退出时，停止进程前发送 `framely.lifecycle.stop` RPC |
-| onUninstall | 停止后端后、删除包前执行独立命令 |
-| onCrashCleanup | 异常退出、信号、OOM、调用超时或初始化失败后，由独立进程执行清理 |
+| `onInstall` | Standalone command before first activation |
+| `onUpdate` | Target version's command after stopping the old backend, before activation; includes downgrades |
+| `onStart` | `framely.lifecycle.start` RPC after backend launch, before business calls |
+| `onStop` | `framely.lifecycle.stop` before process termination during disabling, restart, updates, uninstall or normal manager shutdown |
+| `onUninstall` | Standalone command after stopping backend, before removing payload |
+| `onCrashCleanup` | Standalone cleanup after crashes, signals, OOM, timeouts or initialization failure |
 
-关闭快捷菜单或大窗口只卸载对应 React 页面，不停止后端。React effect 清理仍用于页面订阅、预览租约等；不能替代后端生命周期。按需启动与 autostart 是启动时机，restart 是已经启动后发生失败的恢复策略。
+Closing UI unmounts React, not the backend. Effects clean page subscriptions/leases, not backend resources. On-demand/autostart determines startup timing; restart policy handles failures after startup.
 
-## 上下文与 SDK
-
-所有回调收到以下上下文：
+## Context and SDK
 
 ```ts
 interface LifecycleContext {
@@ -54,42 +45,42 @@ interface LifecycleContext {
 }
 ```
 
-独立命令读取 `FRAMELY_LIFECYCLE` 与 JSON 编码的 `FRAMELY_LIFECYCLE_CONTEXT`。所有后端与命令均有 `FRAMELY_PLUGIN_ID`、`FRAMELY_PLUGIN_VERSION`、`FRAMELY_DATA_DIR` 及对应身份 HOME。独立命令 stdout/stderr 是日志，退出码 0 表示成功；后端钩子按普通 JSON 行协议回复 result 或 error。`framely.lifecycle.*` 为核心服务保留，插件业务 API 不能调用。
+Standalone commands read `FRAMELY_LIFECYCLE` and JSON `FRAMELY_LIFECYCLE_CONTEXT`. Backends and commands receive `FRAMELY_PLUGIN_ID`, `FRAMELY_PLUGIN_VERSION`, `FRAMELY_DATA_DIR` and the runtime user's HOME. Standalone stdout/stderr are logs; exit 0 means success. Backend hooks reply with result/error. Pages cannot call reserved `framely.lifecycle.*` methods.
 
-Python SDK 位于 `@framely/sdk/python`，构建时复制为载荷中的 `framely.py`，不需额外 pip 依赖：
+The Python helper is copied from `@framely/sdk/python` into `framely.py`, without extra pip dependencies:
 
 ```python
 from framely import serve
 
 def initialize(context):
-    # 可重复执行；仅操作本插件的数据和资源。
-    return {"ready": True}
+    # Keep operations repeatable and limited to this plugin's resources.
+    return {'ready': True}
 
 def cleanup(context):
-    return {"cleaned": True}
+    return {'cleaned': True}
 
 def dispatch(method, params):
-    return {"ok": True}
+    return {'ok': True}
 
 serve(dispatch, {
-    "onInstall": initialize, "onUpdate": initialize,
-    "onStart": initialize, "onStop": cleanup,
-    "onUninstall": cleanup, "onCrashCleanup": cleanup,
+    'onInstall': initialize, 'onUpdate': initialize,
+    'onStart': initialize, 'onStop': cleanup,
+    'onUninstall': cleanup, 'onCrashCleanup': cleanup,
 })
 ```
 
-SDK 检测独立钩子环境时只执行相应回调并退出，不进入 RPC 循环。TypeScript 后端可从 `@framely/sdk/lifecycle` 导入 `registerLifecycle` 和类型，将保留方法交给返回的 dispatcher；它不负责启动进程或实现 JSON 行传输。网页侧 SDK 也导出上下文类型，但不提供后端运行权限。
+With a standalone hook environment, the helper calls that hook and exits instead of entering RPC. TypeScript backends can use `registerLifecycle` from `@framely/sdk/lifecycle` in their existing dispatcher; it does not provide process launch or JSON-line transport. Page exports include context types, not backend privileges.
 
-## 失败、清理与恢复
+## Failure, cleanup and recovery
 
-安装或更新的命令钩子失败时不激活新版本。若安装/更新当时需要启动后端（常驻或原本在运行），初始化失败也恢复原版本与 current 链接；初次安装则撤销安装。按需插件首次安装通常只执行 onInstall，onStart 在首次打开页面/业务调用等实际启动时执行；此时失败走启动恢复，不会追溯撤销之前已完成的安装。回退的初始化失败时恢复回退前的版本。文件版本可恢复，数据迁移和设备操作无法自动撤销：迁移应可重复执行、采用备份/临时文件与原子替换，并保持上一版本能读取数据。
+Failed install/update commands prevent activation. If installation/update starts a backend immediately (resident or previously running), failed initialization restores the previous version/current link; first installation is undone. First installation of an on-demand plugin normally runs onInstall only. Its onStart runs when a page opens or a business call starts the backend; failure then follows startup recovery, without undoing a previously completed installation. Failed downgrade initialization restores the version used before downgrade. Files can be restored, but migrations and hardware operations cannot be automatically reversed. Make migrations repeatable, use backups/temporary files/atomic replacement, and retain compatibility with the preceding version.
 
-onStop 失败或超时会记录错误，仍会停止整个插件进程组。崩溃后先关闭该插件的窗口、通知，再执行 onCrashCleanup；清理失败不会阻止错误记录或后续恢复。崩溃清理必须是独立命令，无法依赖已经崩溃进程里的内存、析构器或回调。确认资源属于本插件后再删除；不要重启 SteamVR 或删除其他插件的文件。
+Failed/timed-out `onStop` is logged but the process group is still stopped. Crashes close plugin windows/notifications before standalone cleanup; cleanup failure does not suppress errors or future recovery. Cleanup must not depend on crashed memory or destructors. Remove owned resources only; do not restart SteamVR or delete other plugins' files.
 
-onUninstall 失败保留插件并展示错误，用户可重试或选择强制卸载。强制卸载仍尝试有超时限制的清理，随后移除插件包；用户数据默认保留，仅 purge 删除。强制卸载不能保证外部设备设置已还原。
+Failed `onUninstall` retains the plugin and allows retry or explicit force removal. Force still attempts bounded cleanup and removes the payload afterward; data remains unless the core's explicit purge option is used. It cannot guarantee restoration of external settings.
 
-restart 默认为 on-failure；never 只记录失败，不自动重启。restartLimit 默认为 3，范围 1–10，达到连续失败阈值后停用；失败计数在后端稳定运行 60 秒后重置。重试等待为 1、2、4、8、16、32 秒，最多 32 秒。正常自主退出（退出码 0）不重启；管理器主动停止也不计入失败。退出码、信号、systemd OOM 和调用超时记录在状态与日志中。
+Restart defaults to `on-failure`; `never` reports failure without retrying. Limits are 1–10, default 3 consecutive failures, reset after 60 seconds stable operation. Delays are 1, 2, 4, 8, 16, 32 seconds, capped at 32. Exit 0 and manager-directed stops do not count as failures. Exit codes, signals, systemd OOM and timeouts appear in status/logs.
 
-状态包含 starting、running、stopping、stopped、recovering、failed 等阶段，并发管理操作沿核心服务的串行调度执行。管理器正常 SIGTERM/SIGINT 会尝试逐个停止插件；强制终止、断电不能保证任何钩子执行。清理应同时可在下次启动时安全恢复。
+States include starting/running/stopping/stopped/recovering/failed. Core management is serialized. Normal SIGTERM/SIGINT attempts to stop plugins; forced termination or power loss cannot guarantee hooks. Support safe recovery on next startup.
 
-日志页面合并展示后端日志与 lifecycle 日志；每种日志保留当前 2 MiB 与上一份。安装失败且插件尚未登记时，可从 `/var/lib/framely/logs/<id>.lifecycle.log` 查看。运行身份的数据目录为 `/var/lib/framely/data/<id>/<身份>/`（自定义核心数据目录时相应变化）。
+The log view includes backend and lifecycle logs; each retains a current 2 MiB file and a preceding copy. Failed pre-registration installs log to `/var/lib/framely/logs/<id>.lifecycle.log`. User data is under `/var/lib/framely/data/<id>/<identity>/`, relative to any custom core state root.

@@ -5,43 +5,43 @@
   <img src="assets/branding/framely-logo.svg" alt="Framely" width="320" height="77">
 </picture>
 
-[English](README.en.md)
+[简体中文](README.zh-CN.md)
 
-Steam Frame 的 React 插件管理器：Rust 核心服务、独立 CEF/OpenVR 宿主、网络管理面板和电脑端安装器。可管理插件、来源、窗口、通知和更新。
+A React plugin manager for Steam Frame, with a Rust core service, a separate CEF/OpenVR host, a network management panel, and a desktop installer. Manage plugins, sources, windows, notifications, and updates.
 
-## 安装
+## Installation
 
-目标为 Linux ARM64 Steam Frame。电脑端从 [Releases](https://github.com/SteamFramelyHomebrew/framely/releases) 下载对应平台的 `Framely Installer`，连接设备后安装本体。也可在 Frame 的 SSH 终端安装最新正式版：
+The target device is a Linux ARM64 Steam Frame. Download the `Framely Installer` for your computer from [Releases](https://github.com/SteamFramelyHomebrew/framely/releases), connect to the device, and install Framely. Alternatively, run this in the Frame SSH terminal to install the latest stable release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install
 ```
 
-安装 Preview 时指定实际已发布的标签：
+For a Preview release, specify an actual published tag:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install --version v0.4.2-preview.3
 ```
 
-运行包包含 CEF，设备无需 Node.js 或 Rust。安装会请求 sudo；不会自动解除 SteamOS 只读保护。打开 SteamVR Dashboard 的 Framely Dock 图标进入快捷菜单，从“设置 → 管理插件”打开管理窗口。
+Runtime packages include CEF; the device needs neither Node.js nor Rust. Installation requests sudo and does not automatically disable SteamOS read-only protection. Open the Framely Dock icon in the SteamVR Dashboard for the quick menu, then use Settings → Manage plugins to open the manager.
 
-网络面板默认端口 `15915`，手机/电脑访问 `http://设备IP:15915`。未配置密码时首次访问必须设置并确认密码，保存后登录。设备密码与面板密码相互独立。
+The network panel uses port `15915` by default. Visit `http://DEVICE_IP:15915` on your phone or computer. When no password is configured, the first visit requires setting and confirming a password before login. The device password and panel password are independent.
 
-## 文档
+## Documentation
 
-从 [文档首页](docs/README.md) 开始：
+Start at the [documentation index](docs/README.md):
 
-- [安装、更新、修复、回滚与卸载](docs/user-guide/installation.md)
-- [基本使用](docs/user-guide/basic-usage.md) · [插件安装与管理](docs/user-guide/plugins.md)
-- [网络管理面板](docs/user-guide/network-panel.md)
-- [插件开发到发布完整流程](docs/developer-guide/README.md) · [发布插件和插件源](docs/developer-guide/publishing.md)
-- [SDK API](docs/developer-guide/sdk.md) · [Manifest 配置](docs/developer-guide/manifest.md) · [生命周期](docs/plugin-lifecycle.md)
-- [插件模板](templates/plugin/README.md) · [功能展示示例](examples/showcase/README.md)
-- [本体发行维护](docs/releases.md) · [安装器构建](installer/README.md)
+- [Install, update, repair, roll back, and uninstall](docs/user-guide/installation.md)
+- [Basic usage](docs/user-guide/basic-usage.md) · [Install and manage plugins](docs/user-guide/plugins.md)
+- [Network management panel](docs/user-guide/network-panel.md)
+- [Plugin development through publishing](docs/developer-guide/README.md) · [Publish plugins and sources](docs/developer-guide/publishing.md)
+- [SDK API](docs/developer-guide/sdk.md) · [Manifest configuration](docs/developer-guide/manifest.md) · [Lifecycle](docs/plugin-lifecycle.md)
+- [Plugin template](templates/plugin/README.md) · [Showcase example](examples/showcase/README.md)
+- [Core release maintenance](docs/releases.md) · [Build the installer](installer/README.md)
 
-## 创建插件
+## Create a plugin
 
-开发机准备 Node.js 22 和 npm，克隆本仓库后执行：
+Install Node.js 22 and npm on your development computer, clone this repository, and run:
 
 ```bash
 node tools/plugin-dev.mjs init ../my-plugin yourname.my-plugin
@@ -51,11 +51,11 @@ npm run dev
 npm run build
 ```
 
-生成项目包含 React 页面、Python 后端、数据保存、生命周期回调、SDK 和构建工具。浏览器预览不启动后端；打包与实际 Frame 测试见开发指南。
+The generated project includes React pages, a Python backend, persistent storage, lifecycle callbacks, the SDK, and build tools. Browser preview does not start the backend; see the development guide for packaging and testing on Frame.
 
-## 构建与验证
+## Build and validate
 
-本体源码在 Linux 构建，需要 Rust、Node.js、C/C++ 和 OpenGL/X11 开发库，生产原生宿主使用锁定版本的 Linux ARM64 CEF。
+Building the core from source requires Linux, Rust, Node.js, C/C++, and OpenGL/X11 development libraries. The production native host uses the pinned Linux ARM64 CEF version.
 
 ```bash
 npm ci
@@ -66,10 +66,10 @@ bash tools/test-native.sh
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-CEF 构建、集成测试和发布命令见[发行维护](docs/releases.md)。插件支持 `steamos` 和 `root`；哈希校验不代表安全审核，应核对来源和运行用户。
+See [release maintenance](docs/releases.md) for CEF builds, integration tests, and publishing commands. Plugins support `steamos` and `root`; hash verification is not a security review, so check the source and runtime user.
 
-## 许可证
+## License
 
-Framely 原创代码，包括本体、安装器、SDK、模板和仓库示例，采用 **AGPL-3.0-only**，全文见 [LICENSE](LICENSE)。第三方依赖和 vendored 文件保留各自许可证。
+Original Framely code, including the core, installer, SDK, template, and repository examples, uses **AGPL-3.0-only**; see [LICENSE](LICENSE). Third-party dependencies and vendored files retain their respective licenses.
 
-AGPL 允许商业使用；分发需按许可提供完整对应源码，修改后通过网络与用户交互还须向这些用户提供源码。发行源码对应本仓库的 `v<版本>` 或 `installer-v<版本>` 标签；重新分发者须提供与自己二进制匹配的修改和构建脚本。
+AGPL allows commercial use. Distribution requires complete corresponding source under the license; modified software that interacts with users over a network must also offer source to those users. Release source corresponds to the repository's `v<VERSION>` or `installer-v<VERSION>` tags. Redistributors must provide modifications and build scripts matching their binaries.

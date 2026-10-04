@@ -1,54 +1,54 @@
-# 安装、更新、修复与卸载
+# Install, update, repair and uninstall
 
-[English](../en/user-guide/installation.md)
+[简体中文](../zh-CN/user-guide/installation.md)
 
-[文档首页](../README.md) · [下一步：基本使用](basic-usage.md)
+[Documentation](../README.md) · [Next: basic usage](basic-usage.md)
 
-## 安装前
+## Before installation
 
-目标设备为 Linux ARM64 Steam Frame。当前开发基线为 SteamOS VR 0.4.2、SteamVR build 20260928.6175029；其他系统版本需验证。运行包自带 CEF，设备使用时无需安装 Node.js 或 Rust。
+The target is Linux ARM64 Steam Frame. The development baseline is SteamOS VR 0.4.2 and SteamVR build 20260928.6175029; other versions need validation. The runtime includes CEF, so users do not need Node.js or Rust on the device.
 
-电脑与 Frame 连接同一网络，在 Frame 开启开发者模式并启用 SSH，准备 Steam 用户 `steamos` 的登录密码。安装会使用 sudo 创建账号、systemd 服务和发行目录；请核对 SSH 指纹。安装器不会自动解除 SteamOS 只读保护；实际所需目录不可写时会停止。
+Connect your computer and Frame to the same network. Enable developer mode and SSH on Frame, and prepare the `steamos` account password. Verify the SSH fingerprint. Installation uses sudo to create an account, systemd services and release directories. It does not automatically disable SteamOS read-only protection; it stops if required directories cannot be written.
 
-## 方式一：电脑端安装器
+## Option 1: desktop installer
 
-1. 从 [Framely Releases](https://github.com/SteamFramelyHomebrew/framely/releases) 的 `installer-v<版本>` 下载适合电脑的安装器。Linux 为 tar.gz，Windows 为 EXE ZIP，macOS 为应用 ZIP。
-2. 解压并运行，扫描设备或手动填写设备 IP 与 SSH 端口。
-3. 核对指纹，填写 `steamos` 和密码，连接后选择 Framely 本体发行版本。
-4. 如果要安装 Preview，开启显示测试版；安装器版本与设备版版本相互独立。
-5. 在“安装与维护”确认设备、目标版本及操作，等待完成。也可选择本地运行包和对应的外部 `SHA256SUMS`。
+1. Download the appropriate installer from an `installer-v<version>` entry in [Releases](https://github.com/SteamFramelyHomebrew/framely/releases). Linux uses tar.gz, Windows an EXE ZIP, and macOS an application ZIP.
+2. Extract and run it. Scan for the device or enter its IP and SSH port.
+3. Verify the fingerprint, enter `steamos` and its password, connect, and select a Framely device release.
+4. Enable testing releases to select a Preview. Installer and device versions are independent.
+5. Confirm the device, version and operation on the maintenance page. Alternatively, select a local device archive and its external `SHA256SUMS`.
 
-Linux 用户可在安装器解压目录执行 `bash install-desktop-entry.sh`，把带 Framely 图标的入口添加到当前用户的应用菜单。入口指向解压目录；移动目录后需重新执行脚本。
+On Linux, run `bash install-desktop-entry.sh` from the extracted installer directory to add an entry with the Framely icon to your user application menu. The entry points to that directory; run the script again after moving it.
 
-安装器会校验下载内容，并在设备端再次校验。密码不保存到配置文件。连接后仍需在实际设备上观察 Framely 的启动和显示。
+Downloads are checked locally and again on the device. Passwords are not saved in configuration. Observe startup and rendering on Frame after installation.
 
-## 方式二：在 Frame 的 SSH 终端安装
+## Option 2: install from Frame's SSH terminal
 
-以下命令在 **Frame 上** 执行。默认安装最新正式版：
+Run these commands **on Frame**. To install the latest stable release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install
 ```
 
-指定 Preview 或其他标签：
+To select a Preview or another tag:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install --version v0.4.2-preview.3
 ```
 
-将示例标签换成 Releases 中实际存在的本体标签。指定标签时从该 Release 下载引擎和包，不要求已有正式版；不指定标签时使用最新正式版。终端会按需请求 sudo 密码。
+Replace the example with an existing device release tag. An explicit tag selects the engine and package from that Release and works without a stable release. Without a tag, the latest stable release is selected. Enter the sudo password when prompted.
 
-## 方式三：本地发行包
+## Option 3: local archive
 
-下载设备运行包 `framely-<版本及构建号>-linux-arm64.tar.gz`、外部 `SHA256SUMS` 和同一 Release 的 `bootstrap.py`，放入 Frame 的同一目录：
+Download `framely-<version-and-build>-linux-arm64.tar.gz`, the external `SHA256SUMS`, and `bootstrap.py` from the same Release. Place them together on Frame:
 
 ```bash
-python3 bootstrap.py install --archive "./framely-<版本及构建号>-linux-arm64.tar.gz" --checksums ./SHA256SUMS
+python3 bootstrap.py install --archive "./framely-<version-and-build>-linux-arm64.tar.gz" --checksums ./SHA256SUMS
 ```
 
-尖括号是占位符，执行前替换为真实文件名。引擎校验后在 `/home` 暂存、解压并检查包内哈希，避免耗尽设备的 `/tmp`。
+Angle brackets are placeholders; substitute the actual filename. The engine verifies, stages and extracts under `/home`, then checks internal hashes, avoiding the device's limited `/tmp`.
 
-## 验证安装
+## Verify installation
 
 ```bash
 systemctl is-active framely.service framely-session.service
@@ -56,43 +56,43 @@ systemctl is-active framely.service framely-session.service
 sudo /var/lib/framely/current/bin/framely status
 ```
 
-两个服务正常应显示 `active`。打开 SteamVR Dashboard，在 Dock 找到 Framely；首次使用需阅读用户协议和隐私声明。之后按[插件安装教程](plugins.md)添加第一个插件。
+Both services should be `active`. Open SteamVR Dashboard and find Framely in the Dock. Read and accept the terms and privacy statement before managing plugins. Continue with the [plugin installation guide](plugins.md).
 
-## 更新与回滚
+## Update and rollback
 
-已配置更新服务时，从管理窗口“关于”检查、下载并确认安装。也可以用桌面安装器，或在 Frame 执行：
+When an update source is configured, check, download and confirm an update in **About**. Alternatively, use the desktop installer or run on Frame:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- update --version v0.4.2-preview.3
 ```
 
-更新保留插件、设置和数据，并保留前一个发行用于回滚；只重启 Framely。Preview 更新需要明确指定标签或本地包，默认正式版更新地址不会自动选择 Preview。
+Updates preserve plugins, settings and data, retain the previous release, and restart Framely only. Preview updates require an explicit tag or local package; the default stable source does not automatically select Preview builds.
 
-需要回滚时，从“关于”选择上一版本，或执行：
+Choose rollback in About, or run:
 
 ```bash
 sudo bash /var/lib/framely/current/rollback.sh
 ```
 
-回滚本体保留插件数据，但不保证将新版本的数据格式转换为旧格式。
+Rollback preserves plugin data but does not guarantee conversion of newer data formats to older ones.
 
-## 修复与日志
+## Repair and logs
 
-SteamOS 更新可能重置账号和系统服务。管理数据保存在 `/home/.framely/state`，`/var/lib/framely` 为兼容入口。在系统配置可写且 `/home` 数据仍存在时执行：
+SteamOS updates may reset system accounts and services. State persists under `/home/.framely/state`; `/var/lib/framely` is a compatibility entry. If system configuration is writable and `/home` remains intact:
 
 ```bash
 sudo bash /home/.framely/repair.sh
 sudo journalctl -u framely -u framely-session --no-pager -n 100
 ```
 
-修复会使用已保留的发行恢复账号及服务；UID 冲突时停止。它不能找回已删除的 `/home` 数据，SteamOS 更新后的恢复仍需实机验证。
+Repair restores accounts and services from the retained release and stops on UID conflicts. It cannot restore deleted `/home` data. Recovery after SteamOS updates still requires device validation.
 
-## 卸载
+## Uninstall
 
-桌面安装器“安装与维护”提供卸载，也可直接执行：
+Use the desktop maintenance page or run:
 
 ```bash
 sudo bash /var/lib/framely/current/uninstall.sh
 ```
 
-卸载先停用并卸载全部插件、执行其卸载钩子，成功后再移除 Framely 程序和服务。某个插件清理失败会保留 Framely并报错，处理后重试。已保存的设置、插件数据和专用账号保留；不承诺自动清除第三方插件在其他位置造成的修改。
+Uninstallation disables and uninstalls every plugin, including uninstall hooks, before removing Framely programs and services. Failed plugin cleanup retains Framely and reports an error; resolve it and retry. Settings, plugin data and the dedicated account remain. External changes made by third-party plugins cannot always be automatically undone.

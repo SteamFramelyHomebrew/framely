@@ -1,29 +1,29 @@
-# 基本使用
+# Basic usage
 
-[English](../en/user-guide/basic-usage.md)
+[简体中文](../zh-CN/user-guide/basic-usage.md)
 
-[文档首页](../README.md) · [安装指南](installation.md)
+[Documentation](../README.md) · [Installation](installation.md)
 
-## 快捷菜单与管理窗口
+## Quick menu and manager
 
-在 SteamVR Dashboard 点击 Framely Dock 图标打开快捷菜单。首次访问需阅读并同意协议及隐私声明；未同意时插件不会自动启动。
+Click Framely in the SteamVR Dashboard Dock. First use requires accepting the terms and privacy statement; plugins do not automatically start before consent.
 
-- **常用**：打开收藏的插件快捷页。
-- **已安装**：查看本机插件，进入插件页面。
-- **设置**：语言、安全模式和“管理插件”入口。
+- **Favorites**: open favorite plugin quick pages.
+- **Installed**: browse local plugins and their pages.
+- **Settings**: language, safe mode and the plugin manager entry.
 
-“管理插件”打开独立大窗口，左侧导航进入插件、商店、插件源、设置和关于。安装、更新及来源管理在这里完成；电脑或手机也可使用[网络管理面板](network-panel.md)。
+The manager opens a separate large window with navigation for plugins, store, sources, settings and About. Installation, updates and source management happen here. A phone or computer can also use the [network panel](network-panel.md).
 
-## 插件启停与窗口
+## Plugins and windows
 
-在插件列表启用、停用或收藏插件。启用表示允许使用；默认后端按需启动，只有声明 `autostart` 的插件会常驻。关闭插件窗口通常不会停用后台功能。依赖不满足或有冲突时，界面会给出原因，并在变更前显示受影响插件。
+Enable, disable or favorite plugins in the list. Enabled means available for use; backends normally start on demand. Only plugins declaring `autostart` remain resident after startup. Closing a plugin window generally does not disable its backend. Dependency or conflict problems are explained, and affected plugins are shown before changes.
 
-带 Dock 图标的独立窗口由 SteamVR 提供关闭控件；临时窗口可能在切换界面时销毁。不同插件的 UI 和功能由各自开发者决定。
+Dock windows use SteamVR close controls. Temporary windows may be destroyed when switching views. Individual plugin interfaces and behavior are maintained by their developers.
 
-## 设置与诊断
+## Settings and diagnostics
 
-设置中可修改语言、网络面板及代理。HTTP 代理和 GitHub 代理各有开关，保存地址不会自动启用代理。
+Settings provides language, network panel and proxy configuration. HTTP and GitHub proxies have independent switches; saving an address does not automatically enable it.
 
-“安全模式”暂停第三方插件，适合出现故障时检查；排查后再退出安全模式。在“关于”查看本体版本、检查更新和复查协议。撤回协议会停用全部插件，再次同意后需要手动启用。
+Safe mode pauses third-party plugins for troubleshooting; leave it after resolving the problem. About shows the device version, updates and terms. Revoking consent disables all plugins; accepting again does not automatically re-enable them.
 
-日志排查命令见[安装指南](installation.md#修复与日志)。界面能打开不代表所有插件都正常；先逐个启用，确认运行身份与来源可信。
+Log commands are in the [installation guide](installation.md). A working manager does not establish that all plugins work. Enable plugins individually and verify their sources and runtime users.

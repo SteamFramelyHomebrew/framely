@@ -1,12 +1,12 @@
-# 插件开发到发布：完整流程
+# Plugin development to publication
 
-[English](../en/developer-guide/README.md)
+[简体中文](../zh-CN/developer-guide/README.md)
 
-[文档首页](../README.md) · [发布指南](publishing.md)
+[Documentation](../README.md) · [Publishing](publishing.md)
 
-## 1. 准备开发环境
+## 1. Prepare the development environment
 
-开发机准备 Git、Node.js 22、npm；发布指南中的临时清单脚本还需要 Python 3。本体 CLI 使用 Linux 专用接口，源码打包命令需在安装 Rust 的 Linux/WSL 环境执行，不能直接在 Windows/macOS 原生编译本体。也可将清单和 payload 拷到 Frame，使用已安装的 CLI 打包。设备端无需 Node.js/Rust，Python 后端依赖设备的 Python 3。开发机可以用于界面预览和打包，VR 交互必须在 Frame 验证。
+Install Git, Node.js 22 and npm. The publishing Manifest script also needs Python 3. The core CLI uses Linux-specific interfaces, so source packaging requires Rust on Linux/WSL, not native Windows/macOS compilation. Alternatively copy Manifest/payload to Frame and use its installed CLI. Device users do not need Node.js/Rust; Python backends use device Python 3. Preview and packaging work on the development computer; VR interaction requires Frame.
 
 ```bash
 git clone https://github.com/SteamFramelyHomebrew/framely.git
@@ -17,42 +17,42 @@ npm install
 npm run dev
 ```
 
-这里的 `yourname.my-plugin` 是示例 ID，发布前换成你自己的稳定命名空间。脚手架拒绝覆盖已有目录，复制 SDK 和构建工具，生成后不依赖原 Framely 仓库的位置。将生成项目放入自己的 Git 仓库，并提交 `package-lock.json` 和 vendored SDK；不要提交 `node_modules/`、`payload/`、发行包和密码。
+Replace the example ID with your own stable namespace. The scaffold refuses to overwrite directories and copies the SDK and tools, so the resulting project does not depend on the original repository location. Create your plugin Git repository and commit `package-lock.json` and the vendored SDK. Do not commit `node_modules/`, `payload/`, archives or passwords.
 
-## 2. 认识模板
+## 2. Understand the template
 
-| 文件 | 用途 |
+| File | Purpose |
 | --- | --- |
-| `manifest.json` | ID、名称、版本、运行用户、页面、生命周期、依赖 |
-| `page.tsx` | React 快捷页和独立窗口 |
-| `backend.py` | Python 后端及数据保存 |
-| `vendor/framely-sdk/` | UI、桥接接口和 Python 协议辅助库 |
-| `dev.mjs` | 构建和本地预览工具 |
-| `LICENSE` | AGPLv3 许可证全文 |
+| `manifest.json` | Identity, version, runtime user, pages, lifecycle and dependencies |
+| `page.tsx` | React quick page and independent window |
+| `backend.py` | Python backend and persistent settings |
+| `vendor/framely-sdk/` | UI, bridge API and Python protocol helper |
+| `dev.mjs` | Build and local preview |
+| `LICENSE` | Full AGPLv3 text |
 
-模板的“读取/保存”使用 `settings.get` / `settings.set`，内容保存在后端的 `FRAMELY_DATA_DIR/settings.json`。它还演示打开 `main` 窗口、发送通知、启动/停止和安装/更新/卸载回调。默认身份 `steamos`，默认按需启动。
+Read/save uses `settings.get` / `settings.set` with `FRAMELY_DATA_DIR/settings.json`. The template opens the `main` window, sends notifications and demonstrates install/update/start/stop/uninstall callbacks. It defaults to `steamos` and on-demand startup.
 
-## 3. 修改清单与界面
+## 3. Edit Manifest and UI
 
-先修改 `manifest.json` 中的 ID、作者、名称、描述、版本、标签和 `changelog`。使用完整 SemVer，例如 `0.1.0`、`0.2.0-preview.1`；已发布版本不覆盖。
+Set the ID, author, name, description, version, tags and changelog. Use full SemVer such as `0.1.0` or `0.2.0-preview.1`; never overwrite a published version.
 
-`ui.quickPage` 和 `ui.windows.main.entry` 指向构建后的 `page.js`。页面通过 `registerPlugin({QuickPage, WindowPage})` 注册。窗口 key 必须与清单一致。`files` 留空，打包时自动计算哈希。
+`ui.quickPage` and `ui.windows.main.entry` refer to built `page.js`. Register components with `registerPlugin({QuickPage, WindowPage})`, matching declared keys. Leave `files` empty; packaging computes hashes.
 
-在浏览器打开 `http://127.0.0.1:5173`；修改页面后自动重载。预览只模拟窗口和通知，不启动 Python 后端，不拥有 Frame 权限；读取/保存按钮在预览中报出后端不可用是正常情况。不要据此声称设备功能已验收。
+Preview at `http://127.0.0.1:5173`, with automatic reload. Preview simulates windows and notifications, without Python backends or device privileges. Read/save therefore reports backend unavailability; this is expected and is not device validation.
 
-UI 与后端 API 见 [SDK 文档](sdk.md)，字段、默认值和范围见 [Manifest 配置](manifest.md)；窗口与商店资料补充见[插件开发参考](../plugin-development.md)。
+See [SDK API](sdk.md), [Manifest configuration](manifest.md) and the [development reference](../plugin-development.md).
 
-## 4. 实现后端与生命周期
+## 4. Implement backend and lifecycle
 
-后端 stdin/stdout 使用逐行 JSON RPC；stdout 仅输出协议，调试日志输出 stderr。Python 模板使用 `framely.serve` 处理请求、错误和生命周期。修改业务逻辑时校验参数长度与类型，并返回能由 JSON 序列化的结果。
+Backend stdin/stdout use newline-delimited JSON RPC. Reserve stdout for protocol messages and log to stderr. Python `framely.serve` handles requests, exceptions and hooks. Validate parameter types and lengths and return JSON-serializable values.
 
-写数据使用 `FRAMELY_DATA_DIR`，不要写到插件载荷或 Framely 程序目录。升级、回退和运行用户变更的状态迁移由插件设计；`steamos` 与 `root` 对应不同的数据目录。普通功能优先使用 `steamos`，确需系统权限时才使用 `root` 并解释原因。
+Write to `FRAMELY_DATA_DIR`, not plugin payload or Framely binaries. Design migrations for updates, older versions and runtime-user changes. `steamos` and `root` have separate data directories. Prefer `steamos`; explain any required root privileges.
 
-安装/更新钩子应可重复执行；停止/卸载时释放本插件持有的外部资源。关闭 UI 窗口不等于停止后端，React effect 清理不能替代后端钩子。系统依赖不会由 Framely 自动安装，需在说明中写清。[生命周期参考](../plugin-lifecycle.md)
+Make install/update hooks repeatable and release owned external resources on stop/uninstall. Closing UI does not stop the backend; React effect cleanup cannot replace backend hooks. System dependencies are not installed automatically. See [lifecycle](../plugin-lifecycle.md).
 
-## 5. 构建、打包、校验
+## 5. Build, package and verify
 
-在插件项目中执行：
+Inside your plugin:
 
 ```bash
 npm run build
@@ -61,24 +61,24 @@ cargo run --manifest-path "$FRAMELY_REPO/Cargo.toml" --locked -- pack --manifest
 cargo run --manifest-path "$FRAMELY_REPO/Cargo.toml" --locked -- verify yourname.my-plugin-0.1.0.framely
 ```
 
-将 `FRAMELY_REPO` 换成开发机上的 Framely 仓库绝对路径。也可在 Frame 使用已安装的 `/var/lib/framely/current/bin/framely pack` / `verify`，这些离线操作无需 sudo。
+Set the repository's actual absolute path. Alternatively use installed `/var/lib/framely/current/bin/framely pack` / `verify` on Frame; these offline commands do not need sudo.
 
-`payload/` 只放要分发的页面、后端、Python 协议库及必要资源。构建会复制 `backend.py`、`framely.py`；额外图标等资源需要自行放入该目录。打包检查入口、路径、清单和哈希，不允许软链接或额外包内文件。
+Include only distributable pages, backend, Python helper and resources in `payload/`. Build copies `backend.py` and `framely.py`; add icons and other assets yourself. Packaging checks entries, paths, Manifest and hashes, rejecting symlinks and undeclared extra archive files.
 
-## 6. 安装到 Frame 测试
+## 6. Test on Frame
 
-将包下载到手机/电脑，进入网络面板，在“插件”的本地导入入口上传并确认；或通过 SSH 复制到 Frame 后执行：
+Import the package through the web panel and review confirmation, or transfer it and run on Frame:
 
 ```bash
 sudo /var/lib/framely/current/bin/framely install ./yourname.my-plugin-0.1.0.framely --approve
 ```
 
-首次协议确认后再管理插件。测试读取/保存、窗口和通知，停用再启用，重启后读回数据；修改版本后测试更新和数据保留，最后测试卸载钩子。涉及 VR 键盘、手柄或硬件的功能，记录实际 Frame 验证结果。
+Accept the terms before management. Test read/save, windows and notifications, disabling/re-enabling, persistent data after reboot, updates after a version bump, and uninstall cleanup. Record actual device checks for VR input, controllers and hardware.
 
-日志可通过 Framely 状态与 systemd 日志检查；后台插件 stdout 不应混入调试文字。更完整的安装操作见[用户教程](../user-guide/plugins.md)。
+Inspect Framely status and systemd logs. Do not mix debug messages into backend stdout. See [installation](../user-guide/plugins.md).
 
-## 7. 发布
+## 7. Publish
 
-GitHub Release 默认使用标签 `v<version>` 和附件 `<id>-<version>.framely`，源码清单可以省略 `downloadUrl`。社区登记会自动拼接地址；打包前按[发布指南](publishing.md)生成包含最终地址的临时清单，因为当前 `framely pack` 不会自己读取仓库地址。自定义下载地址再显式填写 `downloadUrl`。随后公开 Release、上传包，提供使用说明、运行用户、更新记录和实际测试范围，再自行托管插件源或登记固定源码提交。社区数据库还需校验整包预期哈希和字段兼容性。
+Default GitHub Releases use tag `v<version>` and asset `<id>-<version>.framely`; source may omit `downloadUrl`. Community registration derives it automatically. Prepare a temporary packaged Manifest containing the final URL as shown in [publishing](publishing.md), because current `framely pack` does not read Git remotes. Set an explicit URL for custom downloads. Publish the Release/assets with usage, runtime-user details, changes and actual test coverage, then host a catalog or register a fixed source commit. Database registration also checks expected whole-package hashes and field compatibility.
 
-后续更新：提升版本号 → 重新生成发布清单（自定义地址时更新地址）→ 构建打包并校验 → 实机验证 → 新 Release → 更新来源登记。不要替换旧版本附件。
+For updates: bump version → regenerate the release Manifest (update explicit custom URLs if used) → rebuild/verify → device test → new Release → update the source pin. Never replace old assets.
