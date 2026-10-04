@@ -369,6 +369,13 @@
     "来源未提供运行用户，请在安装确认时查看包内信息。": "The source does not specify a run user. Check the package information before confirming installation.",
     "正在加载历史版本…": "Loading version history…",
     "历史版本暂时不可用，仍可安装最新版。": "Version history is unavailable. You can still install the latest version.",
-    "首次访问网络管理面板时，必须先设置访问密码。": "Set an access password before entering the network panel for the first time."
+    "首次访问网络管理面板时，必须先设置访问密码。": "Set an access password before entering the network panel for the first time.",
+    "更新渠道": "Update channel",
+    "正式版": "Stable",
+    "测试版": "Testing",
+    "仅检查正式版。": "Check stable releases only.",
+    "仅检查测试版（Preview、Beta、RC 等）。": "Check testing releases only (Preview, Beta, RC, etc.).",
+    "所选渠道暂无可用发行版本。": "No release is available in the selected channel.",
+    "所选版本早于当前版本，安装将切换到较旧版本。": "The selected release is older than your current version. Installing will switch to that older version."
   }
 }

@@ -408,6 +408,38 @@ fn source_is_strict_and_catalog_allows_additional_metadata() {
 }
 
 #[test]
+fn update_channels_default_to_stable_and_persist_across_reloads() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("update-source.json"),br#"{"url":"https://github.com/example/framely/releases/latest/download/framely-release.json"}"#).unwrap();
+    let mut core = accepted_service(dir.path(), 1000).unwrap();
+    assert_eq!(core.db.update_channel, UpdateChannel::Stable);
+    assert_eq!(
+        core.db
+            .update_source
+            .as_ref()
+            .unwrap()
+            .github_repository()
+            .as_deref(),
+        Some("example/framely")
+    );
+    core.handle("system.channel.save", json!({"channel":"testing"}))
+        .unwrap();
+    let core = accepted_service(dir.path(), 1000).unwrap();
+    assert_eq!(core.db.update_channel, UpdateChannel::Testing);
+    let saved: UpdateSource =
+        serde_json::from_slice(&fs::read(dir.path().join("update-source.json")).unwrap()).unwrap();
+    assert_eq!(saved.url, core.db.update_source.as_ref().unwrap().url);
+    assert!(serde_json::from_value::<UpdateChannel>(json!("unknown")).is_err());
+    for url in [
+        "https://github.com.evil.test/a/b/releases/latest/download/framely-release.json",
+        "https://github.com/a/b/releases/download/v1/framely-release.json",
+    ] {
+        let source: UpdateSource = serde_json::from_value(json!({"url":url})).unwrap();
+        assert!(source.github_repository().is_none());
+    }
+}
+
+#[test]
 fn publication_metadata_survives_pack_and_rejects_invalid_image_urls() {
     let dir = tempfile::tempdir().unwrap();
     fixture(dir.path(), "test.plugin", "1.0.0", 1, None);

@@ -60,13 +60,13 @@ Both services should be `active`. Open SteamVR Dashboard and find Framely in the
 
 ## Update and rollback
 
-When an update source is configured, check, download and confirm an update in **About**. Alternatively, use the desktop installer or run on Frame:
+When an update source is configured, choose **Stable** or **Testing** in **About → Framely update**, then check, download and confirm installation. Stable checks stable releases only; Testing checks prereleases such as Preview, Beta and RC. The channel preference persists on the device. Switching channels clears the previous candidate and download, so check and download again before installation. Alternatively, use the desktop installer or run on Frame:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- update --version v0.4.2-preview.3
 ```
 
-Updates preserve plugins, settings and data, retain the previous release, and restart Framely only. Preview updates require an explicit tag or local package; the default stable source does not automatically select Preview builds.
+Updates preserve plugins, settings and data, retain the previous release, and restart Framely only. The default channel is Stable; choose Testing for in-app Preview updates. Command-line Preview updates still require an explicit tag or local package. Switching back to Stable can select an older version; the UI identifies this before installation. Rollback does not migrate newer plugin data formats.
 
 Choose rollback in About, or run:
 

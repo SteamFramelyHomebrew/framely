@@ -22,7 +22,9 @@ This is a distributor interface, not an ordinary settings item. The official eng
 
 Updates verify API/architecture, length, SHA256, safe extraction and internal `SHA256SUMS`. Downloads do not block the core. After user confirmation, a separate systemd helper switches releases and restarts Framely only. Log: `/var/lib/framely/logs/update.log`. Failed installation attempts to restore release/state; the UI can return to the preceding release.
 
-Sources contain URL only. Legacy signed descriptors/envelopes/public-key fields are unsupported. Rollback preserves plugin data without downgrading its format. Device upgrades, rollback and reboot still need real validation beyond local tests.
+Sources still contain URL only. The separate `database.updateChannel` preference is `stable` (default) or `testing`, so older versions can continue reading the existing update source during rollback. Set it through `framely call system.channel.save '{"channel":"testing"}'`, or use About. Changing the source or channel invalidates previously checked/downloaded releases. Legacy signed descriptors/envelopes/public-key fields are unsupported. Rollback preserves plugin data without downgrading its format. Device upgrades, rollback and reboot still need real validation beyond local tests.
+
+For the official GitHub `releases/latest/download/framely-release.json` source, checks query the repository Release list, filter strictly by channel, and choose the highest SemVer tag with a device archive and descriptor. Drafts, installer tags and releases missing either asset are skipped. No matching release is reported as an empty channel, including Preview-only repositories checked on Stable. The descriptor must match the selected tag, archive URL and size. Custom HTTPS descriptor URLs remain direct sources; their version must match the selected channel, so distributors need to configure the corresponding descriptor URL.
 
 ## Recovery after SteamOS updates
 
@@ -36,8 +38,8 @@ Deleted `/home` data cannot be recovered. OS updates may require manual interven
 
 Device and installer share the repository with independent versions/tags/workflows:
 
-- Device: root Cargo version, `v<version>` (currently `v0.4.2-preview.6`), `.github/workflows/release.yml`, Linux ARM64 and pinned CEF.
-- Installer: `installer/Cargo.toml`, `installer-v<version>` (currently `installer-v0.4.1-preview.4`), `.github/workflows/installer-release.yml`, Linux x64/ARM64, Windows x64, macOS Intel/Apple Silicon, pinned GPUI Kit.
+- Device: root Cargo version, `v<version>` (currently `v0.4.2-preview.7`), `.github/workflows/release.yml`, Linux ARM64 and pinned CEF.
+- Installer: `installer/Cargo.toml`, `installer-v<version>` (currently `installer-v0.4.1-preview.5`), `.github/workflows/installer-release.yml`, Linux x64/ARM64, Windows x64, macOS Intel/Apple Silicon, pinned GPUI Kit.
 
 Versions need not match or ship together. Update the relevant Cargo.lock with version changes. Installer package/macOS versions use the installer version.
 
@@ -45,11 +47,11 @@ Both workflows cache dependencies/builds by product/platform/toolchain/configura
 
 ```bash
 # After committing and pushing the intended source:
-git tag v0.4.2-preview.6
-git push origin v0.4.2-preview.6
+git tag v0.4.2-preview.7
+git push origin v0.4.2-preview.7
 # Independent installer release:
-git tag installer-v0.4.1-preview.4
-git push origin installer-v0.4.1-preview.4
+git tag installer-v0.4.1-preview.5
+git push origin installer-v0.4.1-preview.5
 ```
 
 Prerelease suffixes create GitHub Prereleases without Latest. Installer releases are never Latest. Only stable device releases become Latest, keeping default installer/update URLs on the device product. The desktop installer filters device archive names and does not mistake ARM64 installer packages for device runtimes. Download desktop installers from their explicit installer tags.

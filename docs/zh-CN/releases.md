@@ -24,9 +24,11 @@ framely call system.source.save '{"source":{"url":"https://example.org/framely-r
 
 更新依次检查 API/架构兼容、声明长度、SHA256，安全解压后检查发行包自身 SHA256SUMS；下载不阻塞核心服务。用户确认安装后，独立 systemd 助手切换发行版本，只重启 Framely 服务。日志在 `/var/lib/framely/logs/update.log`。安装失败会尝试恢复原发行和安装前状态；UI 可回滚上一版本。
 
-更新源仅包含 URL，发行清单使用普通 JSON，不支持旧签名包、签名信封或公钥字段。回滚切换上一发行版本，保留插件数据，不进行旧版格式迁移。
+更新源仍仅包含 URL；渠道独立保存在 `database.updateChannel`，取值为 `stable`（默认正式版）或 `testing`（测试版），旧版本回滚时仍能读取原更新源。可通过“关于”选择，或执行 `framely call system.channel.save '{"channel":"testing"}'`。修改更新源或渠道会清除原候选版本和已下载包。发行清单使用普通 JSON，不支持旧签名包、签名信封或公钥字段。回滚切换上一发行版本，保留插件数据，不进行旧版格式迁移。
 
 设备上的实际升级/回滚和重启恢复需要验收；本地自动测试验证无签名格式、包边界和插件安装更新，不能代替设备服务切换测试。
+
+官方 GitHub `releases/latest/download/framely-release.json` 更新源会查询仓库 Release 列表，按渠道严格筛选，选择带本体包和清单的最高 SemVer 标签；跳过草稿、安装器标签和附件不完整的发行。没有匹配版本时显示该渠道暂无发行，包括只有 Preview 时检查正式版的情况。清单必须与所选标签、包地址和长度一致。自定义 HTTPS 清单地址仍直接读取，其版本必须属于所选渠道；发行者需要配置相应渠道的清单 URL。
 
 ## SteamOS 更新后的恢复
 
@@ -40,8 +42,8 @@ framely call system.source.save '{"source":{"url":"https://example.org/framely-r
 
 Framely 和桌面安装器保留在同一仓库，使用独立的版本号、标签和发布工作流：
 
-- Framely：版本由根 `Cargo.toml` 定义，标签为 `v<版本>`（当前 `v0.4.2-preview.6`）；`.github/workflows/release.yml` 只构建 Frame Linux ARM64 发行，使用锁定的 CEF 并执行自动检查。
-- 安装器：版本由 `installer/Cargo.toml` 定义，标签为 `installer-v<版本>`（当前 `installer-v0.4.1-preview.4`）；`.github/workflows/installer-release.yml` 只构建 Linux x64/ARM64、Windows x64、macOS x64/ARM64 的原生安装器，使用锁定的 GPUI Kit。
+- Framely：版本由根 `Cargo.toml` 定义，标签为 `v<版本>`（当前 `v0.4.2-preview.7`）；`.github/workflows/release.yml` 只构建 Frame Linux ARM64 发行，使用锁定的 CEF 并执行自动检查。
+- 安装器：版本由 `installer/Cargo.toml` 定义，标签为 `installer-v<版本>`（当前 `installer-v0.4.1-preview.5`）；`.github/workflows/installer-release.yml` 只构建 Linux x64/ARM64、Windows x64、macOS x64/ARM64 的原生安装器，使用锁定的 GPUI Kit。
 
 两个版本不需要相同，也不需要同时发布。修改各自版本时同步对应的 `Cargo.lock`；安装器包名及 macOS 应用版本使用安装器版本。
 
@@ -51,12 +53,12 @@ Framely 和桌面安装器保留在同一仓库，使用独立的版本号、标
 
 ```bash
 # 提交并推送代码后，选择需要发布的产品
-git tag v0.4.2-preview.6
-git push origin v0.4.2-preview.6
+git tag v0.4.2-preview.7
+git push origin v0.4.2-preview.7
 
 # 独立发布安装器，不触发 Framely 构建
-git tag installer-v0.4.1-preview.4
-git push origin installer-v0.4.1-preview.4
+git tag installer-v0.4.1-preview.5
+git push origin installer-v0.4.1-preview.5
 ```
 
 带 `-preview.N` 等预发布后缀的标签会发布为 GitHub Prerelease，不设置为 Latest。安装器 Release 始终设置为非 Latest；只有 Framely 正式 Release 设置为 Latest。因此设备安装入口和默认更新清单的 `releases/latest/download/...` 继续指向 Framely 本体。安装器读取发行列表时按本体包名筛选，不把 Linux ARM64 安装器误当成设备发行包。安装器下载应使用具体的 `installer-v<版本>` Release。

@@ -3,16 +3,17 @@ set -euo pipefail
 base=$(cd -- "$(dirname -- "$0")/.." && pwd)
 cef=$(realpath "$1")
 cd "$base"
-out=$(mktemp -d /tmp/framely-install-review.XXXXXX)
+out=$(mktemp -d "${TMPDIR:-/tmp}/framely-install-review.XXXXXX")
 server_pid=''
 cleanup() { if [[ -n $server_pid ]]; then kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; fi; }
 trap cleanup EXIT
 export FRAMELY_INSTALL_REVIEW_OUTPUT="$out"
+export FRAMELY_INSTALL_REVIEW_FIXTURE="${2:-tests/install_review_fixture.tsx}"
 node --input-type=module - <<'JS'
 import {build} from 'esbuild';
 import {writeFile} from 'node:fs/promises';
 const out=process.env.FRAMELY_INSTALL_REVIEW_OUTPUT;
-await build({entryPoints:['tests/install_review_fixture.tsx'],bundle:true,outfile:`${out}/fixture.js`,define:{'process.env.NODE_ENV':'"production"'}});
+await build({entryPoints:[process.env.FRAMELY_INSTALL_REVIEW_FIXTURE],bundle:true,outfile:`${out}/fixture.js`,define:{'process.env.NODE_ENV':'"production"'}});
 await writeFile(`${out}/index.html`,'<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="fixture.css"><div id="root"></div><script src="fixture.js"></script></html>');
 JS
 python3 - "$out" > "$out/server.log" 2>&1 <<'PY' &

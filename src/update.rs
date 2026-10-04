@@ -1,6 +1,6 @@
 use crate::{
     jobs::Jobs,
-    model::{UpdateSource, API_VERSION},
+    model::{UpdateChannel, UpdateSource, API_VERSION},
 };
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -97,8 +97,120 @@ fn file_digest(path: &Path) -> Result<String> {
     }
     Ok(hex::encode(hash.finalize()))
 }
-type Candidate = (Release, Vec<u8>, String);
-type Prepared = (PathBuf, Release, String);
+#[derive(Clone, Deserialize)]
+struct GitHubAsset {
+    name: String,
+    browser_download_url: String,
+    size: u64,
+}
+#[derive(Clone, Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    prerelease: bool,
+    draft: bool,
+    assets: Vec<GitHubAsset>,
+}
+fn descriptor_version(version: &str) -> Result<semver::Version> {
+    // Runtime VERSION appends a twelve-digit content hash to the Cargo version.
+    let version = version
+        .rsplit_once('-')
+        .filter(|(_, hash)| hash.len() == 12 && hash.bytes().all(|c| c.is_ascii_hexdigit()))
+        .map_or(version, |(version, _)| version);
+    Ok(semver::Version::parse(version)?)
+}
+type Resolved = (Release, Vec<u8>, String);
+fn resolve_release(
+    source: &UpdateSource,
+    channel: UpdateChannel,
+    cancel: &crate::jobs::Cancellation,
+    fetch: &mut impl FnMut(&str, usize) -> Result<Vec<u8>>,
+) -> Result<Option<Resolved>> {
+    if let Some(repo) = source.github_repository() {
+        let mut candidates = Vec::new();
+        for page in 1..=10 {
+            cancel.check()?;
+            let bytes = fetch(
+                &format!("https://api.github.com/repos/{repo}/releases?per_page=100&page={page}"),
+                4 * 1024 * 1024,
+            )?;
+            let releases: Vec<GitHubRelease> = serde_json::from_slice(&bytes)?;
+            let finished = releases.len() < 100;
+            for release in releases {
+                let Some(tag) = release.tag_name.strip_prefix('v') else {
+                    continue;
+                };
+                let Ok(version) = semver::Version::parse(tag) else {
+                    continue;
+                };
+                let testing = channel == UpdateChannel::Testing;
+                if release.draft
+                    || release.prerelease != testing
+                    || version.pre.is_empty() == testing
+                {
+                    continue;
+                }
+                let descriptors: Vec<_> = release
+                    .assets
+                    .iter()
+                    .filter(|a| a.name == "framely-release.json")
+                    .collect();
+                let archives: Vec<_> = release
+                    .assets
+                    .iter()
+                    .filter(|a| {
+                        a.name
+                            .strip_prefix("framely-")
+                            .and_then(|n| n.strip_suffix("-linux-arm64.tar.gz"))
+                            .is_some_and(|n| descriptor_version(n).is_ok_and(|v| v == version))
+                    })
+                    .collect();
+                if descriptors.len() == 1 && archives.len() == 1 {
+                    candidates.push((version, release));
+                }
+            }
+            if finished {
+                break;
+            }
+            ensure!(page < 10, "发行列表过长，请配置明确的更新清单地址");
+        }
+        candidates.sort_by(|a, b| b.0.cmp_precedence(&a.0));
+        let Some((version, selected)) = candidates.into_iter().next() else {
+            return Ok(None);
+        };
+        let descriptor = selected
+            .assets
+            .iter()
+            .find(|a| a.name == "framely-release.json")
+            .unwrap();
+        let bytes = fetch(&descriptor.browser_download_url, 256 * 1024)?;
+        let release = verify_descriptor(&bytes)?;
+        ensure!(
+            descriptor_version(&release.version)? == version,
+            "更新清单与 Release 版本不一致"
+        );
+        let name = format!("framely-{}-linux-arm64.tar.gz", release.version);
+        ensure!(
+            selected.assets.iter().any(|a| a.name == name
+                && a.browser_download_url == release.url
+                && a.size == release.size),
+            "更新清单与 Release 附件不一致"
+        );
+        Ok(Some((release, bytes, version.to_string())))
+    } else {
+        cancel.check()?;
+        let bytes = fetch(&source.url, 256 * 1024)?;
+        let release = verify_descriptor(&bytes)?;
+        let version = descriptor_version(&release.version)?;
+        ensure!(
+            version.pre.is_empty() == (channel == UpdateChannel::Stable),
+            "更新清单不属于所选渠道，请配置该渠道的清单地址"
+        );
+        Ok(Some((release, bytes, version.to_string())))
+    }
+}
+type CheckedSource = (UpdateSource, UpdateChannel);
+type Candidate = (Release, Vec<u8>, CheckedSource);
+type Prepared = (PathBuf, Release, CheckedSource);
 #[derive(Clone, Default)]
 pub struct Updater {
     pub jobs: Jobs,
@@ -124,35 +236,44 @@ impl Updater {
         ensure!(!self.busy.load(Ordering::SeqCst), "请等待更新任务完成");
         Ok(())
     }
-    pub fn check(&self, source: UpdateSource, proxy: crate::model::ProxySettings) -> Result<Value> {
+    pub fn check(
+        &self,
+        source: UpdateSource,
+        channel: UpdateChannel,
+        proxy: crate::model::ProxySettings,
+    ) -> Result<Value> {
         source.validate()?;
         let busy = self.acquire()?;
+        self.clear();
         let updater = self.clone();
         self.jobs.task("system.check", move |cancel| {
             let _busy = busy;
             cancel.check()?;
-            let response = crate::http::get_with_proxy(
-                &source.url,
-                false,
-                Duration::from_secs(15),
-                &[],
-                &proxy,
-            )?;
-            let mut bytes = Vec::new();
-            response
-                .into_reader()
-                .take(256 * 1024 + 1)
-                .read_to_end(&mut bytes)?;
-            let release = verify_descriptor(&bytes)?;
-            let info = json!({"release":release});
-            cancel.commit(|| {
-                *updater.candidate.lock().unwrap() = Some((release, bytes, source.url));
-                Ok(())
+            let result = resolve_release(&source, channel, &cancel, &mut |url, limit| {
+                crate::model::validate_url(url, false)?;
+                let response = crate::http::get_with_proxy_cancel(
+                    url,
+                    false,
+                    Duration::from_secs(15),
+                    &[
+                        ("User-Agent", "Framely"),
+                        ("Accept", "application/vnd.github+json"),
+                    ],
+                    &proxy,
+                    &cancel,
+                )?;
+                crate::http::read_cancel(response, limit, &cancel)
             })?;
-            if let Some((path, _, _)) = updater.prepared.lock().unwrap().take() {
-                let _ = fs::remove_dir_all(path);
+            if let Some((release, bytes, version)) = result {
+                let info = json!({"release":release,"version":version,"channel":channel});
+                cancel.commit(|| {
+                    *updater.candidate.lock().unwrap() = Some((release, bytes, (source, channel)));
+                    Ok(())
+                })?;
+                Ok(info)
+            } else {
+                Ok(json!({"release":null,"channel":channel}))
             }
-            Ok(info)
         })
     }
     pub fn clear(&self) {
@@ -197,6 +318,7 @@ impl Updater {
         root: &Path,
         manager: u32,
         source: &UpdateSource,
+        channel: UpdateChannel,
         request: Value,
     ) -> Result<Value> {
         let _busy = self.acquire()?;
@@ -210,7 +332,10 @@ impl Updater {
             .unwrap()
             .clone()
             .context("请先下载并校验发行包")?;
-        ensure!(source_url == source.url, "更新源已变化，请重新检查并下载");
+        ensure!(
+            source_url == (source.clone(), channel),
+            "更新源或渠道已变化，请重新检查并下载"
+        );
         ensure!(
             request["version"].as_str() == Some(&release.version),
             "待安装版本已变，请重新确认"
@@ -359,6 +484,183 @@ pub fn apply(root: &Path, manager: u32, stage: Option<PathBuf>, rollback: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn source() -> UpdateSource {
+        UpdateSource {
+            url: "https://github.com/example/framely/releases/latest/download/framely-release.json"
+                .into(),
+        }
+    }
+    fn fixture(version: &str, draft: bool) -> (Value, Vec<u8>) {
+        let build = format!("{version}-012345abcdef");
+        let base = format!("https://github.com/example/framely/releases/download/v{version}");
+        let archive = format!("framely-{build}-linux-arm64.tar.gz");
+        let descriptor = serde_json::to_vec(&json!({"schemaVersion":1,"version":build,"apiVersion":1,"arch":"aarch64","url":format!("{base}/{archive}"),"sha256":"a".repeat(64),"size":123,"changelog":"Notes"})).unwrap();
+        (
+            json!({"tag_name":format!("v{version}"),"draft":draft,"prerelease":!semver::Version::parse(version).unwrap().pre.is_empty(),"assets":[{"name":"framely-release.json","browser_download_url":format!("{base}/framely-release.json"),"size":descriptor.len()},{"name":archive,"browser_download_url":format!("{base}/{archive}"),"size":123}]}),
+            descriptor,
+        )
+    }
+    fn resolve_fixture(
+        channel: UpdateChannel,
+        releases: Vec<(Value, Vec<u8>)>,
+    ) -> Result<Option<Resolved>> {
+        let list = serde_json::to_vec(&releases.iter().map(|r| &r.0).collect::<Vec<_>>()).unwrap();
+        resolve_release(&source(), channel, &Default::default(), &mut |url, _| {
+            if url.contains("/releases?per_page=100&page=1") {
+                return Ok(list.clone());
+            }
+            releases
+                .iter()
+                .find(|r| r.0["assets"][0]["browser_download_url"] == url)
+                .map(|r| r.1.clone())
+                .context("unexpected request")
+        })
+    }
+    #[test]
+    fn github_channels_select_semver_and_skip_other_products_and_incomplete_releases() {
+        let mut installer = fixture("9.0.0", false);
+        installer.0["tag_name"] = json!("installer-v9.0.0");
+        let mut incomplete = fixture("8.0.0", false);
+        incomplete.0["assets"] = json!([]);
+        let releases = vec![
+            fixture("0.4.2-preview.9", false),
+            fixture("0.4.2-preview.10", false),
+            fixture("0.4.1", false),
+            fixture("0.5.0", true),
+            installer,
+            incomplete,
+            fixture("0.4.2", false),
+        ];
+        let stable = resolve_fixture(UpdateChannel::Stable, releases.clone())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stable.2, "0.4.2");
+        assert_eq!(stable.0.version, "0.4.2-012345abcdef");
+        let testing = resolve_fixture(UpdateChannel::Testing, releases)
+            .unwrap()
+            .unwrap();
+        assert_eq!(testing.2, "0.4.2-preview.10");
+        assert!(resolve_fixture(
+            UpdateChannel::Stable,
+            vec![fixture("0.4.2-preview.1", false)]
+        )
+        .unwrap()
+        .is_none());
+        assert!(
+            resolve_fixture(UpdateChannel::Testing, vec![fixture("0.4.2", false)])
+                .unwrap()
+                .is_none()
+        );
+    }
+    #[test]
+    fn github_channel_lookup_paginates_and_handles_cancellation() {
+        let (release, bytes) = fixture("0.4.2-rc.1", false);
+        let ignored =
+            json!({"tag_name":"installer-v1.0.0","draft":false,"prerelease":false,"assets":[]});
+        let mut requests = Vec::new();
+        let result = resolve_release(
+            &source(),
+            UpdateChannel::Testing,
+            &Default::default(),
+            &mut |url, _| {
+                requests.push(url.to_owned());
+                if url.ends_with("page=1") {
+                    Ok(serde_json::to_vec(&vec![ignored.clone(); 100]).unwrap())
+                } else if url.ends_with("page=2") {
+                    Ok(serde_json::to_vec(&vec![release.clone()]).unwrap())
+                } else {
+                    Ok(bytes.clone())
+                }
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(result.2, "0.4.2-rc.1");
+        assert_eq!(requests.len(), 3);
+        let cancel = crate::jobs::Cancellation::default();
+        cancel.stop();
+        assert!(resolve_release(
+            &source(),
+            UpdateChannel::Testing,
+            &cancel,
+            &mut |_, _| panic!("cancelled request")
+        )
+        .is_err());
+    }
+    #[test]
+    fn github_descriptor_must_match_selected_tag_archive_and_size() {
+        for field in ["version", "url", "size"] {
+            let (release, bytes) = fixture("0.4.2-preview.1", false);
+            let mut descriptor: Value = serde_json::from_slice(&bytes).unwrap();
+            descriptor[field] = match field {
+                "version" => json!("0.4.2-preview.2-012345abcdef"),
+                "url" => json!("https://example.org/unrelated.tar.gz"),
+                _ => json!(124),
+            };
+            assert!(
+                resolve_fixture(
+                    UpdateChannel::Testing,
+                    vec![(release, serde_json::to_vec(&descriptor).unwrap())]
+                )
+                .is_err(),
+                "{field}"
+            );
+        }
+    }
+    #[test]
+    fn custom_descriptors_distinguish_channels_and_ignore_packaging_hashes() {
+        for (version, channel) in [
+            ("0.4.2", UpdateChannel::Stable),
+            ("0.4.2-beta.1", UpdateChannel::Testing),
+        ] {
+            let (_, bytes) = fixture(version, false);
+            let mut source = source();
+            source.url = "https://example.org/release.json".into();
+            assert_eq!(
+                resolve_release(&source, channel, &Default::default(), &mut |url, _| {
+                    assert_eq!(url, source.url);
+                    Ok(bytes.clone())
+                })
+                .unwrap()
+                .unwrap()
+                .2,
+                version
+            );
+            let other_channel = if channel == UpdateChannel::Stable {
+                UpdateChannel::Testing
+            } else {
+                UpdateChannel::Stable
+            };
+            assert!(
+                resolve_release(&source, other_channel, &Default::default(), &mut |_, _| Ok(
+                    bytes.clone()
+                ))
+                .is_err()
+            );
+        }
+    }
+    #[test]
+    fn changing_channel_invalidates_a_downloaded_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let updater = Updater::default();
+        let (_, bytes) = fixture("0.4.2-preview.1", false);
+        let release = verify_descriptor(&bytes).unwrap();
+        *updater.prepared.lock().unwrap() = Some((
+            dir.path().into(),
+            release.clone(),
+            (source(), UpdateChannel::Testing),
+        ));
+        let error = updater
+            .apply(
+                dir.path(),
+                1000,
+                &source(),
+                UpdateChannel::Stable,
+                json!({"approve":true,"version":release.version}),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("渠道已变化"));
+    }
     #[test]
     fn unsigned_release_manifest_validates_metadata() {
         let dir = tempfile::tempdir().unwrap();

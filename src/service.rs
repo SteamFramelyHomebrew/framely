@@ -992,8 +992,17 @@ impl Service {
                 self.save()?;
                 Ok(json!(true))
             }
+            "system.channel.save" => {
+                let channel: UpdateChannel = serde_json::from_value(p["channel"].clone())?;
+                self.updater.ensure_idle()?;
+                self.db.update_channel = channel;
+                self.updater.clear();
+                self.save()?;
+                Ok(json!(true))
+            }
             "system.check.start" => self.updater.check(
                 self.db.update_source.clone().context("请先设置更新源")?,
+                self.db.update_channel,
                 self.db.proxy.clone(),
             ),
             "system.download.start" => self
@@ -1007,6 +1016,7 @@ impl Service {
                 &self.root,
                 self.manager,
                 self.db.update_source.as_ref().context("请先配置更新源")?,
+                self.db.update_channel,
                 p,
             ),
             "system.rollback" => crate::update::Updater::rollback(&self.root, self.manager, p),

@@ -775,6 +775,7 @@ impl Agent {
             | "proxy.save"
             | "safeMode"
             | "system.source.save"
+            | "system.channel.save"
             | "system.check.start"
             | "system.download.start"
             | "system.job.status"

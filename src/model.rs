@@ -576,6 +576,8 @@ pub struct Database {
 
     #[serde(default)]
     pub update_source: Option<UpdateSource>,
+    #[serde(default, skip_serializing_if = "UpdateChannel::is_stable")]
+    pub update_channel: UpdateChannel,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -741,7 +743,19 @@ impl CatalogEntry {
         Ok(())
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannel {
+    #[default]
+    Stable,
+    Testing,
+}
+impl UpdateChannel {
+    fn is_stable(&self) -> bool {
+        *self == Self::Stable
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateSource {
     pub url: String,
@@ -750,6 +764,25 @@ impl UpdateSource {
     pub fn validate(&self) -> Result<()> {
         validate_url(&self.url, false)?;
         Ok(())
+    }
+    pub fn github_repository(&self) -> Option<String> {
+        let url = url::Url::parse(&self.url).ok()?;
+        let parts: Vec<_> = url.path_segments()?.collect();
+        if url.host_str() != Some("github.com")
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || parts.len() != 6
+            || parts[2..] != ["releases", "latest", "download", "framely-release.json"]
+            || parts[..2].iter().any(|p| {
+                p.is_empty()
+                    || !p
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
+            })
+        {
+            return None;
+        }
+        Some(format!("{}/{}", parts[0], parts[1]))
     }
 }
 
