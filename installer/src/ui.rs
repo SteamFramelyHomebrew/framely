@@ -1160,24 +1160,12 @@ impl Render for Installer {
                             .h_full()
                             .px_5()
                             .child(
-                                div()
-                                    .w(px(26.))
-                                    .h(px(26.))
-                                    .border_2()
-                                    .border_color(rgb(BLUE))
-                                    .rounded(px(5.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(
-                                        div().w(px(10.)).h(px(10.)).bg(rgb(BLUE)).rounded(px(2.)),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_lg()
-                                    .child("Framely"),
+                                svg()
+                                    .data(include_bytes!("../../assets/branding/framely-logo.svg"))
+                                    .w(px(150.))
+                                    .h(px(36.))
+                                    .flex_none()
+                                    .text_color(rgb(BLUE)),
                             )
                             .child(div().text_sm().text_color(rgb(MUTED)).child("安装器"))
                             .child(div().flex_1())

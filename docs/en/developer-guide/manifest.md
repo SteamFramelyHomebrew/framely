@@ -57,8 +57,17 @@ Legacy `category` is accepted only for compatibility and no longer exported; use
 | `autostart` | false by default for on-demand startup; true for resident startup |
 | `restart` | `on-failure` (default) or `never` |
 | `restartLimit` | Consecutive failure threshold 1–10, default 3 |
+| `memoryLimitMiB` | Memory limit, default 512 MiB; integer 1–4294967295, no 0/null for unlimited memory |
 
 Omit backend for UI-only plugins. System/third-party Python dependencies are not installed automatically. Runtime-user changes require confirmation and use separate data directories without automatic migration.
+
+`backend.memoryLimitMiB` maps to systemd `MemoryMax` for the combined memory of the backend and all its child processes. It is a ceiling, not a memory reservation. Independent lifecycle hooks inherit this limit; hooks without a backend use 512 MiB. The install plan, CLI and installed-plugin management view display the limit. Omitted or explicit 512 values are omitted when packing to preserve compatibility with older hosts; other values require a host and plugin database supporting this field.
+
+For example, declare 2 GiB for a longer replay buffer:
+
+```json
+{"backend": {"entry": "backend", "memoryLimitMiB": 2048}}
+```
 
 ## UI
 

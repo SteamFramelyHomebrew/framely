@@ -82,7 +82,7 @@ fn command(m: &Manifest, payload: &Path, manager: u32, logs: &Path, unit: &str) 
         "KillMode=control-group".into(),
         "TimeoutStopSec=5".into(),
         "TasksMax=128".into(),
-        "MemoryMax=512M".into(),
+        format!("MemoryMax={}M", b.memory_limit_mib),
         "NoNewPrivileges=yes".into(),
     ] {
         cmd.arg(format!("--property={p}"));
@@ -145,6 +145,7 @@ pub fn hook(
         autostart: false,
         restart: RestartPolicy::Never,
         restart_limit: 3,
+        memory_limit_mib: m.memory_limit_mib(),
     });
     let unit = format!("framely-hook-{}-{:032x}", m.id, rand::random::<u128>());
     let cmd = command(&launch, payload, manager, logs, &unit)?;

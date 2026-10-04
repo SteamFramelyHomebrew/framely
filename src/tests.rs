@@ -165,6 +165,48 @@ fn malicious_archive_paths_links_and_duplicates_are_rejected() {
     assert!(package::verify(&zip.finish().unwrap().into_inner()).is_err());
 }
 #[test]
+fn backend_memory_limit_defaults_validation_and_round_trip() {
+    let base = json!({"schemaVersion":1,"apiVersion":1,"id":"test.memory","name":"Memory","author":"Dev","version":"1","backend":{"entry":"backend"},"files":{"backend":package::digest(b"x")}});
+    let manifest: Manifest = serde_json::from_value(base.clone()).unwrap();
+    manifest.validate().unwrap();
+    assert_eq!(manifest.memory_limit_mib(), 512);
+    // Preserve the old serialized shape when the default is used.
+    assert!(serde_json::to_value(&manifest).unwrap()["backend"]
+        .get("memoryLimitMiB")
+        .is_none());
+    for limit in [1, 512, 2048, u32::MAX] {
+        let mut value = base.clone();
+        value["backend"]["memoryLimitMiB"] = json!(limit);
+        let manifest: Manifest = serde_json::from_value(value).unwrap();
+        manifest.validate().unwrap();
+        let packed = serde_json::to_value(&manifest).unwrap();
+        let restored: Manifest = serde_json::from_value(packed).unwrap();
+        assert_eq!(restored.memory_limit_mib(), limit);
+    }
+    for limit in [
+        json!(0),
+        json!(-1),
+        json!(1.5),
+        json!("2048"),
+        json!(true),
+        json!(null),
+        json!(4294967296u64),
+    ] {
+        let mut value = base.clone();
+        value["backend"]["memoryLimitMiB"] = limit;
+        assert!(serde_json::from_value::<Manifest>(value).map_or(true, |m| m.validate().is_err()));
+    }
+    let mut ui_only = base;
+    ui_only.as_object_mut().unwrap().remove("backend");
+    assert_eq!(
+        serde_json::from_value::<Manifest>(ui_only)
+            .unwrap()
+            .memory_limit_mib(),
+        512
+    );
+}
+
+#[test]
 fn default_identity_and_invalid_identities() {
     let m = json!({"schemaVersion":1,"apiVersion":1,"id":"test","name":"Test","author":"Dev","version":"1","backend":{"entry":"backend"},"ui":{},"files":{"backend":package::digest(b"x")}});
     let manifest: Manifest = serde_json::from_value(m.clone()).unwrap();
@@ -469,7 +511,7 @@ for line in sys.stdin:
         fs::write(payload.join("backend.py"), backend).unwrap();
         fs::write(payload.join("page.js"), "test").unwrap();
         let hook = json!({"entry":"backend.py"});
-        let manifest = json!({"schemaVersion":1,"apiVersion":1,"id":"test.lifecycle","name":"Lifecycle","author":"Test","version":version,"backend":{"entry":"backend.py","runAs":"steamos","autostart":version!="badrollback","restart":restart,"restartLimit":3},"lifecycle":{"onInstall":hook,"onUpdate":hook,"onUninstall":hook,"onCrashCleanup":hook,"onStart":true,"onStop":true,"timeoutSeconds":1},"ui":{"quickPage":"page.js"},"files":{}});
+        let manifest = json!({"schemaVersion":1,"apiVersion":1,"id":"test.lifecycle","name":"Lifecycle","author":"Test","version":version,"backend":{"entry":"backend.py","runAs":"steamos","autostart":version!="badrollback","restart":restart,"restartLimit":3,"memoryLimitMiB":if version=="1" {2048} else {512}},"lifecycle":{"onInstall":hook,"onUpdate":hook,"onUninstall":hook,"onCrashCleanup":hook,"onStart":true,"onStop":true,"timeoutSeconds":1},"ui":{"quickPage":"page.js"},"files":{}});
         let path = temp.path().join(format!("manifest-{version}.json"));
         fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         let out = temp.path().join(format!("{version}.framely"));
@@ -639,6 +681,25 @@ for line in sys.stdin:
     assert!(arguments.contains(&format!("User={}", unsafe { libc::geteuid() })));
     assert!(!arguments.contains("PrivateNetwork=yes"));
     assert!(arguments.contains("NoNewPrivileges=yes"));
+    let launches: Vec<Vec<String>> = arguments
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    for launch in &launches {
+        let expected = if launch
+            .iter()
+            .any(|arg| arg == "--setenv=FRAMELY_PLUGIN_VERSION=1")
+        {
+            "--property=MemoryMax=2048M"
+        } else {
+            "--property=MemoryMax=512M"
+        };
+        assert!(launch.iter().any(|arg| arg == expected));
+    }
+    assert!(launches.iter().any(|args| args
+        .iter()
+        .any(|arg| arg == "--setenv=FRAMELY_LIFECYCLE=onInstall")
+        && args.iter().any(|arg| arg == "--property=MemoryMax=2048M")));
     assert!(arguments.contains("RuntimeMaxSec=1"));
     core.shutdown();
 }

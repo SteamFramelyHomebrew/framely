@@ -56,9 +56,11 @@ FRAMELY_INSTALLER_PREVIEW_DIR=installer/dist/previews installer/target/debug/fra
 
 预览依赖可用的 GPU 或软件 Vulkan 渲染器；默认发行构建不包含此预览功能。
 
-安装器版本由本目录的 `Cargo.toml` 和 `Cargo.lock` 独立管理，不跟随 Framely 本体版本。推送 `installer-v<版本>` 标签（当前 `installer-v0.4.1-preview.3`）触发 `.github/workflows/installer-release.yml`，只构建并发布安装器；本体使用 `v<版本>` 标签和独立工作流。也可在 Actions 手动运行安装器工作流，仅生成构建产物。安装器 Release 不占用仓库的 Latest，以免影响 Frame 的默认安装和更新地址。
+安装器版本由本目录的 `Cargo.toml` 和 `Cargo.lock` 独立管理，不跟随 Framely 本体版本。推送 `installer-v<版本>` 标签（当前 `installer-v0.4.1-preview.4`）触发 `.github/workflows/installer-release.yml`，只构建并发布安装器；本体使用 `v<版本>` 标签和独立工作流。也可在 Actions 手动运行安装器工作流，仅生成构建产物。安装器 Release 不占用仓库的 Latest，以免影响 Frame 的默认安装和更新地址。
 
 Actions 构建 Linux x64/ARM64、Windows x64、macOS Intel/Apple Silicon。macOS 输出 `.app` ZIP，Windows 输出 EXE ZIP，Linux 输出 tar.gz。当前未配置 Apple 公证或 Windows 代码签名，发布前应分别验证系统的首次启动体验。
+
+安装器标题栏和应用图标使用统一的像素 Logo。Windows 构建将 ICO 嵌入 EXE，macOS 打包使用系统 `iconutil` 生成并配置 `.icns`。Linux 解压后可在解压目录执行 `bash install-desktop-entry.sh`，把带图标的入口注册到当前用户的应用菜单；入口指向该目录，移动后需重新执行脚本。
 
 所有自动测试和 Actions 构建只能验证软件及产物；仍需在真实电脑和 Frame 上完成扫描、登录、权限、升级回滚及卸载验收。
 

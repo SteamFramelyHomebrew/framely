@@ -1,5 +1,10 @@
 # Framely
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/branding/framely-logo-light.svg">
+  <img src="assets/branding/framely-logo.svg" alt="Framely" width="320" height="77">
+</picture>
+
 [简体中文](README.md)
 
 A React plugin manager for Steam Frame, with a Rust core service, a separate CEF/OpenVR host, a network management panel, and a desktop installer. Manage plugins, sources, windows, notifications, and updates.

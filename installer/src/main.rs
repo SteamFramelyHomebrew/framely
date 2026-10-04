@@ -839,6 +839,7 @@ fn main() {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
         .run(|cx| {
+            cx.set_app_identity("org.framely.installer", "Framely Installer");
             initialize_theme(cx);
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
@@ -847,6 +848,7 @@ fn main() {
             })
             .detach();
             let options = WindowOptions {
+                app_id: Some("org.framely.installer".into()),
                 window_min_size: Some(size(px(980.), px(720.))),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Framely Installer".into()),

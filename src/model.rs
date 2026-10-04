@@ -27,6 +27,19 @@ pub struct Backend {
     pub restart: RestartPolicy,
     #[serde(default = "restart_limit")]
     pub restart_limit: u32,
+    #[serde(
+        rename = "memoryLimitMiB",
+        default = "default_memory_limit_mib",
+        skip_serializing_if = "is_default_memory_limit_mib"
+    )]
+    pub memory_limit_mib: u32,
+}
+pub const DEFAULT_MEMORY_LIMIT_MIB: u32 = 512;
+fn default_memory_limit_mib() -> u32 {
+    DEFAULT_MEMORY_LIMIT_MIB
+}
+fn is_default_memory_limit_mib(value: &u32) -> bool {
+    *value == DEFAULT_MEMORY_LIMIT_MIB
 }
 fn restart_limit() -> u32 {
     3
@@ -252,6 +265,10 @@ impl Manifest {
         }
         if let Some(b) = &self.backend {
             check(&b.entry)?;
+            ensure!(
+                b.memory_limit_mib > 0,
+                "Backend memoryLimitMiB must be a positive integer"
+            );
             ensure!((1..=10).contains(&b.restart_limit), "Invalid restart limit");
             ensure!(
                 b.args.len() <= 64 && b.args.iter().all(|a| a.len() <= 4096 && !a.contains('\0')),
@@ -316,6 +333,12 @@ impl Manifest {
             );
         }
         Ok(())
+    }
+    pub fn memory_limit_mib(&self) -> u32 {
+        self.backend
+            .as_ref()
+            .map(|b| b.memory_limit_mib)
+            .unwrap_or(DEFAULT_MEMORY_LIMIT_MIB)
     }
     pub fn run_as(&self) -> RunAs {
         self.backend

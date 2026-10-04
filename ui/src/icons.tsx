@@ -16,4 +16,4 @@ const paths:Record<IconName,React.ReactNode>={
  refresh:<><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1"/></>,
 };
 export function Icon({name,size=24,filled=false}:{name:IconName;size?:number;filled?:boolean}){return <svg width={size} height={size} viewBox="0 0 24 24" fill={filled?'currentColor':'none'} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>}
-export function Brand(){return <span className="brand-mark"><Icon name="plugins" size={27}/></span>}
+export function Brand({wordmark=false}:{wordmark?:boolean}={}){return <span className={`brand-mark${wordmark?' brand-wordmark':''}`}><img src={`/assets/branding/framely-${wordmark?'logo':'mark'}-light.svg`} alt={wordmark?'Framely':''} aria-hidden={wordmark?undefined:true}/></span>}

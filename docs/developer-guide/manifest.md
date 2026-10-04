@@ -57,8 +57,17 @@
 | `autostart` | 默认 false，按需启动；true 表示启动时常驻 |
 | `restart` | `on-failure`（默认）或 `never` |
 | `restartLimit` | 连续失败阈值 1–10，默认 3 |
+| `memoryLimitMiB` | 内存上限，默认 512 MiB；1–4294967295 的整数，不能用 0 或 null 取消限制 |
 
 省略 backend 可制作纯 UI 插件。系统/Python 第三方依赖不会自动安装。运行用户变化需用户确认，数据目录按运行身份区分，不自动迁移。
+
+`backend.memoryLimitMiB` 映射到 systemd 的 `MemoryMax`，限制后端及其所有子进程的合计内存；它是上限，不会预分配内存。独立生命周期钩子沿用该值，没有后端的钩子使用 512 MiB。安装计划、CLI 和已安装插件管理页展示上限。省略或填写 512 时打包省略该字段，保持旧包兼容；使用其他值需要支持此字段的新版宿主及插件数据库。
+
+例如，为较长回放声明 2 GiB：
+
+```json
+{"backend": {"entry": "backend", "memoryLimitMiB": 2048}}
+```
 
 ## `ui`
 

@@ -177,6 +177,41 @@ impl Agent {
                 );
             }
         }
+        // Public, compile-time branding only. No other assets bypass network login.
+        let branding: Option<(&[u8], &str)> = match path.as_str() {
+            "/assets/branding/framely-mark-light.svg" => Some((
+                include_bytes!("../assets/branding/framely-mark-light.svg"),
+                "image/svg+xml",
+            )),
+            "/assets/branding/framely-logo-light.svg" => Some((
+                include_bytes!("../assets/branding/framely-logo-light.svg"),
+                "image/svg+xml",
+            )),
+            "/assets/branding/framely-app-icon.svg" => Some((
+                include_bytes!("../assets/branding/framely-app-icon.svg"),
+                "image/svg+xml",
+            )),
+            "/assets/branding/framely-app-icon.png" => Some((
+                include_bytes!("../assets/branding/framely-app-icon.png"),
+                "image/png",
+            )),
+            "/assets/branding/framely.ico" | "/favicon.ico" => Some((
+                include_bytes!("../assets/branding/framely.ico"),
+                "image/x-icon",
+            )),
+            _ => None,
+        };
+        if r.method() == &Method::Get {
+            if let Some((data, mime)) = branding {
+                r.respond(
+                    Response::from_data(data)
+                        .with_header(header("Content-Type", mime))
+                        .with_header(header("X-Content-Type-Options", "nosniff"))
+                        .with_header(header("Cache-Control", "no-cache")),
+                )?;
+                return Ok(());
+            }
+        }
         let configured = remote && self.core("network.password.configured", json!({}))? == true;
         if remote && (!configured || !self.network_authorized(&r)) {
             let status = self.core("status", json!({}))?;
@@ -291,7 +326,7 @@ impl Agent {
                 return Ok(());
             }
             if r.method() == &Method::Get && (path == "/" || path == "/manager") {
-                r.respond(Response::from_string(if configured { NETWORK_LOGIN } else { NETWORK_SETUP }).with_header(header("Content-Type","text/html; charset=utf-8")).with_header(header("Content-Security-Policy","default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")))?;
+                r.respond(Response::from_string(if configured { NETWORK_LOGIN } else { NETWORK_SETUP }).with_header(header("Content-Type","text/html; charset=utf-8")).with_header(header("Content-Security-Policy","default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")))?;
             } else {
                 r.respond(
                     Response::empty(StatusCode(401))
@@ -1138,8 +1173,8 @@ fn network_ipv4_addresses() -> Vec<String> {
     addresses.into_iter().collect()
 }
 
-const NETWORK_SETUP: &str = r#"<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Framely · 设置访问密码</title><style>body{background:#17191c;color:#f0f1f3;font:18px system-ui;margin:0;display:grid;min-height:100vh;place-items:center}main{padding:32px;max-width:360px}input,button{box-sizing:border-box;width:100%;padding:14px;margin:12px 0;border:1px solid #59616d;border-radius:5px;background:#292c31;color:inherit;font:inherit}p{color:#a4a8b0}</style><main><h1>设置访问密码</h1><p>首次访问网络管理面板，请设置至少 8 个字符的密码。保存后使用该密码登录。</p><form method="post" action="/setup"><label>访问密码<input name="password" type="password" required autocomplete="new-password" minlength="8" maxlength="512"></label><label>确认密码<input name="confirmPassword" type="password" required autocomplete="new-password" minlength="8" maxlength="512"></label><button>保存访问密码</button></form></main></html>"#;
-const NETWORK_LOGIN: &str = r#"<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Framely</title><style>body{background:#17191c;color:#f0f1f3;font:18px system-ui;margin:0;display:grid;min-height:100vh;place-items:center}main{padding:32px;max-width:360px}input,button{box-sizing:border-box;width:100%;padding:14px;margin:12px 0;border:1px solid #59616d;border-radius:5px;background:#292c31;color:inherit;font:inherit}p{color:#a4a8b0}</style><main><h1>Framely</h1><p>输入你在设备设置中配置的访问密码。</p><form method="post" action="/login"><label>访问密码<input name="password" type="password" required autocomplete="current-password" maxlength="512"></label><button>打开管理面板</button></form></main></html>"#;
+const NETWORK_SETUP: &str = r#"<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Framely · 设置访问密码</title><link rel="icon" href="/assets/branding/framely-app-icon.svg" type="image/svg+xml"><link rel="alternate icon" href="/assets/branding/framely.ico"><link rel="apple-touch-icon" href="/assets/branding/framely-app-icon.png"><style>body{background:#17191c;color:#f0f1f3;font:18px system-ui;margin:0;display:grid;min-height:100vh;place-items:center}main{padding:32px;max-width:360px}input,button{box-sizing:border-box;width:100%;padding:14px;margin:12px 0;border:1px solid #59616d;border-radius:5px;background:#292c31;color:inherit;font:inherit}p{color:#a4a8b0}.brand{display:block;width:200px;height:48px;margin-bottom:24px;image-rendering:pixelated}</style><main><img class="brand" src="/assets/branding/framely-logo-light.svg" alt="Framely"><h1>设置访问密码</h1><p>首次访问网络管理面板，请设置至少 8 个字符的密码。保存后使用该密码登录。</p><form method="post" action="/setup"><label>访问密码<input name="password" type="password" required autocomplete="new-password" minlength="8" maxlength="512"></label><label>确认密码<input name="confirmPassword" type="password" required autocomplete="new-password" minlength="8" maxlength="512"></label><button>保存访问密码</button></form></main></html>"#;
+const NETWORK_LOGIN: &str = r#"<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Framely</title><link rel="icon" href="/assets/branding/framely-app-icon.svg" type="image/svg+xml"><link rel="alternate icon" href="/assets/branding/framely.ico"><link rel="apple-touch-icon" href="/assets/branding/framely-app-icon.png"><style>body{background:#17191c;color:#f0f1f3;font:18px system-ui;margin:0;display:grid;min-height:100vh;place-items:center}main{padding:32px;max-width:360px}input,button{box-sizing:border-box;width:100%;padding:14px;margin:12px 0;border:1px solid #59616d;border-radius:5px;background:#292c31;color:inherit;font:inherit}p{color:#a4a8b0}.brand{display:block;width:200px;height:48px;margin-bottom:24px;image-rendering:pixelated}</style><main><h1><img class="brand" src="/assets/branding/framely-logo-light.svg" alt="Framely"></h1><p>输入你在设备设置中配置的访问密码。</p><form method="post" action="/login"><label>访问密码<input name="password" type="password" required autocomplete="current-password" maxlength="512"></label><button>打开管理面板</button></form></main></html>"#;
 
 fn network_listener(agent: Arc<Agent>, keep_running: impl Fn() -> bool) {
     let mut server: Option<Server> = None;
@@ -1607,6 +1642,28 @@ mod tests {
         let page = ureq::get(&origin).call().unwrap().into_string().unwrap();
         assert!(page.contains("设置访问密码"));
         assert!(page.contains("action=\"/setup\""));
+        assert!(page.contains("/assets/branding/framely-logo-light.svg"));
+        let logo = ureq::get(&format!("{origin}/assets/branding/framely-logo-light.svg"))
+            .call()
+            .unwrap();
+        assert_eq!(logo.header("Content-Type"), Some("image/svg+xml"));
+        assert_eq!(logo.header("X-Content-Type-Options"), Some("nosniff"));
+        assert_eq!(
+            logo.into_string().unwrap(),
+            include_str!("../assets/branding/framely-logo-light.svg")
+        );
+        let icon = ureq::get(&format!("{origin}/favicon.ico")).call().unwrap();
+        assert_eq!(icon.header("Content-Type"), Some("image/x-icon"));
+        for path in [
+            "/assets/app.js",
+            "/assets/branding/../app.js",
+            "/assets/branding/unknown.svg",
+        ] {
+            assert!(matches!(
+                ureq::get(&format!("{origin}{path}")).call(),
+                Err(ureq::Error::Status(401, _))
+            ));
+        }
         assert!(!page.contains(password.as_str()));
         assert!(ureq::post(&format!("{origin}/api"))
             .set("Origin", &origin)

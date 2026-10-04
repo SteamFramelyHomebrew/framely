@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="384" viewBox="0 0 100 24" role="img" aria-labelledby="title desc" color="#93c5ed">
+  <title id="title">Framely</title>
+  <desc id="desc">Pixel window sprite with the framely wordmark drawn as vector pixels.</desc>
+  <g shape-rendering="crispEdges">
+    <path fill="currentColor" fill-rule="evenodd" transform="translate(1.5 2)" d="M6 3H18V4H19V14H18V15H16V16H15V17H13V15H10V16H9V17H7V15H6V14H5V10H3V9H2V8H3V9H5V4H6Z M7 6H17V13H7Z M14 4H15V5H14Z M16 4H17V5H16Z M9 8H11V10H9Z M13 10H15V12H13Z"/>
+    <path fill="currentColor" transform="translate(29 5.25) scale(1.5)" d="M2 0h3v1h-3Z M1 1h2v1h-2Z M1 2h2v1h-2Z M0 3h4v1h-4Z M1 4h2v1h-2Z M1 5h2v1h-2Z M1 6h2v1h-2Z M7 2h2v1h-2Z M10 2h2v1h-2Z M7 3h3v1h-3Z M7 4h2v1h-2Z M7 5h2v1h-2Z M7 6h2v1h-2Z M15 2h3v1h-3Z M17 3h2v1h-2Z M15 4h4v1h-4Z M14 5h2v1h-2Z M17 5h2v1h-2Z M15 6h4v1h-4Z M21 2h2v1h-2Z M24 2h1v1h-1Z M21 3h5v1h-5Z M21 4h2v1h-2Z M24 4h2v1h-2Z M21 5h2v1h-2Z M24 5h2v1h-2Z M21 6h2v1h-2Z M24 6h2v1h-2Z M29 2h3v1h-3Z M28 3h2v1h-2Z M31 3h2v1h-2Z M28 4h5v1h-5Z M28 5h2v1h-2Z M29 6h4v1h-4Z M35 0h2v1h-2Z M35 1h2v1h-2Z M35 2h2v1h-2Z M35 3h2v1h-2Z M35 4h2v1h-2Z M35 5h2v1h-2Z M36 6h3v1h-3Z M42 2h2v1h-2Z M45 2h2v1h-2Z M42 3h2v1h-2Z M45 3h2v1h-2Z M42 4h2v1h-2Z M45 4h2v1h-2Z M43 5h4v1h-4Z M45 6h2v1h-2Z M44 7h2v1h-2Z M42 8h3v1h-3Z"/>
+  </g>
+</svg>

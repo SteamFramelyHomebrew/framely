@@ -18,6 +18,8 @@ Connect your computer and Frame to the same network. Enable developer mode and S
 4. Enable testing releases to select a Preview. Installer and device versions are independent.
 5. Confirm the device, version and operation on the maintenance page. Alternatively, select a local device archive and its external `SHA256SUMS`.
 
+On Linux, run `bash install-desktop-entry.sh` from the extracted installer directory to add an entry with the Framely icon to your user application menu. The entry points to that directory; run the script again after moving it.
+
 Downloads are checked locally and again on the device. Passwords are not saved in configuration. Observe startup and rendering on Frame after installation.
 
 ## Option 2: install from Frame's SSH terminal

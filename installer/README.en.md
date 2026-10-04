@@ -56,9 +56,11 @@ FRAMELY_INSTALLER_PREVIEW_DIR=installer/dist/previews installer/target/debug/fra
 
 Preview requires an available GPU or software Vulkan renderer. Default release builds do not include preview support.
 
-Installer versions are managed independently in this directory's `Cargo.toml` and `Cargo.lock`. Pushing an `installer-v<VERSION>` tag (currently `installer-v0.4.1-preview.3`) triggers `.github/workflows/installer-release.yml` to build and publish only the installer. The core uses `v<VERSION>` tags and a separate workflow. Manual Actions runs produce build artifacts only. Installer releases do not become the repository's Latest release, preserving Frame's default install/update URLs.
+Installer versions are managed independently in this directory's `Cargo.toml` and `Cargo.lock`. Pushing an `installer-v<VERSION>` tag (currently `installer-v0.4.1-preview.4`) triggers `.github/workflows/installer-release.yml` to build and publish only the installer. The core uses `v<VERSION>` tags and a separate workflow. Manual Actions runs produce build artifacts only. Installer releases do not become the repository's Latest release, preserving Frame's default install/update URLs.
 
 Actions builds Linux x64/ARM64, Windows x64, and macOS Intel/Apple Silicon. macOS produces an `.app` ZIP, Windows an EXE ZIP, and Linux a tar.gz. Apple notarization and Windows code signing are not configured; verify first-launch behavior on each system before publishing.
+
+The titlebar and application icons share the pixel logo. Windows builds embed the ICO in the EXE; macOS packaging uses the system `iconutil` to generate and configure `.icns`. On Linux, run `bash install-desktop-entry.sh` from the extracted archive to register an icon-bearing entry in the current user's application menu. The entry points to that directory; rerun the script after moving it.
 
 Automated tests and Actions builds validate software and artifacts. Discovery, login, permissions, update, rollback, and uninstall still need acceptance testing on actual computers and Frame hardware.
 

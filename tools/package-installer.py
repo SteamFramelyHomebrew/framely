@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Package the native installer; no external packaging tools needed."""
+"""Package the native installer, including platform application icons."""
 import os
 import pathlib
 import plistlib
 import shutil
+import subprocess
 import tarfile
 import tomllib
 import zipfile
@@ -21,15 +22,30 @@ with __import__('tempfile').TemporaryDirectory() as temp:
     if platform.startswith('macos'):
         bundle = stage / 'Framely Installer.app/Contents'
         (bundle / 'MacOS').mkdir(parents=True)
+        (bundle / 'Resources').mkdir()
+        iconset = pathlib.Path(temp) / 'Framely.iconset'
+        iconset.mkdir()
+        for size in (16, 32, 128, 256, 512):
+            for scale in (1, 2):
+                suffix = '@2x' if scale == 2 else ''
+                shutil.copy2(root / f'assets/branding/icons/{size * scale}.png', iconset / f'icon_{size}x{size}{suffix}.png')
+        subprocess.run(['iconutil', '-c', 'icns', '-o', str(bundle / 'Resources/Framely.icns'), str(iconset)], check=True)
+        shutil.rmtree(iconset)
         shutil.copy2(binary, bundle / 'MacOS/framely-installer')
         (bundle / 'MacOS/framely-installer').chmod(0o755)
         with (bundle / 'Info.plist').open('wb') as output:
-            plistlib.dump({'CFBundleName': 'Framely Installer', 'CFBundleDisplayName': 'Framely Installer', 'CFBundleIdentifier': 'org.framely.installer', 'CFBundleExecutable': 'framely-installer', 'CFBundlePackageType': 'APPL', 'CFBundleVersion': version, 'CFBundleShortVersionString': version, 'NSHighResolutionCapable': True, 'LSMinimumSystemVersion': '11.0'}, output)
+            plistlib.dump({'CFBundleName': 'Framely Installer', 'CFBundleDisplayName': 'Framely Installer', 'CFBundleIdentifier': 'org.framely.installer', 'CFBundleExecutable': 'framely-installer', 'CFBundleIconFile': 'Framely.icns', 'CFBundlePackageType': 'APPL', 'CFBundleVersion': version, 'CFBundleShortVersionString': version, 'NSHighResolutionCapable': True, 'LSMinimumSystemVersion': '11.0'}, output)
     else:
         shutil.copy2(binary, stage / exe)
         if not platform.startswith('windows'):
             (stage / exe).chmod(0o755)
+            shutil.copy2(root / 'installer/install-desktop-entry.sh', stage / 'install-desktop-entry.sh')
+            (stage / 'install-desktop-entry.sh').chmod(0o755)
+    (stage / 'assets/branding').mkdir(parents=True)
+    for asset in ('framely-logo.svg', 'framely-logo-light.svg', 'framely-app-icon.svg', 'framely-app-icon.png', 'framely.ico'):
+        shutil.copy2(root / 'assets/branding' / asset, stage / 'assets/branding' / asset)
     shutil.copy2(root / 'installer/README.md', stage / 'README.md')
+    shutil.copy2(root / 'installer/README.en.md', stage / 'README.en.md')
     shutil.copy2(root / 'LICENSE', stage / 'LICENSE')
     name = f'framely-installer-{version}-{platform}'
     if platform.startswith('linux'):

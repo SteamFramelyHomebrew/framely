@@ -13,6 +13,7 @@
 #include "notification_geometry.h"
 #include "keyboard_state.h"
 #include "keyboard_input.h"
+#include "brand_mask.h"
 #include <GL/gl.h>
 #include <GL/glx.h>
 #include <arpa/inet.h>
@@ -73,17 +74,12 @@ static void execute(cef_frame_t* f,const std::string& code){if(!f||!f->is_valid(
 static std::vector<uint8_t> icon(bool hover,bool active){
  std::vector<uint8_t> p(128*128*4);
  auto rounded=[](float x,float y,float half,float radius){float a=std::abs(x)-half+radius,b=std::abs(y)-half+radius;return std::hypot(std::max(a,0.f),std::max(b,0.f))+std::min(std::max(a,b),0.f)-radius;};
- auto circle=[](float x,float y,float cx,float cy){return std::hypot(x-cx,y-cy)-10.f;};
  for(int y=0;y<128;y++)for(int x=0;x<128;x++){
   float coverage=std::clamp(.5f-rounded(x-63.5f,y-63.5f,64.f,9.6f),0.f,1.f);
-  float gx=(x-63.5f)*1.15f+71.f,gy=(y-63.5f)*1.15f+57.f;
-  float qx=std::abs(gx-64.f)-23.f,qy=std::abs(gy-64.f)-23.f;
-  float d=std::hypot(std::max(qx,0.f),std::max(qy,0.f))+std::min(std::max(qx,qy),0.f)-3.f;
-  d=std::min(d,std::min(circle(gx,gy,64,34),circle(gx,gy,94,64)));
-  d=std::max(d,std::max(-circle(gx,gy,38,64),-circle(gx,gy,64,90)));
-  float mark=std::clamp(2.7f-std::abs(d),0.f,1.f);
+  int gx=std::min(47,int((x+.5f)*48/128)),gy=std::min(47,int((y+.5f)*48/128));
+  float mark=framely_brand::mask[gy*48+gx]/255.f;
   int i=(y*128+x)*4;
-  const int normal[3]={14,20,27},highlight[3]={61,68,80},muted[3]={139,146,154},bright[3]={220,222,223};
+  const int normal[3]={23,25,28},highlight[3]={61,68,80},muted[3]={147,197,237},bright[3]={240,241,243};
   for(int c=0;c<3;c++){float bg=(hover||active)?highlight[c]:normal[c];float fg=(hover||active)?bright[c]:muted[c];p[i+c]=uint8_t(bg+(fg-bg)*mark);}
   // 32px-wide, 6px-high tab indicator is clipped to its upper 3px by the BarSurface.
   if(active){float qx=std::abs(x-63.5f)-20.8f,qy=std::abs(y-129.6f);float line=std::clamp(5.3f-std::hypot(std::max(qx,0.f),qy),0.f,1.f);const int blue[3]={26,159,255};for(int c=0;c<3;c++)p[i+c]=uint8_t(p[i+c]+(blue[c]-p[i+c])*line);}

@@ -1,5 +1,10 @@
 # Framely
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/branding/framely-logo-light.svg">
+  <img src="assets/branding/framely-logo.svg" alt="Framely" width="320" height="77">
+</picture>
+
 [English](README.en.md)
 
 Steam Frame 的 React 插件管理器：Rust 核心服务、独立 CEF/OpenVR 宿主、网络管理面板和电脑端安装器。可管理插件、来源、窗口、通知和更新。

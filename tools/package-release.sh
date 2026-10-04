@@ -11,7 +11,7 @@ npm run build
 bash tools/build-native.sh "$cef"
 binary=${CARGO_TARGET_DIR:-target}/release/framely
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-build_id="$version-$(find "$binary" target/native ui/dist sdk templates/plugin examples/showcase packaging tools docs README.md README.en.md LICENSE -type f ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)"
+build_id="$version-$(find "$binary" target/native ui/dist sdk templates/plugin examples/showcase packaging tools docs assets/branding README.md README.en.md LICENSE -type f ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)"
 stage="$base/release/framely-$build_id"
 [[ ! -e $stage ]] || { echo 'Release already exists.' >&2; exit 1; }
 mkdir -p "$stage"/{bin,lib/cef,lib/openvr,share/ui,share/licenses,tools}
@@ -30,15 +30,19 @@ cp native/vendor/openvr/LICENSE "$stage/share/licenses/openvr.txt"
 cp native/vendor/json.hpp "$stage/share/licenses/nlohmann-json.hpp"
 cp packaging/*.sh "$stage/"
 cp README.md README.en.md "$stage/"
+mkdir -p "$stage/assets"
+cp -a assets/branding "$stage/assets/"
 cp LICENSE "$stage/LICENSE"
 mkdir -p "$stage/tools/source/examples" "$stage/tools/source/tools" "$stage/tools/source/ui"
 cp package.json package-lock.json tsconfig.json LICENSE "$stage/tools/source/"
 cp -a sdk "$stage/tools/source/"
 mkdir -p "$stage/tools/source/templates"
 cp -a templates/plugin "$stage/tools/source/templates/"
+mkdir -p "$stage/tools/source/assets"
+cp -a assets/branding "$stage/tools/source/assets/"
 cp -a examples/showcase "$stage/tools/source/examples/"
 cp -a ui/src ui/locales ui/index.html ui/package.json "$stage/tools/source/ui/"
-cp tools/build-ui.mjs tools/plugin-dev.mjs "$stage/tools/source/tools/"
+cp tools/build-ui.mjs tools/build-branding.mjs tools/plugin-dev.mjs "$stage/tools/source/tools/"
 cp tools/extract-release.py tools/bootstrap.py "$stage/tools/"
 find "$stage/tools/source" -type d -name __pycache__ -prune -exec rm -rf -- {} +
 cp -a docs "$stage/share/"

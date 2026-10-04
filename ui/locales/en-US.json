@@ -3,6 +3,7 @@
   "locale": "en-US",
   "name": "English",
   "messages": {
+    "后端内存上限：{0} MiB（含子进程）": "Backend memory limit: {0} MiB (including child processes)",
     "请先阅读并同意使用协议": "Please read and agree to the terms of use first",
     "查看使用协议": "View terms of use",
     "使用 Framely 前": "Before using Framely",

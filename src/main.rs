@@ -204,7 +204,7 @@ fn run() -> Result<()> {
                     return Err(e);
                 }
             };
-            let items:Vec<_>=prepared.plan.items.iter().map(|i|json!({"id":i.manifest.id,"name":i.manifest.name,"version":i.manifest.version,"action":i.action,"runAs":i.manifest.run_as(),"source":i.source,"runAsChanged":i.run_as_changed})).collect();
+            let items:Vec<_>=prepared.plan.items.iter().map(|i|json!({"id":i.manifest.id,"name":i.manifest.name,"version":i.manifest.version,"action":i.action,"runAs":i.manifest.run_as(),"memoryLimitMiB":i.manifest.memory_limit_mib(),"source":i.source,"runAsChanged":i.run_as_changed})).collect();
             println!(
                 "{}",
                 serde_json::to_string_pretty(

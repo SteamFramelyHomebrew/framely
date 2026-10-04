@@ -1,6 +1,7 @@
 import React from 'react';
 import {t} from './i18n';
 import {InstallPlan} from './relations';
+import {MemoryLimit} from './memory-limit';
 import {PluginAuthor,PluginLinks} from './store';
 import {runUser,RunUserNotice} from './run-user';
 
@@ -24,6 +25,7 @@ export function InstallReview({title,info,busy,error,confirmed,onConfirmChange,o
     <PluginLinks plugin={manifest}/>
     {manifest.details&&manifest.details!==manifest.description&&<details className="install-details"><summary>{t('完整介绍')}</summary><p>{manifest.details}</p></details>}
    </section>
+   {!info.plan&&<MemoryLimit manifest={manifest}/>}
    <InstallPlan info={info} choose={onChoose}/>
    {info.runAsChanged&&<label className="install-user-confirm"><input type="checkbox" checked={confirmed} onChange={e=>onConfirmChange(e.target.checked)}/><span>{t('我确认变更运行用户')}</span></label>}
    {error&&<p className="error" role="alert">{error}</p>}

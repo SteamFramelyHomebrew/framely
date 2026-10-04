@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 32 32" role="img" aria-labelledby="title desc" color="#17191c">
+  <title id="title">Framely</title>
+  <desc id="desc">Charcoal pixel window sprite on a sky blue application tile.</desc>
+  <g shape-rendering="crispEdges">
+    <rect width="32" height="32" rx="3" fill="#93c5ed" shape-rendering="geometricPrecision"/>
+    <path fill="#17191c" fill-rule="evenodd" transform="translate(3.4 4) scale(1.2)" d="M6 3H18V4H19V14H18V15H16V16H15V17H13V15H10V16H9V17H7V15H6V14H5V10H3V9H2V8H3V9H5V4H6Z M7 6H17V13H7Z M14 4H15V5H14Z M16 4H17V5H16Z M9 8H11V10H9Z M13 10H15V12H13Z"/>
+  </g>
+</svg>

@@ -5,6 +5,7 @@ await build({entryPoints:['ui/src/main.tsx'],bundle:true,minify:true,outfile:'ui
 await build({entryPoints:['sdk/src/bootstrap.ts'],bundle:true,minify:true,outfile:'ui/dist/assets/plugin-bootstrap.js'});
 await copyFile('ui/index.html','ui/dist/index.html');
 await cp('ui/locales','ui/dist/assets/locales',{recursive:true});
+await cp('assets/branding','ui/dist/assets/branding',{recursive:true});
 await mkdir('examples/showcase/payload',{recursive:true});
 await build({entryPoints:['examples/showcase/page.tsx'],bundle:true,minify:true,outfile:'examples/showcase/payload/page.js',define:{'process.env.NODE_ENV':'"production"'}});
 await copyFile('examples/showcase/backend.py','examples/showcase/payload/backend.py');
