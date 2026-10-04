@@ -124,3 +124,7 @@ const off = framely.ui.onVisibilityChanged(state => {
 });
 // 页面卸载时调用 off()
 ```
+
+`framely.ui.close()` 关闭当前原生界面：快捷页关闭 Framely 面板，插件窗口关闭自身；不会停止插件后端或当前录制。需要包含此 bridge 方法的新版宿主。
+
+独立插件窗口直接展示插件页面，宿主不添加标题栏。插件应自行提供标题、导航和关闭按钮，可使用 `framely.ui.close()` 或 `framely.windows.close(id)`。快捷面板仍保留宿主导航。

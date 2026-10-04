@@ -9,7 +9,7 @@ export interface Notification {id:string;title:string;body:string;image?:string;
 type Bridge={request:(op:string,p?:unknown)=>Promise<any>;subscribe:(f:(e:unknown)=>void)=>()=>void};
 function bridge():Bridge{const b=(window as any).__framelyBridge;if(!b)throw new Error('This page requires the Framely plugin host');return b;}
 export const framely={
- ui:createVisibilityApi(bridge),
+ ui:{...createVisibilityApi(bridge),close:():Promise<unknown>=>bridge().request('ui.close')},
  language:{get:():Promise<{preference:string;language:string}>=>bridge().request('language.get')},
  call:<T=unknown>(method:string,params:unknown={}):Promise<T>=>bridge().request('call',{method,params}),
  windows:{open:(window:string)=>bridge().request('window.open',{window}),close:(window:string)=>bridge().request('window.close',{window})},
