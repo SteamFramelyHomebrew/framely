@@ -77,7 +77,7 @@ cargo run --manifest-path "$FRAMELY_REPO/Cargo.toml" --locked -- verify "dist/$P
 
 ### 图标与窗口兼容
 
-社区数据库的图标通常只需顶层 `icon: "icon.png"`：同一路径 PNG 同时提交到源码仓库和 `payload/`。数据库从登记的仓库、固定提交及路径生成 GitHub Raw 地址，并下载比较包内图标；不需要额外填写 `publish.icon`。自行托管目录的图片由 `publish.icon` / `publish.screenshots` 提供固定 HTTPS 地址。[商店资料参考](../plugin-development.md#商店资料与图标)
+社区数据库的图标通常只需顶层 `icon: "icon.png"`：同一路径 PNG 同时提交到源码仓库和 `payload/`。数据库从登记的仓库、固定提交及路径生成 GitHub Raw 地址，并下载比较包内图标；不需要额外填写 `publish.icon`。自行托管目录的图片由 `publish.icon` / `publish.screenshots` 提供固定 HTTPS 地址。[插件库资料参考](../plugin-development.md#插件库资料与图标)
 
 社区数据库支持窗口 `entry`、`title`、`dockIcon`、`localWeb`、`width`、`height`、`widthMeters`。像素宽度为整数 640–2560，高度为整数 360–1440，物理宽度按本体 float32 规则校验 0.4–4.0 米。源码省略尺寸时，数据库会按 1600×900、3 米补全，与 pack 输出一致；自定义尺寸也会参与源码和包内清单比较，未声明的变化会被拒绝。模板包含的默认独立窗口已通过实际打包和数据库校验；登记仍需完成整包哈希、归属及其他字段检查。
 
@@ -92,7 +92,7 @@ mkdir -p target/plugin-catalog
 cargo run --locked -- catalog --name '我的插件源' --base-url https://example.org/packages --packages ./packages --output ./target/plugin-catalog/catalog.json
 ```
 
-将 `example.org` 换成实际 HTTPS 地址。CLI 计算完整包的 SHA256并生成 JSON，不上传包、不复制图片。没有外部 `publish.icon` 时，本地 CLI 不会把包内图标转换成商店 URL。
+将 `example.org` 换成实际 HTTPS 地址。CLI 计算完整包的 SHA256并生成 JSON，不上传包、不复制图片。没有外部 `publish.icon` 时，本地 CLI 不会把包内图标转换成插件库 URL。
 
 **上传整个生成目录，不能只上传 `catalog.json`：**
 

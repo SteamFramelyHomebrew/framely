@@ -12,7 +12,7 @@ Click Framely in the SteamVR Dashboard Dock. First use requires accepting the te
 - **Installed**: browse local plugins and their pages.
 - **Settings**: language, safe mode and the plugin manager entry.
 
-The manager opens a separate large window with navigation for plugins, store, sources, settings and About. Installation, updates and source management happen here. A phone or computer can also use the [network panel](network-panel.md).
+The manager opens a separate large window with navigation for plugins, plugin library, sources, settings and About. Installation, updates and source management happen here. A phone or computer can also use the [network panel](network-panel.md).
 
 ## Plugins and windows
 

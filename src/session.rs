@@ -695,7 +695,11 @@ impl Agent {
                     "host.manager.close" => "manager.close",
                     _ => "menu.close",
                 };
-                push(&self.commands, json!({"kind":kind}));
+                let mut command = json!({"kind":kind});
+                if method == "host.manager.open" && p["page"] == "catalog" {
+                    command["page"] = json!("catalog");
+                }
+                push(&self.commands, command);
                 Ok(json!(true))
             }
             "network.status" => Ok(
@@ -1462,6 +1466,25 @@ mod tests {
                 }
             }
         })
+    }
+    #[test]
+    fn manager_store_entry_preserves_catalog_target_and_rejects_arbitrary_pages() {
+        let root = tempfile::tempdir().unwrap();
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let agent = agent(&server, root.path());
+        for params in [
+            json!({"page":"catalog"}),
+            json!({}),
+            json!({"page":"https://example.org"}),
+        ] {
+            agent
+                .api(json!({"method":"host.manager.open","params":params}))
+                .unwrap();
+        }
+        let commands = agent.commands.lock().unwrap();
+        assert_eq!(commands[0], json!({"kind":"manager.open","page":"catalog"}));
+        assert_eq!(commands[1], json!({"kind":"manager.open"}));
+        assert_eq!(commands[2], json!({"kind":"manager.open"}));
     }
     #[test]
     fn declining_agreement_only_closes_current_view() {

@@ -4,9 +4,9 @@
 
 [Documentation](../README.md) · [Network panel](network-panel.md)
 
-## Install from the store
+## Install from the plugin library
 
-1. Open **Store** in the manager. Current code initializes community stable/testing sources; availability depends on the actual service and device configuration. If no catalog is available, add a developer's complete HTTPS `catalog.json` URL in Sources.
+1. Open **Plugin library** in the manager. Current code initializes community stable/testing sources; availability depends on the actual service and device configuration. If no catalog is available, add a developer's complete HTTPS `catalog.json` URL in Sources.
 2. Filter by keywords, tags, source or installation state.
 3. Open details and review author, description, changes, runtime user and dependencies. The recommended version is shown first; history loads on demand.
 4. Install or inspect the selected version. Read the confirmation after download, verification and dependency resolution.
@@ -49,7 +49,7 @@ Uninstall through the management dialog. Hooks handle external cleanup and saved
 
 | Symptom | Action |
 | --- | --- |
-| Empty store | Check enabled sources, connectivity and filters |
+| Empty plugin library | Check enabled sources, connectivity and filters |
 | Download/hash failure | Check network and URL; download again without bypassing verification |
 | Missing history | The source may lack its history file; use latest or a trusted local old package |
 | Cannot enable | Read dependency/conflict errors and install required plugins |

@@ -77,7 +77,7 @@ Automatic URLs always require a Release digest, even when a hash is supplied, an
 
 ### Icons and window compatibility
 
-For the community database, set top-level `icon: "icon.png"` and include the same PNG path in source and payload. The database derives a GitHub Raw URL from the pinned repository/commit/path and verifies it against the packaged icon; `publish.icon` is unnecessary. Self-hosted catalogs use fixed HTTPS `publish.icon` / `publish.screenshots`. See [store metadata](../plugin-development.md).
+For the community database, set top-level `icon: "icon.png"` and include the same PNG path in source and payload. The database derives a GitHub Raw URL from the pinned repository/commit/path and verifies it against the packaged icon; `publish.icon` is unnecessary. Self-hosted catalogs use fixed HTTPS `publish.icon` / `publish.screenshots`. See [plugin library metadata](../plugin-development.md).
 
 The community database supports window `entry`, `title`, `dockIcon`, `localWeb`, `width`, `height`, `widthMeters`. Pixel width is an integer 640–2560, height an integer 360–1440, and physical width follows the core's float32 validation for 0.4–4.0 meters. Omitted dimensions normalize to 1600×900 and 3 meters, matching pack output. Custom dimensions participate in source/package comparison; undeclared changes are rejected. The template's default standalone window passed actual packaging and database validation. Registration still requires whole-package hash, ownership and other field checks.
 
@@ -92,7 +92,7 @@ mkdir -p target/plugin-catalog
 cargo run --locked -- catalog --name 'My source' --base-url https://example.org/packages --packages ./packages --output ./target/plugin-catalog/catalog.json
 ```
 
-Replace `example.org` with your HTTPS address. The CLI computes whole-package SHA256 and generates JSON; it does not upload packages or copy images. Without external `publish.icon`, the local CLI does not convert a packaged icon into a store URL.
+Replace `example.org` with your HTTPS address. The CLI computes whole-package SHA256 and generates JSON; it does not upload packages or copy images. Without external `publish.icon`, the local CLI does not convert a packaged icon into a plugin library URL.
 
 **Upload the entire generated directory, not only `catalog.json`:**
 

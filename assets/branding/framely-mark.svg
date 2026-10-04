@@ -2,6 +2,6 @@
   <title id="title">Framely</title>
   <desc id="desc">Pixel window sprite with two square eyes and a raised hand.</desc>
   <g shape-rendering="crispEdges">
-    <path fill="currentColor" fill-rule="evenodd" transform="translate(1.5 2)" d="M6 3H18V4H19V14H18V15H16V16H15V17H13V15H10V16H9V17H7V15H6V14H5V10H3V9H2V8H3V9H5V4H6Z M7 6H17V13H7Z M14 4H15V5H14Z M16 4H17V5H16Z M9 8H11V10H9Z M13 10H15V12H13Z"/>
+    <path fill="currentColor" fill-rule="evenodd" transform="translate(0 2)" d="M6 3H18V4H19V14H18V15H16V16H15V17H13V15H10V16H9V17H7V15H6V14H5V10H3V9H2V8H3V9H5V4H6Z M7 6H17V13H7Z M14 4H15V5H14Z M16 4H17V5H16Z M9 8H11V10H9Z M13 10H15V12H13Z"/>
   </g>
 </svg>

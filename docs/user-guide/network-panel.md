@@ -24,7 +24,7 @@ Change passwords from authenticated settings or the device's native manager. If 
 
 ## Available operations
 
-Manage sources and subscriptions, browse the store, upload local packages, confirm installation, enable/disable plugins, change settings and check device updates. Backends always run on Frame; uploading a file transfers it from your phone/computer.
+Manage sources and subscriptions, browse the plugin library, upload local packages, confirm installation, enable/disable plugins, change settings and check device updates. Backends always run on Frame; uploading a file transfers it from your phone/computer.
 
 VR windows, controller vibration and SteamVR keyboard need headset validation; a browser cannot replace those interactions. Some external links open in the device's default browser.
 

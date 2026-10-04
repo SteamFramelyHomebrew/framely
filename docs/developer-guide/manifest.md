@@ -39,7 +39,7 @@ Leave source `files` empty. `framely pack` scans payload and supplies hashes. At
 | `screenshots` | Default empty; up to eight payload PNG/JPEG paths |
 | `authorUrl` / `documentationUrl` / `homepage` | Optional HTTP/HTTPS links, no embedded credentials |
 | `downloadUrl` | Optional fixed-version HTTPS package URL; GitHub database source may omit it for repository/version/ID derivation, but community packages need the resolved URL; see publishing |
-| `publish` | Optional external store image configuration |
+| `publish` | Optional external plugin library image configuration |
 | `backend` / `lifecycle` / `ui` | Optional backend/hooks/pages |
 | `dependencies` / `optionalDependencies` / `conflicts` | Default empty maps |
 | `exclusiveResources` | Default empty array; matching names prevent simultaneous enabling |

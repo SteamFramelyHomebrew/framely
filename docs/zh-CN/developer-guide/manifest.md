@@ -39,7 +39,7 @@
 | `screenshots` | 默认空数组，最多 8 个 payload 内 PNG/JPEG 路径 |
 | `authorUrl` / `documentationUrl` / `homepage` | 可选 HTTP/HTTPS 地址，禁止 URL 内用户名密码 |
 | `downloadUrl` | 可选，固定版本 HTTPS 包下载地址；GitHub 数据库源码可省略，按仓库/版本/ID 拼接，社区登记的包内需补全；见发布指南 |
-| `publish` | 可选外部商店图片配置，见下文 |
+| `publish` | 可选外部插件库图片配置，见下文 |
 | `backend` / `lifecycle` / `ui` | 可选，配置后端、钩子和页面 |
 | `dependencies` / `optionalDependencies` / `conflicts` | 默认空对象，见关系参考 |
 | `exclusiveResources` | 默认空数组，禁止同时启用占用同名资源的插件 |

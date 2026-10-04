@@ -40,7 +40,7 @@ npm run dev
 
 在浏览器打开 `http://127.0.0.1:5173`；修改页面后自动重载。预览只模拟窗口和通知，不启动 Python 后端，不拥有 Frame 权限；读取/保存按钮在预览中报出后端不可用是正常情况。不要据此声称设备功能已验收。
 
-UI 与后端 API 见 [SDK 文档](sdk.md)，字段、默认值和范围见 [Manifest 配置](manifest.md)；窗口与商店资料补充见[插件开发参考](../plugin-development.md)。
+UI 与后端 API 见 [SDK 文档](sdk.md)，字段、默认值和范围见 [Manifest 配置](manifest.md)；窗口与插件库资料补充见[插件开发参考](../plugin-development.md)。
 
 ## 4. 实现后端与生命周期
 

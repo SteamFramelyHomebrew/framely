@@ -119,3 +119,5 @@ button{overflow-wrap:anywhere}
 @media(max-width:440px){.install-review-actions{grid-template-columns:1fr}.install-review .install-review-actions .primary{grid-row:1}.install-version{flex-wrap:wrap;white-space:normal}.install-item-heading{gap:10px}}
 
 .store-title-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.store-title-row .store-title{min-width:0;overflow-wrap:anywhere}.store-detail>.run-user-notice{margin:20px 0 24px}.store-title-row .run-user-badge{font-size:15px}
+
+.quick-library-button{flex-direction:column;gap:2px;padding:4px 8px}.quick-library-button span{font-size:12px;line-height:16px;font-weight:400;white-space:nowrap}

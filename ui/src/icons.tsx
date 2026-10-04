@@ -1,6 +1,7 @@
 import React from 'react';
-export type IconName='star'|'plugins'|'settings'|'arrow'|'close'|'more'|'download'|'search'|'shield'|'link'|'refresh'|'info'|'power'|'connection'|'edit'|'trash';
+export type IconName='star'|'plugins'|'settings'|'arrow'|'close'|'more'|'download'|'search'|'shield'|'link'|'refresh'|'info'|'power'|'connection'|'edit'|'trash'|'store';
 const paths:Record<IconName,React.ReactNode>={
+ store:<><path d="M4 10v11h16V10M3 10l2-7h14l2 7M3 10a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0M9 21v-6h6v6"/></>,
  power:<><path d="M12 3v9M7 5a8 8 0 1 0 10 0"/></>,
  connection:<><path d="M7 3v4m6-4v4M5 7h10v3a5 5 0 0 1-5 5v5M17 16l2 2 3-4"/></>,
  edit:<><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14Z"/></>,

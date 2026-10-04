@@ -8,7 +8,7 @@ Framely manages plugins on Steam Frame through device services, a SteamVR interf
 
 1. [Install, update, repair and uninstall](user-guide/installation.md): desktop installer, SSH, Preview builds, local packages and rollback.
 2. [Basic usage](user-guide/basic-usage.md): Dock, manager, enabling plugins, favorites and safe mode.
-3. [Install and manage plugins](user-guide/plugins.md): store, sources, subscriptions, local packages and updates.
+3. [Install and manage plugins](user-guide/plugins.md): plugin library, sources, subscriptions, local packages and updates.
 4. [Network panel](user-guide/network-panel.md): address, first password setup, login and phone/desktop access.
 
 ## Plugin development and publishing
