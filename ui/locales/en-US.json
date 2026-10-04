@@ -83,6 +83,8 @@
     "管理 {0}": "Manage {0}",
     "未找到插件": "No plugins found",
     "没有收藏的插件": "No favorite plugins",
+    "没有已启用的插件": "No enabled plugins",
+    "打开插件管理以启用插件。": "Open the manager to enable plugins.",
     "还没有安装插件": "No plugins installed yet",
     "换一个关键词再试。": "Try another search term.",
     "点击插件旁的星标，将它加入常用。": "Click a plugin's star to add it to your favorites.",
