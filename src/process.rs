@@ -146,6 +146,7 @@ pub fn hook(
         restart: RestartPolicy::Never,
         restart_limit: 3,
         memory_limit_mib: m.memory_limit_mib(),
+        ui_visibility_events: false,
     });
     let unit = format!("framely-hook-{}-{:032x}", m.id, rand::random::<u128>());
     let cmd = command(&launch, payload, manager, logs, &unit)?;

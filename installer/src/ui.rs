@@ -36,21 +36,6 @@ fn badge(text: impl Into<SharedString>, active: bool) -> Div {
         .text_color(rgb(if active { BLUE } else { MUTED }))
         .child(text.into())
 }
-fn error_banner(error: String) -> Div {
-    div()
-        .flex()
-        .items_start()
-        .gap_2()
-        .p_3()
-        .rounded(px(RADIUS))
-        .border_1()
-        .border_color(rgb(0x8f5454))
-        .bg(rgb(0x38272b))
-        .text_sm()
-        .text_color(rgb(0xf1b8b8))
-        .child(Icon::new(IconName::CircleAlert).size_4().mt_1())
-        .child(div().flex_1().min_w_0().child(error))
-}
 fn heading(title: &'static str, subtitle: &'static str) -> Div {
     div()
         .flex()
@@ -70,6 +55,122 @@ fn icon(name: IconName) -> Icon {
 }
 
 impl Installer {
+    fn operation_progress(&self) -> AnyElement {
+        let progress = self.progress.as_ref().expect("operation progress");
+        let success = self
+            .operation_result
+            .as_ref()
+            .is_some_and(|(_, result)| result.is_ok());
+        let failed = self
+            .operation_result
+            .as_ref()
+            .is_some_and(|(_, result)| result.is_err());
+        let current = match progress.stage {
+            Stage::Prepare => 0,
+            Stage::Download => 1,
+            Stage::Verify => 2,
+            Stage::Transfer => 3,
+            Stage::Install => 4,
+        };
+        let mut steps = div().flex().gap_4();
+        for (id, label, rank, skip) in [
+            (
+                "download-progress",
+                "下载",
+                1,
+                self.local || !maintenance::requires_package(&self.chosen_action),
+            ),
+            ("transfer-progress", "传输", 3, false),
+            (
+                "install-progress",
+                ui::action_label(&self.chosen_action),
+                4,
+                false,
+            ),
+        ] {
+            let done = !skip && (success || current > rank);
+            let active = !skip && current == rank && !success;
+            let value = if done {
+                100.
+            } else if active {
+                progress.fraction().unwrap_or(0.) * 100.
+            } else {
+                0.
+            };
+            let status = if skip {
+                "无需下载".to_owned()
+            } else if done {
+                "已完成".to_owned()
+            } else if active && failed {
+                "失败".to_owned()
+            } else if active {
+                progress
+                    .fraction()
+                    .map(|v| {
+                        if progress.stage == Stage::Install {
+                            format!("当前步骤 {:.0}%", v * 100.)
+                        } else {
+                            format!("{:.0}%", v * 100.)
+                        }
+                    })
+                    .unwrap_or("进行中".into())
+            } else {
+                "等待中".to_owned()
+            };
+            steps = steps.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .child(label)
+                            .child(muted(status)),
+                    )
+                    .child(
+                        gpui_kit::component::progress::Progress::new(id)
+                            .accessibility_label(label)
+                            .color(rgb(BLUE))
+                            .value(value)
+                            .loading(active && !failed && progress.fraction().is_none()),
+                    ),
+            );
+        }
+        let card = panel().id("operation-progress");
+        #[cfg(feature = "visual-test")]
+        let card = card.test_support();
+        card.gap_3()
+            .child(div().font_weight(FontWeight::MEDIUM).child(if failed {
+                "操作已停止"
+            } else if success {
+                "操作已完成"
+            } else {
+                "执行进度"
+            }))
+            .child(steps)
+            .child(muted(if success {
+                "所有步骤已完成".to_owned()
+            } else {
+                progress.detail.clone()
+            }))
+            .when(!success, |this| {
+                this.when_some(progress.total.filter(|total| *total > 0), |this, total| {
+                    this.child(muted(format!(
+                        "{:.1} / {:.1} MiB",
+                        progress.completed as f64 / 1048576.,
+                        total as f64 / 1048576.
+                    )))
+                })
+                .when_some(progress.step, |this, (step, count)| {
+                    this.child(muted(format!("设备操作：步骤 {step} / {count}")))
+                })
+            })
+            .into_any_element()
+    }
     fn device_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let locked = self.busy || self.connection.is_some();
         let mut devices = div()
@@ -275,15 +376,7 @@ impl Installer {
             );
         if let Some(probe) = &self.probe {
             connection = connection
-                .when_some(self.error.clone(), |this, error| {
-                    this.child(error_banner(error)).child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(rgb(BLUE))
-                            .child(probe.fingerprint.clone()),
-                    )
-                })
-                .when(self.error.is_none(), |this| {
+                .when(true, |this| {
                     this.child(
                         div()
                             .flex()
@@ -326,23 +419,19 @@ impl Installer {
                         .on_click(cx.listener(|view, _, _, cx| view.connect(cx))),
                 );
         } else {
-            connection = connection
-                .when_some(self.error.clone(), |this, error| {
-                    this.child(error_banner(error))
-                })
-                .child(
-                    Button::new("probe")
-                        .h(px(42.))
-                        .primary()
-                        .label(if self.busy {
-                            "正在连接…"
-                        } else {
-                            "检查 SSH 连接"
-                        })
-                        .loading(self.busy)
-                        .disabled(locked)
-                        .on_click(cx.listener(|view, _, _, cx| view.probe(cx))),
-                );
+            connection = connection.child(
+                Button::new("probe")
+                    .h(px(42.))
+                    .primary()
+                    .label(if self.busy {
+                        "正在连接…"
+                    } else {
+                        "检查 SSH 连接"
+                    })
+                    .loading(self.busy)
+                    .disabled(locked)
+                    .on_click(cx.listener(|view, _, _, cx| view.probe(cx))),
+            );
         }
         if let Some(stage) = &self.connection_stage {
             connection = connection.child(
@@ -480,9 +569,6 @@ impl Installer {
                     } else {
                         "暂无可安装的在线版本"
                     })
-                    .when_some(self.release_error.clone(), |this, error| {
-                        this.child(error_banner(error).w_full())
-                    })
                     .child(muted(if self.busy {
                         "请稍候"
                     } else {
@@ -589,11 +675,6 @@ impl Installer {
         } else {
             source = source
                 .child(list)
-                .when(!self.releases.is_empty(), |this| {
-                    this.when_some(self.release_error.clone(), |this, error| {
-                        this.child(error_banner(error))
-                    })
-                })
                 .child(
                     div()
                         .flex()
@@ -848,6 +929,21 @@ impl Installer {
                     .child(operations)
                     .child(summary),
             );
+        if self.busy && self.progress.is_some() {
+            body = div()
+                .flex()
+                .flex_col()
+                .gap_5()
+                .child(heading(
+                    "正在执行操作",
+                    "下载、传输和设备执行进度会在下方更新。",
+                ))
+                .child(muted(format!(
+                    "设备：{} · 操作：{}",
+                    self.connected_host,
+                    action_label(&self.chosen_action)
+                )));
+        }
         if let Some((action, result)) = &self.operation_result {
             let success = result.is_ok();
             let description = match result {
@@ -883,48 +979,18 @@ impl Installer {
                 .child(
                     Button::new("reconnect-result")
                         .primary()
-                        .label("重新连接设备")
-                        .on_click(cx.listener(|view, _, _, cx| view.navigate(0, cx))),
+                        .label("查看操作结果")
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            if let Some((action, result)) = view.operation_result.clone() {
+                                view.queue_prompt(super::dialogs::Prompt::Outcome(action, result));
+                            }
+                            cx.notify();
+                        })),
                 );
             body = div().flex().flex_col().gap_5().child(feedback);
         }
-        if let Some(action) = &self.confirmation {
-            let message = if action == "uninstall" {
-                "将停用并卸载所有插件，然后移除 Framely。插件卸载失败时保留本体；已保存的数据保留。"
-                    .into()
-            } else {
-                format!(
-                    "确认{}？设备上的 Framely 服务可能会暂时中断。",
-                    action_label(action)
-                )
-            };
-            body = body.child(
-                panel()
-                    .border_color(rgb(0x7599b5))
-                    .child(div().text_sm().child(message))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(
-                                Button::new("confirm")
-                                    .primary()
-                                    .label("确认执行")
-                                    .disabled(self.busy)
-                                    .on_click(cx.listener(|view, _, _, cx| view.operate(cx))),
-                            )
-                            .child(
-                                Button::new("cancel")
-                                    .ghost()
-                                    .label("取消")
-                                    .disabled(self.busy)
-                                    .on_click(cx.listener(|view, _, _, cx| {
-                                        view.confirmation = None;
-                                        cx.notify();
-                                    })),
-                            ),
-                    ),
-            );
+        if self.progress.is_some() {
+            body = body.child(self.operation_progress());
         }
         if !self.logs.is_empty() {
             body = body.child(
@@ -957,7 +1023,7 @@ impl Installer {
         body.into_any_element()
     }
 }
-fn action_label(action: &str) -> &'static str {
+pub(super) fn action_label(action: &str) -> &'static str {
     match action {
         "update" => "更新",
         "repair" => "修复安装",
@@ -1131,8 +1197,9 @@ impl Render for Installer {
                                 || !self.action_available(&self.chosen_action)
                                 || self.same_update(),
                         )
-                        .on_click(cx.listener(|view, _, _, cx| {
+                        .on_click(cx.listener(|view, _, window, cx| {
                             view.request_operation(cx);
+                            view.present_prompt(window, cx);
                         })),
                 );
             }
@@ -1188,11 +1255,6 @@ impl Render for Installer {
                             .mx_auto()
                             .px_8()
                             .py_7()
-                            .when(self.page != 0, |this| {
-                                this.when_some(self.error.clone(), |this, error| {
-                                    this.child(div().mb_5().child(error_banner(error)))
-                                })
-                            })
                             .child(body),
                     ),
             )

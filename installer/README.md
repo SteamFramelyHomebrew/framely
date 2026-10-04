@@ -18,7 +18,9 @@ Only one installer instance can run per user; additional instances exit immediat
 2. Discovery prioritizes `192.168.*` subnets, with at most 1024 addresses per scan. Name discovery and IP probing run together. Only devices whose hostname is `frame` are listed, with SSH availability indicated. Other devices and addresses without a confirmed name are omitted. Manual IP and SSH port entry is always available.
 3. Check the SSH handshake and displayed host fingerprint, then enter credentials. The default user is `steamos`. Changed saved fingerprints cause the connection to be rejected. After verifying a device reinstall, you can remove its entry from `known-hosts.json` in the configuration directory.
 4. Select a release or a local `framely-*-linux-arm64.tar.gz` together with its external `SHA256SUMS` or matching `.sha256` file. Local packages do not require GitHub access. Prereleases are hidden by default.
-5. Choose an operation on Install & Maintenance and confirm. The installer does not disable SteamOS root filesystem read-only protection; it stops with an error when required directories are not writable.
+5. Choose an operation on Install & Maintenance and confirm the device, version and action in the modal dialog. Cancel or press Esc to return without executing. Errors and operation results also appear in dialogs. SSH fingerprint verification stays on the connection page. The installer does not disable SteamOS root filesystem read-only protection; it stops with an error when required directories are not writable.
+
+During execution, the main page shows download, transfer and device-operation progress. Downloads and SFTP transfers report actual bytes and percentages; local packages skip downloading. The device reports verification, staging, extraction, service configuration and startup checks. Extraction reports actual bytes; steps without a measurable total show an indeterminate indicator and the current step. Logs remain available on the same page. Completion is reported only after the operation and post-operation checks succeed.
 
 After local verification, built-in SSH/SFTP uploads the package. The device verifies it again and extracts it safely. Passwords are used only in memory and are not written to configuration, command arguments, or environment variables. Operations provide the sudo password through SSH standard input. SSH and sudo use the same entered password, matching the default Frame account configuration.
 
@@ -56,7 +58,7 @@ FRAMELY_INSTALLER_PREVIEW_DIR=installer/dist/previews installer/target/debug/fra
 
 Preview requires an available GPU or software Vulkan renderer. Default release builds do not include preview support.
 
-Installer versions are managed independently in this directory's `Cargo.toml` and `Cargo.lock`. Pushing an `installer-v<VERSION>` tag (currently `installer-v0.4.1-preview.5`) triggers `.github/workflows/installer-release.yml` to build and publish only the installer. The core uses `v<VERSION>` tags and a separate workflow. Manual Actions runs produce build artifacts only. Installer releases do not become the repository's Latest release, preserving Frame's default install/update URLs.
+Installer versions are managed independently in this directory's `Cargo.toml` and `Cargo.lock`. Pushing an `installer-v<VERSION>` tag (currently `installer-v0.4.1-preview.6`) triggers `.github/workflows/installer-release.yml` to build and publish only the installer. The core uses `v<VERSION>` tags and a separate workflow. Manual Actions runs produce build artifacts only. Installer releases do not become the repository's Latest release, preserving Frame's default install/update URLs.
 
 Actions builds Linux x64/ARM64, Windows x64, and macOS Intel/Apple Silicon. macOS produces an `.app` ZIP, Windows an EXE ZIP, and Linux a tar.gz. Apple notarization and Windows code signing are not configured; verify first-launch behavior on each system before publishing.
 

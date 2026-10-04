@@ -18,7 +18,9 @@ Rust + GPUI Kit 的桌面安装器，连接 Steam Frame，安装、更新、修�
 2. 默认优先扫描 `192.168.*` 网段（每次最多 1024 个地址）。名称发现和 IP 探测同时开始；只列出主机名为 `frame` 的设备，并标注 SSH 是否可用。其他设备和无法确认名称的地址不会显示。手动 IP 和 SSH 端口始终可用。
 3. 检查 SSH 握手，核实显示的主机指纹，再输入账号密码登录。用户名默认 `steamos`。已保存的指纹发生变化时拒绝连接；核实设备重装后可手动移除配置目录中的对应 `known-hosts.json` 条目。
 4. 从 Releases 选择版本，或选择本地 `framely-*-linux-arm64.tar.gz` 和压缩包外部的 `SHA256SUMS`（也可选择对应 `.sha256` 文件）。本地包不需要访问 GitHub。默认隐藏测试版。
-5. 在“安装与维护”选择操作并确认。安装器不会解除 SteamOS 根分区的只读保护，所需目录不可写时会报错停止。
+5. 在“安装与维护”选择操作，在弹窗中核对设备、版本和操作后确认；取消或按 Esc 返回，不会执行。错误和操作结果也使用弹窗。SSH 指纹确认仍保留在连接页面。安装器不会解除 SteamOS 根分区的只读保护，所需目录不可写时会报错停止。
+
+执行时主页面显示下载、传输和设备操作进度。在线下载与 SFTP 传输显示实际字节数和百分比；本地安装包跳过下载。设备端依次回报校验、准备目录、解压、配置服务和启动检查等步骤。解压显示实际字节进度，无法计算总量的步骤显示运行指示与当前步骤，日志保留在同一页面。只有操作及后续检查成功后才显示完成。
 
 本机校验完成后使用内置 SSH/SFTP 上传，设备端再次校验并安全解压。密码只在内存中使用，不写入配置文件，不作为命令参数或环境变量传输；操作通过 SSH 标准输入向 sudo 提交密码。SSH 登录和 sudo 密码使用同一输入，适用于 Frame 默认账号配置。
 
@@ -56,7 +58,7 @@ FRAMELY_INSTALLER_PREVIEW_DIR=installer/dist/previews installer/target/debug/fra
 
 预览依赖可用的 GPU 或软件 Vulkan 渲染器；默认发行构建不包含此预览功能。
 
-安装器版本由本目录的 `Cargo.toml` 和 `Cargo.lock` 独立管理，不跟随 Framely 本体版本。推送 `installer-v<版本>` 标签（当前 `installer-v0.4.1-preview.5`）触发 `.github/workflows/installer-release.yml`，只构建并发布安装器；本体使用 `v<版本>` 标签和独立工作流。也可在 Actions 手动运行安装器工作流，仅生成构建产物。安装器 Release 不占用仓库的 Latest，以免影响 Frame 的默认安装和更新地址。
+安装器版本由本目录的 `Cargo.toml` 和 `Cargo.lock` 独立管理，不跟随 Framely 本体版本。推送 `installer-v<版本>` 标签（当前 `installer-v0.4.1-preview.6`）触发 `.github/workflows/installer-release.yml`，只构建并发布安装器；本体使用 `v<版本>` 标签和独立工作流。也可在 Actions 手动运行安装器工作流，仅生成构建产物。安装器 Release 不占用仓库的 Latest，以免影响 Frame 的默认安装和更新地址。
 
 Actions 构建 Linux x64/ARM64、Windows x64、macOS Intel/Apple Silicon。macOS 输出 `.app` ZIP，Windows 输出 EXE ZIP，Linux 输出 tar.gz。当前未配置 Apple 公证或 Windows 代码签名，发布前应分别验证系统的首次启动体验。
 

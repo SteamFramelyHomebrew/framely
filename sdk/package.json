@@ -11,6 +11,7 @@
   },
   "exports": {
     ".": "./src/index.tsx",
+    "./visibility": "./src/visibility.ts",
     "./lifecycle": "./src/lifecycle.ts",
     "./python": "./python/framely.py"
   }

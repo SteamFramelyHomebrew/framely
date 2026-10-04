@@ -111,3 +111,16 @@ serve(dispatch)
 ## 预览与权限边界
 
 `npm run dev` 只模拟窗口、通知及部分桥接调用；后端、真实依赖状态、VR 输入、振动和身份行为需要实机测试。插件页面不能直接调用管理面板 API，也不能调用 `framely.lifecycle.*` 保留方法。SDK 本身不声明权限，运行用户由 Manifest 决定。
+
+## 头显可见性与自动暂停
+
+`framely.ui.getVisibility()` 返回 `{ known, captureObscured, pageVisible, sequence, sessionId }`。`framely.ui.onVisibilityChanged(callback, onError?)` 订阅后立即查询当前状态，返回取消订阅函数；`useVisibility()` 提供同样状态及 `error`。`captureObscured` 为原生快捷面板、Framely 管理器和全部插件窗口的真实可见性并集，排除通知和 dock 图标。`pageVisible` 表示当前插件所在原生视图可见；远程浏览器始终为 false。浏览器不能上报或修改头显状态。
+
+录像后端应在 manifest 中声明 `backend.uiVisibilityEvents: true`，处理宿主专用 JSON-line RPC `framely.ui.visibility`，正常回复请求 id。参数包含 `known`、`captureObscured`、`sequence` 和 `views`，不包含前端专属的 `pageVisible`。启动后首次通知包含当前状态，之后在状态变化时通知。原生宿主超过两秒没有心跳时，`known` 变为 false；录像应在 `!known || captureObscured` 时暂停。页面关闭不影响后端通知。旧插件默认不订阅。Node/TS 可从 `@framely/sdk/visibility` 使用 `registerVisibility`，Python `serve(dispatch, visibility=callback)` 支持相同通知。
+
+```ts
+const off = framely.ui.onVisibilityChanged(state => {
+  console.log(state.known, state.captureObscured, state.pageVisible);
+});
+// 页面卸载时调用 off()
+```

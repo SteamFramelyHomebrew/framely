@@ -1,6 +1,8 @@
 import hashlib
 import importlib.util
 import io
+import json
+import contextlib
 import pathlib
 import tarfile
 import tempfile
@@ -61,6 +63,27 @@ class BootstrapTests(unittest.TestCase):
     def test_redirect_cannot_downgrade_https(self):
         with self.assertRaises(ValueError):
             bootstrap.HTTPSRedirect().redirect_request(None, None, 302, '', {}, 'http://example.org/package')
+
+    def test_extraction_progress_reports_real_bytes_and_never_completes_invalid_release(self):
+        entries = [('framely-1/' + name, b'1' if name == 'VERSION' else b'test') for name in ['VERSION', 'SHA256SUMS', 'install.sh', 'uninstall.sh', 'bin/framely']]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            reports = []
+            bootstrap.extract_archive(self.archive(root, entries), root / 'out', lambda *value: reports.append(value))
+            total = sum(len(contents) for _, contents in entries)
+            self.assertEqual(reports[0], ('extract', 0, total))
+            self.assertEqual(reports[-1], ('extract', total, total))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            reports = []
+            with self.assertRaises(ValueError):
+                bootstrap.extract_archive(self.archive(root, [('framely-1/VERSION', b'wrong')]), root / 'out', lambda *value: reports.append(value))
+            self.assertFalse(any(done == total and total > 0 for _, done, total in reports))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            bootstrap.emit_progress('configure')
+        payload = json.loads(output.getvalue().removeprefix('FRAMELY_PROGRESS '))
+        self.assertEqual(payload, {'step': 'configure'})
 
 
 if __name__ == '__main__':

@@ -14,6 +14,7 @@
 #include "keyboard_state.h"
 #include "keyboard_input.h"
 #include "brand_mask.h"
+#include "ui_visibility.h"
 #include <GL/gl.h>
 #include <GL/glx.h>
 #include <arpa/inet.h>
@@ -47,6 +48,8 @@ static std::string keyboard_view;
 static KeyboardMenuGuard keyboard_menu;
 static uint64_t keyboard_token=0;static vr::VROverlayHandle_t keyboard_target=0;
 static std::mutex queue_mutex;
+static std::mutex visibility_mutex;
+static json visible_views=nullptr;
 static std::deque<json> queue;
 
 template<class T> struct Handler {
@@ -88,7 +91,7 @@ static std::vector<uint8_t> icon(bool hover,bool active){
  return p;
 }
 
-static json poll_http(int port){int fd=socket(AF_INET,SOCK_STREAM,0);if(fd<0)throw std::runtime_error("HTTP socket failed");timeval timeout{1,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));sockaddr_in addr{};addr.sin_family=AF_INET;addr.sin_port=htons(port);inet_pton(AF_INET,"127.0.0.1",&addr.sin_addr);if(connect(fd,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))){close(fd);throw std::runtime_error("UI agent unavailable");}std::string req="GET /host/poll HTTP/1.1\r\nHost: 127.0.0.1:"+std::to_string(port)+"\r\nX-Framely-Native: "+token+"\r\nConnection: close\r\n\r\n";size_t sent=0;while(sent<req.size()){auto n=send(fd,req.data()+sent,req.size()-sent,MSG_NOSIGNAL);if(n<=0){close(fd);throw std::runtime_error("HTTP send failed");}sent+=n;}std::string response;char buffer[4096];ssize_t n;while((n=recv(fd,buffer,sizeof(buffer),0))>0){response.append(buffer,n);if(response.size()>4*1024*1024){close(fd);throw std::runtime_error("HTTP body limit");}}close(fd);auto body=response.find("\r\n\r\n");if(body==std::string::npos||response.find("200 OK")==std::string::npos)throw std::runtime_error("Invalid agent response");return json::parse(response.substr(body+4));}
+static json poll_http(int port){int fd=socket(AF_INET,SOCK_STREAM,0);if(fd<0)throw std::runtime_error("HTTP socket failed");timeval timeout{1,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));sockaddr_in addr{};addr.sin_family=AF_INET;addr.sin_port=htons(port);inet_pton(AF_INET,"127.0.0.1",&addr.sin_addr);if(connect(fd,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))){close(fd);throw std::runtime_error("UI agent unavailable");}std::string payload;{std::lock_guard<std::mutex> lock(visibility_mutex);payload=visible_views.dump();}std::string req="POST /host/poll HTTP/1.1\r\nHost: 127.0.0.1:"+std::to_string(port)+"\r\nX-Framely-Native: "+token+"\r\nContent-Type: application/json\r\nContent-Length: "+std::to_string(payload.size())+"\r\nConnection: close\r\n\r\n"+payload;size_t sent=0;while(sent<req.size()){auto n=send(fd,req.data()+sent,req.size()-sent,MSG_NOSIGNAL);if(n<=0){close(fd);throw std::runtime_error("HTTP send failed");}sent+=n;}std::string response;char buffer[4096];ssize_t n;while((n=recv(fd,buffer,sizeof(buffer),0))>0){response.append(buffer,n);if(response.size()>4*1024*1024){close(fd);throw std::runtime_error("HTTP body limit");}}close(fd);auto body=response.find("\r\n\r\n");if(body==std::string::npos||response.find("200 OK")==std::string::npos)throw std::runtime_error("Invalid agent response");return json::parse(response.substr(body+4));}
 // Frame renders the native laser cursor in the default overlay sort group.
 // Raising a panel above that group can obscure the runtime cursor.
 // OpenVR owns and renders the laser cursor. Coordinates must remain in the
@@ -233,7 +236,7 @@ int main(int argc,char** argv){
     }
    }
   }
-  for(auto&[key,v]:views){if(v->closing)continue;if(v->dashboard){bool active=overlays->IsActiveDashboardOverlay(v->overlay);if(active!=v->shown){v->host->was_hidden(v->host,!active);v->shown=active;}if(!active)v->active_seen=false;if(active&&!v->active_seen){v->active_seen=true;for(auto&[other,t]:views)if(!t->dashboard&&other!="menu"&&other!="notifications"&&!keyboard_open)close_view(*t);}}
+  for(auto&[key,v]:views){if(v->closing)continue;if(v->dashboard){bool active=overlays->IsDashboardVisible()&&overlays->IsActiveDashboardOverlay(v->overlay)&&overlays->IsOverlayVisible(v->overlay);if(active!=v->shown){v->host->was_hidden(v->host,!active);v->shown=active;}if(!active)v->active_seen=false;if(active&&!v->active_seen){v->active_seen=true;for(auto&[other,t]:views)if(!t->dashboard&&other!="menu"&&other!="notifications"&&!keyboard_open)close_view(*t);}}
    while(overlays->PollNextOverlayEvent(v->overlay,&event,sizeof(event)))overlay_input(*v,event);
    if(v->dirty&&!v->closing){
     glXMakeContextCurrent(xdisplay,glsurface,glsurface,glcontext);
@@ -271,6 +274,7 @@ int main(int argc,char** argv){
     }
    }
   }
+  {json snapshot=json::object();for(auto&[key,v]:views){if(key=="menu"||key=="framely.manager"||key.rfind("framely.window.",0)==0)snapshot[key]=capture_view_visible(v->closing,overlays->IsOverlayVisible(v->overlay),v->dashboard,overlays->IsDashboardVisible(),overlays->IsActiveDashboardOverlay(v->overlay));}std::lock_guard<std::mutex> lock(visibility_mutex);visible_views=std::move(snapshot);}
   if(keyboard_close_pending){
    // A non-minimal runtime keyboard may buffer text until Done. Drain overlay
    // character events first so the global Done event cannot duplicate input.

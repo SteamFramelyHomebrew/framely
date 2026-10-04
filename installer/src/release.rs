@@ -1,12 +1,7 @@
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::{
-    fs::File,
-    io::{Read, Write},
-    path::Path,
-    time::Duration,
-};
+use std::{fs::File, io::Read, path::Path, time::Duration};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Asset {
@@ -155,34 +150,29 @@ pub fn verify(archive: &Path, checksums: &Path) -> Result<()> {
     );
     Ok(())
 }
-pub fn download(asset: &Asset, dest: &Path, log: &mut dyn FnMut(String)) -> Result<()> {
+pub fn download(
+    asset: &Asset,
+    dest: &Path,
+    progress: &mut dyn FnMut(crate::progress::Progress),
+) -> Result<()> {
     ensure!(
         asset.size > 0 && asset.size <= 2 * 1024 * 1024 * 1024,
         "下载长度无效"
     );
+    let mut starting =
+        crate::progress::Progress::new(crate::progress::Stage::Download, &asset.name);
+    starting.total = Some(asset.size);
+    progress(starting);
     let mut input = get(&asset.browser_download_url)?.into_reader();
     let mut output = File::create(dest)?;
-    let (mut total, mut reported) = (0u64, 0u64);
-    let mut block = [0; 256 * 1024];
-    loop {
-        let n = input.read(&mut block)?;
-        if n == 0 {
-            break;
-        }
-        total += n as u64;
-        ensure!(total <= asset.size, "下载超过声明长度");
-        output.write_all(&block[..n])?;
-        if total - reported >= 4 * 1024 * 1024 {
-            log(format!(
-                "下载 {}：{} / {} MiB",
-                asset.name,
-                total / 1024 / 1024,
-                asset.size / 1024 / 1024
-            ));
-            reported = total;
-        }
-    }
-    ensure!(total == asset.size, "下载未完成");
+    crate::progress::copy(
+        &mut input,
+        &mut output,
+        asset.size,
+        crate::progress::Stage::Download,
+        &asset.name,
+        progress,
+    )?;
     output.sync_all()?;
     Ok(())
 }

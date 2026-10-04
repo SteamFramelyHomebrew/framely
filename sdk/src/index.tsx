@@ -1,3 +1,5 @@
+export * from './visibility';
+import {createVisibilityApi, type UiVisibility} from './visibility';
 export * from './lifecycle';
 import {installScrollbars} from './scrollbars';
 import React from 'react';
@@ -7,6 +9,7 @@ export interface Notification {id:string;title:string;body:string;image?:string;
 type Bridge={request:(op:string,p?:unknown)=>Promise<any>;subscribe:(f:(e:unknown)=>void)=>()=>void};
 function bridge():Bridge{const b=(window as any).__framelyBridge;if(!b)throw new Error('This page requires the Framely plugin host');return b;}
 export const framely={
+ ui:createVisibilityApi(bridge),
  language:{get:():Promise<{preference:string;language:string}>=>bridge().request('language.get')},
  call:<T=unknown>(method:string,params:unknown={}):Promise<T>=>bridge().request('call',{method,params}),
  windows:{open:(window:string)=>bridge().request('window.open',{window}),close:(window:string)=>bridge().request('window.close',{window})},
@@ -56,3 +59,5 @@ export function useBackend<T=unknown>(method:string,params:unknown={}){const[dat
 
 export interface DependencyStatus {id:string;required:boolean;constraint:string|{version:string;source:string};version:string|null;enabled:boolean;matches:boolean;available:boolean;state?:{phase:string}|null}
 export function useDependencies(){const [items,setItems]=React.useState<DependencyStatus[]>([]),[error,setError]=React.useState<string|null>(null);React.useEffect(()=>{let live=true;const load=()=>{framely.dependencies().then(v=>{if(live){setItems(v);setError(null);}}).catch(e=>{if(live)setError(String(e));});};load();const off=framely.onEvent(e=>{if((e as any)?.type==='dependencies.changed')load();});return()=>{live=false;off();};},[]);return {items,error};}
+
+export function useVisibility(){const[state,setState]=React.useState<UiVisibility>({known:false,captureObscured:false,pageVisible:false,sequence:0});const[error,setError]=React.useState<unknown>(null);React.useEffect(()=>framely.ui.onVisibilityChanged(value=>{setState(value);setError(null);},setError),[]);return{...state,error};}

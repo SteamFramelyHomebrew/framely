@@ -6,11 +6,12 @@ import sys
 def emit(event, data):
     print(json.dumps({"event": event, "data": data}), flush=True)
 
-def serve(dispatch, lifecycle=None):
+def serve(dispatch, lifecycle=None, visibility=None):
     """dispatch(method, params); lifecycle maps onInstall/onStart/... to callbacks.
 
     Independent hooks receive FRAMELY_LIFECYCLE_CONTEXT and exit once completed.
     Normal backend hooks are manager-only reserved protocol messages.
+    visibility(snapshot) receives framely.ui.visibility when opted in via manifest.
     """
     lifecycle = lifecycle or {}
     phase = os.environ.get("FRAMELY_LIFECYCLE")
@@ -37,6 +38,8 @@ def serve(dispatch, lifecycle=None):
                 if phase not in lifecycle:
                     raise ValueError("Lifecycle callback not registered")
                 result = lifecycle[phase](params)
+            elif method == "framely.ui.visibility" and visibility is not None:
+                result = visibility(params)
             else:
                 result = dispatch(method, params)
             response = {"id": request["id"], "result": result}

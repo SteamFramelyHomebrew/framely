@@ -38,6 +38,8 @@ pub struct Service {
     runtime: BTreeMap<String, Value>,
     waiting: BTreeSet<String>,
     batching: bool,
+    visibility: crate::visibility::Tracker,
+    visibility_pending: BTreeSet<String>,
 }
 impl Service {
     pub fn prepare_uninstall(&mut self) -> Result<Value> {
@@ -158,6 +160,8 @@ impl Service {
             runtime: BTreeMap::new(),
             waiting: resume,
             batching: false,
+            visibility: Default::default(),
+            visibility_pending: BTreeSet::new(),
         };
         if initialized_defaults {
             service.save()?;
@@ -328,6 +332,16 @@ impl Service {
                     "framely.lifecycle.start",
                     self.context(&m, "onStart", reason, None, Value::Null),
                     Duration::from_secs(l.timeout_seconds),
+                )?;
+            }
+            if self.visibility.expire(Instant::now()) {
+                self.publish_visibility();
+            }
+            if m.backend.as_ref().is_some_and(|b| b.ui_visibility_events) {
+                running.call_timeout(
+                    "framely.ui.visibility",
+                    serde_json::to_value(&self.visibility.state)?,
+                    Duration::from_secs(1),
                 )?;
             }
             ensure!(!running.exited(), "Backend exited during startup");
@@ -516,7 +530,63 @@ impl Service {
         }
         let _ = self.save();
     }
+    fn publish_visibility(&mut self) {
+        let state = serde_json::to_value(&self.visibility.state).unwrap();
+        process::event(
+            &self.events,
+            json!({"kind":"ui.visibility.changed","data":state}),
+        );
+        self.visibility_pending.extend(
+            self.running
+                .keys()
+                .filter(|id| {
+                    self.db.plugins.get(*id).is_some_and(|p| {
+                        p.manifest
+                            .backend
+                            .as_ref()
+                            .is_some_and(|b| b.ui_visibility_events)
+                    })
+                })
+                .cloned(),
+        );
+        self.deliver_visibility();
+    }
+    fn deliver_visibility(&mut self) {
+        let state = serde_json::to_value(&self.visibility.state).unwrap();
+        for id in self.visibility_pending.clone() {
+            let Some(running) = self.running.get_mut(&id) else {
+                self.visibility_pending.remove(&id);
+                continue;
+            };
+            match running.call_timeout(
+                "framely.ui.visibility",
+                state.clone(),
+                Duration::from_secs(1),
+            ) {
+                Ok(_) => {
+                    self.visibility_pending.remove(&id);
+                    if let Some(p) = self.db.plugins.get_mut(&id) {
+                        if p.error
+                            .as_ref()
+                            .is_some_and(|e| e.starts_with("Visibility delivery failed:"))
+                        {
+                            p.error = None;
+                        }
+                    }
+                }
+                Err(error) => {
+                    if let Some(p) = self.db.plugins.get_mut(&id) {
+                        p.error = Some(format!("Visibility delivery failed: {error}"));
+                    }
+                }
+            }
+        }
+    }
     pub fn maintenance(&mut self) {
+        if self.visibility.expire(Instant::now()) {
+            self.publish_visibility();
+        }
+        self.deliver_visibility();
         if !self.agreement_accepted() {
             return;
         }
@@ -619,6 +689,8 @@ impl Service {
                     method,
                     "status"
                         | "events"
+                        | "host.ui.visibility"
+                        | "ui.visibility.get"
                         | "language.list"
                         | "language.save"
                         | "agreement.status"
@@ -640,6 +712,19 @@ impl Service {
         }
         let id = p["plugin"].as_str().unwrap_or("").to_owned();
         match method {
+            "host.ui.visibility" => {
+                let views = serde_json::from_value(p)?;
+                if self.visibility.report(views, Instant::now())? {
+                    self.publish_visibility();
+                }
+                Ok(json!(true))
+            }
+            "ui.visibility.get" => {
+                if self.visibility.expire(Instant::now()) {
+                    self.publish_visibility();
+                }
+                serde_json::to_value(&self.visibility.state).map_err(Into::into)
+            }
             "system.uninstall.prepare" => {
                 ensure!(
                     p["approve"].as_bool() == Some(true),
@@ -867,7 +952,7 @@ impl Service {
                 self.start(&id)?;
                 let name = p["method"].as_str().context("Missing backend method")?;
                 ensure!(
-                    !name.starts_with("framely.lifecycle."),
+                    !name.starts_with("framely.lifecycle.") && !name.starts_with("framely.ui."),
                     "Lifecycle methods are reserved for the manager"
                 );
                 let r = self

@@ -11,11 +11,19 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 
 DEFAULT_REPO = 'SteamFramelyHomebrew/framely'
 MAX_ARCHIVE = 2 * 1024**3
+
+
+def emit_progress(step, completed=None, total=None):
+    payload = {'step': step}
+    if total is not None and total > 0:
+        payload.update(completed=completed, total=total)
+    print('FRAMELY_PROGRESS ' + json.dumps(payload), flush=True)
 
 
 class HTTPSRedirect(urllib.request.HTTPRedirectHandler):
@@ -67,7 +75,7 @@ def verify_archive(archive, checksums):
         raise ValueError('Archive SHA256 mismatch; installation stopped')
 
 
-def extract_archive(archive, destination):
+def extract_archive(archive, destination, progress=None):
     # Check all headers before writing, and never use tar's link extraction.
     with tarfile.open(archive, 'r:gz') as source:
         members = source.getmembers()
@@ -88,6 +96,9 @@ def extract_archive(archive, destination):
             raise ValueError('Expected one release directory')
         destination = pathlib.Path(destination)
         destination.mkdir(mode=0o700)
+        total, completed, reported_at = sum(m.size for m in members), 0, time.monotonic()
+        if progress:
+            progress('extract', completed, total)
         for member in members:
             path = destination.joinpath(*pathlib.PurePosixPath(member.name).parts)
             if member.isdir():
@@ -95,7 +106,12 @@ def extract_archive(archive, destination):
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with source.extractfile(member) as data, path.open('xb') as output:
-                    shutil.copyfileobj(data, output)
+                    while block := data.read(256 * 1024):
+                        output.write(block)
+                        completed += len(block)
+                        if progress and time.monotonic() - reported_at >= 0.2:
+                            progress('extract', completed, total)
+                            reported_at = time.monotonic()
                 path.chmod(0o755 if member.mode & 0o111 else 0o644)
         base = destination / prefixes.pop()
         version = (base / 'VERSION').read_text().strip()
@@ -104,6 +120,8 @@ def extract_archive(archive, destination):
         for required in ['SHA256SUMS', 'install.sh', 'uninstall.sh', 'bin/framely']:
             if not (base / required).is_file():
                 raise ValueError('Missing release file: ' + required)
+        if progress:
+            progress('extract', completed, total)
         return base
 
 
@@ -131,6 +149,7 @@ def confirm(message):
 
 
 def root_operation(args):
+    report = emit_progress if getattr(args, 'progress_json', False) else lambda *args: None
     import fcntl
     with open('/run/framely-installer.lock', 'a') as lock:
         try:
@@ -143,17 +162,21 @@ def root_operation(args):
             if args.action in ('install', 'update'):
                 if args.action == 'update':
                     current_release()
+                report('verify')
                 verify_archive(args.archive, args.checksums)
+                report('stage')
                 work = tempfile.mkdtemp(prefix='.framely-install-', dir='/home')
                 staged_archive = pathlib.Path(work) / args.archive.name
                 staged_checksums = pathlib.Path(work) / 'SHA256SUMS'
                 shutil.copyfile(args.archive, staged_archive)
                 shutil.copyfile(args.checksums, staged_checksums)
                 verify_archive(staged_archive, staged_checksums)
-                base = extract_archive(staged_archive, pathlib.Path(work) / 'unpacked')
+                base = extract_archive(staged_archive, pathlib.Path(work) / 'unpacked', report)
+                report('extract')
                 subprocess.run(['sha256sum', '--quiet', '-c', 'SHA256SUMS'], cwd=base, check=True)
             else:
                 base = current_release()
+            report('configure')
             if args.action in ('install', 'update'):
                 command = ['bash', str(base / 'install.sh')]
                 try:
@@ -163,6 +186,7 @@ def root_operation(args):
                 if same:
                     command.append('--repair')
                 subprocess.run(command + [args.user], check=True)
+                report('activate')
                 # Preconfigure the official update source without requiring agreement acceptance.
                 state = pathlib.Path('/home/.framely/state')
                 config = state / 'update-source.json'
@@ -183,6 +207,7 @@ def root_operation(args):
                 subprocess.run(['bash', '/home/.framely/repair.sh', args.user], check=True)
             elif args.action == 'rollback':
                 subprocess.run(['bash', str(base / 'rollback.sh')], check=True)
+            report('activate')
             print('Framely operation completed.', flush=True)
         finally:
             if work:
@@ -198,6 +223,7 @@ def main(argv=None):
     parser.add_argument('--checksums', type=pathlib.Path, help='External SHA256SUMS for the archive')
     parser.add_argument('--user', default=os.environ.get('SUDO_USER', 'steamos'))
     parser.add_argument('--yes', action='store_true', help='Confirm the selected operation')
+    parser.add_argument('--progress-json', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if not re.fullmatch(r'[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+', args.repo):
         parser.error('Invalid repository')
@@ -239,6 +265,8 @@ def main(argv=None):
                 download(assets[packages[0]]['browser_download_url'], args.archive, MAX_ARCHIVE)
                 download(assets['SHA256SUMS']['browser_download_url'], args.checksums, 1024**2)
             args.archive, args.checksums = args.archive.resolve(), args.checksums.resolve()
+            if args.progress_json:
+                emit_progress('verify')
             verify_archive(args.archive, args.checksums)
             print('Archive SHA256 verified.', flush=True)
         if os.geteuid() == 0:
@@ -247,6 +275,8 @@ def main(argv=None):
             command = ['sudo', '--', sys.executable, str(pathlib.Path(__file__).resolve()), args.action, '--repo', args.repo, '--user', args.user, '--yes']
             if args.archive:
                 command += ['--archive', str(args.archive), '--checksums', str(args.checksums)]
+            if args.progress_json:
+                command += ['--progress-json']
             # stdin belongs to curl | bash; sudo reads its password from the terminal.
             subprocess.run(command, check=True)
 

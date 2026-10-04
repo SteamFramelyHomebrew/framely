@@ -33,8 +33,13 @@ pub struct Backend {
         skip_serializing_if = "is_default_memory_limit_mib"
     )]
     pub memory_limit_mib: u32,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ui_visibility_events: bool,
 }
 pub const DEFAULT_MEMORY_LIMIT_MIB: u32 = 512;
+fn is_false(v: &bool) -> bool {
+    !*v
+}
 fn default_memory_limit_mib() -> u32 {
     DEFAULT_MEMORY_LIMIT_MIB
 }

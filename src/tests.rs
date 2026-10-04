@@ -1639,3 +1639,109 @@ fn disk_packages_stream_validation_and_review_hash() {
     drop(staged);
     assert!(!path.exists());
 }
+
+#[test]
+fn visibility_manifest_and_reserved_methods() {
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = fixture(dir.path(), "test.visibility", "1", 1, Some("steamos"));
+    let mut manifest = package::verify(&bytes).unwrap().manifest;
+    assert!(!manifest.backend.as_ref().unwrap().ui_visibility_events);
+    manifest.backend.as_mut().unwrap().ui_visibility_events = true;
+    let encoded = serde_json::to_value(&manifest).unwrap();
+    assert_eq!(encoded["backend"]["uiVisibilityEvents"], true);
+    assert!(serde_json::from_value::<Manifest>({
+        let mut value = encoded;
+        value["backend"]["uiVisibilityEvents"] = json!(1);
+        value
+    })
+    .is_err());
+    let mut core = accepted_service(dir.path(), 1000).unwrap();
+    assert_eq!(
+        core.handle("ui.visibility.get", json!({})).unwrap()["known"],
+        false
+    );
+    core.handle(
+        "host.ui.visibility",
+        json!({"menu":false,"framely.manager":true}),
+    )
+    .unwrap();
+    assert_eq!(
+        core.handle("ui.visibility.get", json!({})).unwrap()["captureObscured"],
+        true
+    );
+    assert!(core
+        .handle("host.ui.visibility", json!({"browser":true}))
+        .is_err());
+    assert_eq!(
+        core.handle("ui.visibility.get", json!({})).unwrap()["sequence"],
+        1
+    );
+    let events = core.handle("events", json!({})).unwrap();
+    assert!(events
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["kind"] == "ui.visibility.changed"));
+}
+
+#[test]
+fn visibility_backend_opt_in_restart_and_expiry() {
+    let temp = tempfile::tempdir().unwrap();
+    let _tools = fake_backend_tools(temp.path());
+    let mut core =
+        accepted_service(&temp.path().join("state"), unsafe { libc::geteuid() }).unwrap();
+    for (id, opt_in) in [("test.visible", true), ("test.legacy", false)] {
+        let payload = temp.path().join(id);
+        fs::create_dir_all(&payload).unwrap();
+        let backend = r#"#!/usr/bin/python3
+import sys,json
+states=[]
+fail_next=False
+for line in sys.stdin:
+ r=json.loads(line)
+ if r['method']=='fail-next':fail_next=True
+ if r['method']=='framely.ui.visibility':
+  if fail_next:
+   fail_next=False;print(json.dumps({'id':r['id'],'error':'temporary visibility failure'}),flush=True);continue
+  states.append(r['params'])
+ print(json.dumps({'id':r['id'],'result':states}),flush=True)
+"#;
+        fs::write(payload.join("backend.py"), backend).unwrap();
+        let manifest = json!({"schemaVersion":1,"apiVersion":1,"id":id,"name":id,"author":"test","version":"1","backend":{"entry":"backend.py","runAs":"steamos","uiVisibilityEvents":opt_in},"files":{}});
+        let path = temp.path().join(format!("{id}.json"));
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let package = temp.path().join(format!("{id}.framely"));
+        crate::package::pack(&path, &payload, &package).unwrap();
+        install(&mut core, &fs::read(package).unwrap(), json!({})).unwrap();
+        core.handle("plugin.open", json!({"plugin":id})).unwrap();
+    }
+    let read = |core: &mut Service, id: &str| {
+        core.handle("plugin.call", json!({"plugin":id,"method":"states"}))
+            .unwrap()
+    };
+    assert_eq!(read(&mut core, "test.visible")[0]["known"], false);
+    assert_eq!(read(&mut core, "test.legacy"), json!([]));
+    core.handle("host.ui.visibility", json!({"menu":true}))
+        .unwrap();
+    assert_eq!(read(&mut core, "test.visible")[1]["captureObscured"], true);
+    core.handle("plugin.restart", json!({"plugin":"test.visible"}))
+        .unwrap();
+    assert_eq!(read(&mut core, "test.visible")[0]["captureObscured"], true);
+    assert!(core.handle("plugin.call",json!({"plugin":"test.visible","method":"framely.ui.visibility","params":{"known":true,"captureObscured":false}})).is_err());
+    core.handle(
+        "plugin.call",
+        json!({"plugin":"test.visible","method":"fail-next"}),
+    )
+    .unwrap();
+    core.handle("host.ui.visibility", json!({"menu":false}))
+        .unwrap();
+    assert_eq!(read(&mut core, "test.visible").as_array().unwrap().len(), 1);
+    core.maintenance();
+    assert_eq!(read(&mut core, "test.visible")[1]["captureObscured"], false);
+    assert!(core.db.plugins["test.visible"].error.is_none());
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+    core.maintenance();
+    assert_eq!(read(&mut core, "test.visible")[2]["known"], false);
+    assert_eq!(read(&mut core, "test.legacy"), json!([]));
+    core.shutdown();
+}

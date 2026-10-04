@@ -94,3 +94,5 @@
 依赖值可为版本范围字符串，或 `{version, source}`；source 是 HTTPS `catalog.json` 地址。冲突值是版本范围。可选依赖缺失不阻止安装，独占资源只按作者声明校验。[依赖与冲突](../plugin-relationships.md)
 
 清单 JSON 最大 256 KiB，载荷路径最多 512 字节。载荷路径仅允许 ASCII 字母、数字及 `/._-+`，禁止绝对路径、空段、`.`、`..`、软链接和未声明的附加包文件。清单通过校验后，运行权限仍需用户判断；文件哈希不代表插件安全审核。
+
+`backend.uiVisibilityEvents`（boolean，默认 false）：订阅宿主专用 `framely.ui.visibility` RPC。后端必须及时回复；通知无需页面挂载。该字段需要支持可见性事件的新版宿主。

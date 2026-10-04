@@ -16,6 +16,7 @@ mod subscriptions;
 mod tests;
 mod update;
 mod uploads;
+mod visibility;
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use clap::{Parser, Subcommand};

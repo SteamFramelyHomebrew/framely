@@ -3,6 +3,7 @@ use framely_installer::{
     DEFAULT_REPO,
     discovery::{self, Device},
     maintenance::{self, Installation},
+    progress::{Progress, Stage},
     release::{self, Release},
     remote::{self, Connection, Credentials, Probe},
 };
@@ -16,6 +17,7 @@ use gpui_kit::{
     *,
 };
 use std::{
+    collections::VecDeque,
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -40,6 +42,7 @@ enum Event {
     Connected(Result<Connection, String>),
     File(FileKind, Option<PathBuf>),
     Log(String),
+    Progress(Progress),
     Done(Result<(), String>),
 }
 struct Installer {
@@ -69,7 +72,9 @@ struct Installer {
     scan_id: u64,
     cancelled: Arc<AtomicBool>,
     confirmation: Option<String>,
+    prompts: VecDeque<dialogs::Prompt>,
     operation_result: Option<(String, Result<(), String>)>,
+    progress: Option<Progress>,
     logs: Vec<String>,
     status: String,
     error: Option<String>,
@@ -134,7 +139,9 @@ impl Installer {
             scan_id: 0,
             cancelled: Arc::new(AtomicBool::new(false)),
             confirmation: None,
+            prompts: VecDeque::new(),
             operation_result: None,
+            progress: None,
             logs: Vec::new(),
             status: "开启 Frame 开发者模式并设置密码，将电脑和 Frame 连接到同一网络。".into(),
             error: None,
@@ -187,7 +194,7 @@ impl Installer {
                     .timer(Duration::from_millis(100))
                     .await;
                 if weak
-                    .update(cx, |view: &mut Installer, cx| view.poll(cx))
+                    .update_in(cx, |view: &mut Installer, window, cx| view.poll(window, cx))
                     .is_err()
                 {
                     break;
@@ -197,7 +204,7 @@ impl Installer {
         .detach();
         view
     }
-    fn poll(&mut self, cx: &mut Context<Self>) {
+    fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut changed = false;
         while let Ok(event) = self.receiver.try_recv() {
             changed = true;
@@ -225,6 +232,7 @@ impl Installer {
                         }
                         Err(error) => {
                             self.status = error.clone();
+                            self.notice("扫描失败", error.clone());
                             self.error = Some(error);
                         }
                     }
@@ -239,6 +247,10 @@ impl Installer {
                         }
                         Err(error) => {
                             self.status = error.clone();
+                            self.notice(
+                                "无法加载在线版本",
+                                format!("可刷新重试，或选择本地安装包。\n\n{error}"),
+                            );
                             self.release_error =
                                 Some(format!("无法加载在线版本，可重试或选择本地安装包。{error}"));
                         }
@@ -253,6 +265,7 @@ impl Installer {
                         }
                         Err(error) => {
                             self.status = error.clone();
+                            self.notice("SSH 连接检查失败", error.clone());
                             self.error = Some(error);
                         }
                     }
@@ -281,6 +294,7 @@ impl Installer {
                         }
                         Err(error) => {
                             self.status = error.clone();
+                            self.notice("设备登录失败", error.clone());
                             self.error = Some(error);
                         }
                     }
@@ -302,6 +316,10 @@ impl Installer {
                         self.logs.remove(0);
                     }
                 }
+                Event::Progress(progress) => {
+                    self.status = progress.detail.clone();
+                    self.progress = Some(progress);
+                }
                 Event::Done(result) => {
                     self.busy = false;
                     self.error = None;
@@ -310,6 +328,10 @@ impl Installer {
                     } else {
                         "操作失败，请查看操作结果与日志。".into()
                     };
+                    self.queue_prompt(dialogs::Prompt::Outcome(
+                        self.chosen_action.clone(),
+                        result.clone(),
+                    ));
                     self.operation_result = Some((self.chosen_action.clone(), result));
                     // Avoid presenting a stale version or reusing an interrupted SSH channel.
                     self.connection = None;
@@ -323,6 +345,7 @@ impl Installer {
         if changed {
             cx.notify();
         }
+        self.present_prompt(window, cx);
     }
     fn scan(&mut self, cx: &mut Context<Self>) {
         self.cancelled.store(true, Ordering::Relaxed);
@@ -356,6 +379,7 @@ impl Installer {
         let Ok(port) = port else {
             self.status = "SSH 端口无效".into();
             self.error = Some(self.status.clone());
+            self.notice("无法检查连接", self.status.clone());
             cx.notify();
             return;
         };
@@ -365,6 +389,7 @@ impl Installer {
         self.device_state = None;
         self.confirmation = None;
         self.operation_result = None;
+        self.progress = None;
         self.status = "正在检查 SSH 连接…".into();
         self.probe = None;
         self.connected_host = format!("{host}:{port}");
@@ -386,11 +411,13 @@ impl Installer {
             self.probe = None;
             self.status = "地址已变化，请重新检查 SSH。".into();
             self.error = Some(self.status.clone());
+            self.notice("设备地址已变化", self.status.clone());
             cx.notify();
             return;
         }
         if self.password.read(cx).value().is_empty() {
             self.error = Some("请输入设备登录密码".into());
+            self.notice("无法登录设备", "请输入设备登录密码。");
             cx.notify();
             return;
         }
@@ -465,6 +492,7 @@ impl Installer {
     }
     fn request_operation(&mut self, cx: &mut Context<Self>) {
         if self.busy
+            || self.confirmation.is_some()
             || self.connection.is_none()
             || !self.action_available(&self.chosen_action)
             || self.same_update()
@@ -476,6 +504,7 @@ impl Installer {
             return;
         }
         self.confirmation = Some(self.chosen_action.clone());
+        self.queue_prompt(dialogs::Prompt::Operation(self.chosen_action.clone()));
         cx.notify();
     }
     fn navigate(&mut self, page: usize, cx: &mut Context<Self>) {
@@ -485,6 +514,7 @@ impl Installer {
         if page == 2 && self.connection.is_none() && !self.preview {
             self.page = 0;
             self.error = Some("请先连接 Frame，再进行安装或维护".into());
+            self.notice("请先连接设备", "请先连接 Frame，再进行安装或维护。");
             cx.notify();
             return;
         }
@@ -521,11 +551,13 @@ impl Installer {
             || (maintenance::requires_package(&action) && !self.selection_ready())
         {
             self.error = Some("操作条件已变化，请重新选择操作或版本".into());
+            self.notice("无法执行操作", "操作条件已变化，请重新选择操作或版本。");
             cx.notify();
             return;
         }
         let Some(connection) = self.connection.clone() else {
             self.status = "请先连接设备".into();
+            self.notice("请先连接设备", "连接后重新选择操作。");
             cx.notify();
             return;
         };
@@ -539,6 +571,7 @@ impl Installer {
         self.error = None;
         self.logs.clear();
         self.operation_result = None;
+        self.progress = Some(Progress::new(Stage::Prepare, "正在准备操作…"));
         self.status = format!("正在执行 {action}…");
         let sender = self.sender.clone();
         std::thread::spawn(move || {
@@ -546,6 +579,9 @@ impl Installer {
                 let folder = tempfile::tempdir()?;
                 let mut log = |line| {
                     let _ = sender.send(Event::Log(line));
+                };
+                let mut progress = |value| {
+                    let _ = sender.send(Event::Progress(value));
                 };
                 let (archive, sums) = if matches!(action.as_str(), "install" | "update") {
                     if local {
@@ -559,14 +595,27 @@ impl Installer {
                         let (package, checksum) = release::package(&selected)?;
                         let archive = folder.path().join(&package.name);
                         let sums = folder.path().join("SHA256SUMS");
-                        release::download(checksum, &sums, &mut log)?;
-                        release::download(package, &archive, &mut log)?;
+                        let total = checksum
+                            .size
+                            .checked_add(package.size)
+                            .ok_or_else(|| anyhow::anyhow!("下载长度无效"))?;
+                        log(format!("下载 {}", package.name));
+                        for (asset, path, offset) in
+                            [(checksum, &sums, 0), (package, &archive, checksum.size)]
+                        {
+                            release::download(asset, path, &mut |mut value| {
+                                value.completed += offset;
+                                value.total = Some(total);
+                                progress(value);
+                            })?;
+                        }
                         (Some(archive), Some(sums))
                     }
                 } else {
                     (None, None)
                 };
                 if let (Some(archive), Some(sums)) = (&archive, &sums) {
+                    progress(Progress::new(Stage::Verify, "校验本地安装包 SHA256"));
                     release::verify(archive, sums)?;
                     log("电脑端 SHA256 校验通过，开始传输；设备端将再次校验。".into());
                 }
@@ -580,6 +629,7 @@ impl Installer {
                         repo: &repo,
                     },
                     &mut log,
+                    &mut progress,
                 )
             })()
             .map_err(|e| format!("{e:#}"));
@@ -593,6 +643,7 @@ impl Drop for Installer {
         self.cancelled.store(true, Ordering::Relaxed);
     }
 }
+mod dialogs;
 mod ui;
 
 fn transparent_window_root(window: &mut Window, cx: &mut App) {
@@ -639,6 +690,7 @@ fn preview_pages(dir: PathBuf) -> anyhow::Result<()> {
         gpui_kit::platform::current_headless_renderer,
     );
     context.update(initialize_theme);
+    context.update(|cx| cx.set_reduce_motion(true));
     let (handle, view) = context.update(|cx| {
         gpui_kit::open_window(
             WindowOptions {
@@ -683,7 +735,14 @@ fn preview_pages(dir: PathBuf) -> anyhow::Result<()> {
         (2, "operation-failed"),
     ] {
         context.update_window(handle, |_, window, cx| {
+            window.close_all_dialogs(cx);
             view.update(cx, |view, cx| {
+                view.prompts.clear();
+                view.confirmation = None;
+                view.error = None;
+                view.release_error = None;
+                view.operation_result = None;
+                view.progress = None;
                 view.page = page;
                 view.local = name == "local";
                 if name == "empty" {
@@ -697,7 +756,7 @@ fn preview_pages(dir: PathBuf) -> anyhow::Result<()> {
                     view.sender
                         .send(Event::ConnectionStage("正在验证用户名和密码…".into()))
                         .unwrap();
-                    view.poll(cx);
+                    view.poll(window, cx);
                     assert!(view.busy && view.connection_stage.is_some());
                 } else if name == "connection-error" {
                     view.sender
@@ -705,7 +764,7 @@ fn preview_pages(dir: PathBuf) -> anyhow::Result<()> {
                             "SSH 登录失败：请检查用户名和密码，并确认已开启开发者模式".into(),
                         )))
                         .unwrap();
-                    view.poll(cx);
+                    view.poll(window, cx);
                     assert!(!view.busy && view.connection_stage.is_none() && view.error.is_some());
                 } else if name == "connected" {
                     view.connected_host = "192.168.1.42:22".into();
@@ -722,7 +781,7 @@ fn preview_pages(dir: PathBuf) -> anyhow::Result<()> {
                             },
                         })))
                         .unwrap();
-                    view.poll(cx);
+                    view.poll(window, cx);
                     assert!(
                         view.connection.is_some()
                             && !view.busy
@@ -736,7 +795,7 @@ fn preview_pages(dir: PathBuf) -> anyhow::Result<()> {
                     view.sender
                         .send(Event::Releases(Err("GitHub API: status code 404".into())))
                         .unwrap();
-                    view.poll(cx);
+                    view.poll(window, cx);
                     assert!(!view.busy && view.error.is_none() && view.release_error.is_some());
                 }
                 if name == "installed-no-package" {
@@ -798,7 +857,7 @@ fn preview_pages(dir: PathBuf) -> anyhow::Result<()> {
                             Err("网络连接中断，请重新连接设备后重试。".into())
                         }))
                         .unwrap();
-                    view.poll(cx);
+                    view.poll(window, cx);
                     assert!(
                         view.operation_result.is_some()
                             && view.connection.is_none()
@@ -816,6 +875,152 @@ fn preview_pages(dir: PathBuf) -> anyhow::Result<()> {
             .capture_screenshot(handle)?
             .save(dir.join(format!("installer-{name}.png")))?;
     }
+    // Exercise actual modal hit testing, cancellation and stale confirmation.
+    for action in ["install", "update", "repair", "rollback", "uninstall"] {
+        context.update_window(handle, |_, window, cx| {
+            window.close_all_dialogs(cx);
+            view.update(cx, |view, cx| {
+                view.page = 2;
+                view.busy = false;
+                view.operation_result = None;
+                view.progress = None;
+                view.prompts.clear();
+                view.confirmation = None;
+                view.error = None;
+                view.release_error = None;
+                view.status = "已连接 192.168.1.42：frame · 0.4.0".into();
+                view.local = false;
+                view.selected = Some(0);
+                view.releases[0].tag_name = "v0.4.1".into();
+                view.device_state = Some(Installation {
+                    present: action != "install",
+                    current_version: (action != "install").then(|| "0.4.0".into()),
+                    previous_version: Some("0.3.9".into()),
+                });
+                view.connection = Some(Arc::new(Mutex::new(Connection {
+                    session: ssh2::Session::new().unwrap(),
+                    host: "192.168.1.42".into(),
+                    user: "steamos".into(),
+                    version: "frame · 0.4.0".into(),
+                    installation: view.device_state.clone().unwrap(),
+                })));
+                view.chosen_action = action.into();
+                view.request_operation(cx);
+                view.request_operation(cx);
+                assert_eq!(
+                    view.prompts.len(),
+                    1,
+                    "double activation must not queue two confirmations"
+                );
+                view.poll(window, cx);
+                assert!(view.confirmation.is_some());
+            });
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx));
+            assert!(window.find("dialog").visible());
+            window.click("step-0", cx);
+            assert_eq!(
+                view.read(cx).page,
+                2,
+                "modal must block background navigation"
+            );
+        })?;
+        context.run_until_parked();
+        context.update_window(handle, |_, window, cx| window.render_frame(cx))?;
+        context
+            .capture_screenshot(handle)?
+            .save(dir.join(format!("installer-confirm-{action}.png")))?;
+        context.update_window(handle, |_, window, cx| {
+            window.within("dialog").click("cancel", cx);
+            window.render_frame(cx);
+            assert!(!window.has_active_dialog(cx));
+            assert!(view.read(cx).confirmation.is_none() && !view.read(cx).busy);
+            view.update(cx, |view, cx| {
+                view.request_operation(cx);
+                view.poll(window, cx);
+            });
+            window.render_frame(cx);
+            window.press("escape", cx);
+            window.render_frame(cx);
+            assert!(!window.has_active_dialog(cx));
+            assert!(view.read(cx).confirmation.is_none() && !view.read(cx).busy);
+            view.update(cx, |view, cx| {
+                view.request_operation(cx);
+                view.poll(window, cx);
+            });
+            window.render_frame(cx);
+            window.within("dialog").click("close", cx);
+            window.render_frame(cx);
+            assert!(!window.has_active_dialog(cx));
+            assert!(view.read(cx).confirmation.is_none() && !view.read(cx).busy);
+            view.update(cx, |view, cx| {
+                view.request_operation(cx);
+                view.poll(window, cx);
+            });
+            window.render_frame(cx);
+            view.update(cx, |view, _| {
+                view.device_state = None;
+            });
+            window.within("dialog").click("ok", cx);
+            assert!(
+                !view.read(cx).busy,
+                "stale confirmation must not start SSH operations"
+            );
+            view.update(cx, |view, cx| view.poll(window, cx));
+            window.render_frame(cx);
+            assert!(
+                window.has_active_dialog(cx),
+                "stale confirmation must show an error dialog"
+            );
+            window.within("dialog").click("ok", cx);
+            window.render_frame(cx);
+            assert!(!window.has_active_dialog(cx));
+        })?;
+    }
+    for (stage, name) in [
+        (Stage::Download, "download"),
+        (Stage::Verify, "verify"),
+        (Stage::Transfer, "transfer"),
+        (Stage::Install, "install"),
+    ] {
+        context.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.chosen_action = "install".into();
+                view.error = None;
+                view.release_error = None;
+                view.busy = true;
+                view.local = false;
+                view.logs = vec!["电脑端 SHA256 校验通过。".into()];
+                let mut progress = Progress::new(
+                    stage,
+                    match stage {
+                        Stage::Download => "framely-0.4.1-linux-arm64.tar.gz",
+                        Stage::Verify => "校验本地安装包 SHA256",
+                        Stage::Transfer => "framely-0.4.1-linux-arm64.tar.gz",
+                        _ => "解压并校验发行文件",
+                    },
+                );
+                if stage != Stage::Verify {
+                    progress.completed = 25 * 1048576;
+                    progress.total = Some(100 * 1048576);
+                }
+                if stage == Stage::Install {
+                    progress.step = Some((3, 5));
+                }
+                view.sender.send(Event::Progress(progress)).unwrap();
+                view.poll(window, cx);
+                assert_eq!(view.progress.as_ref().unwrap().stage, stage);
+            });
+            window.render_frame(cx);
+            assert!(window.find("operation-progress").visible());
+        })?;
+        context.run_until_parked();
+        context.update_window(handle, |_, window, cx| window.render_frame(cx))?;
+        context
+            .capture_screenshot(handle)?
+            .save(dir.join(format!("installer-progress-{name}.png")))?;
+    }
+    eprintln!("Installer modal and progress checks passed.");
     Ok(())
 }
 

@@ -1,6 +1,7 @@
 pub mod discovery;
 pub mod instance;
 pub mod maintenance;
+pub mod progress;
 pub mod release;
 pub mod remote;
 pub const DEFAULT_REPO: &str = "SteamFramelyHomebrew/framely";

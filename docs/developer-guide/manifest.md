@@ -94,3 +94,5 @@ Optional `quickPage` points to a payload bundle. `windows` defaults to an empty 
 Dependencies use ranges or `{version, source}`, with source pointing to an HTTPS catalog. Conflicts use ranges. Missing optional dependencies do not prevent installation; exclusive resources rely on author declarations. See [relationships](../plugin-relationships.md).
 
 Manifest JSON is limited to 256 KiB and payload paths to 512 bytes. Payload paths allow ASCII letters/digits and `/._-+` only. Absolute paths, empty segments, `.`/`..`, symlinks and undeclared archive files are forbidden. Successful validation is not a safety review; users still assess runtime privileges.
+
+`backend.uiVisibilityEvents` (boolean, default false) subscribes to manager-only `framely.ui.visibility` RPCs. Reply promptly. Delivery does not depend on mounted pages and requires a host supporting visibility events.

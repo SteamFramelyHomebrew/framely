@@ -32,13 +32,14 @@ function PluginFrame({plugin,entry='quick'}:{plugin:string;entry?:string}){
    const {id,op,params}=e.data;if(!Number.isSafeInteger(id)||typeof op!=='string')return;
    try{let result;
     if(op==='language.get')result={preference:pluginLanguagePreference,language:currentLanguage()};
+    else if(op==='ui.visibility.get')result=await api('ui.visibility.get',{view:viewKey()});
     else if(op==='haptic')result=await api('host.haptic',{view:viewKey()});
     else if(op==='keyboard')result=await api('host.keyboard',{...params,view:viewKey()});
     else{const method=methods[op];if(!method)throw new Error(t('插件请求不支持的能力'));result=await api(method,{...params,plugin});}
     if(live)ref.current?.contentWindow?.postMessage({channel:'framely.reply',id,result},'*');
    }catch(e){if(live)ref.current?.contentWindow?.postMessage({channel:'framely.reply',id,error:String(e)},'*');}
   }
-  const event=(e:Event)=>{const value=(e as CustomEvent).detail;if(value.kind==='plugin.dependency.changed')ref.current?.contentWindow?.postMessage({channel:'framely.reply',event:{type:'dependencies.changed'}},'*');if(value.plugin===plugin&&value.kind==='plugin.event')ref.current?.contentWindow?.postMessage({channel:'framely.reply',event:{type:value.event,data:value.data}},'*');};
+  const event=(e:Event)=>{const value=(e as CustomEvent).detail;if(value.kind==='ui.visibility.changed'){api('ui.visibility.get',{view:viewKey()}).then(data=>{if(live)ref.current?.contentWindow?.postMessage({channel:'framely.reply',event:{type:'ui.visibility.changed',data}},'*');}).catch(()=>{});}if(value.kind==='plugin.dependency.changed')ref.current?.contentWindow?.postMessage({channel:'framely.reply',event:{type:'dependencies.changed'}},'*');if(value.plugin===plugin&&value.kind==='plugin.event')ref.current?.contentWindow?.postMessage({channel:'framely.reply',event:{type:value.event,data:value.data}},'*');};
   const language=()=>ref.current?.contentWindow?.postMessage({channel:'framely.reply',event:{type:'language.changed',data:{preference:pluginLanguagePreference,language:currentLanguage()}}},'*');
   window.addEventListener('framely.event',event);window.addEventListener('framely.language',language);window.addEventListener('message',message);
   void (async()=>{

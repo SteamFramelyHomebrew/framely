@@ -209,6 +209,15 @@ fn exec(
     password: Option<&str>,
     log: &mut dyn FnMut(String),
 ) -> Result<String> {
+    exec_with_progress(session, command, password, log, None)
+}
+fn exec_with_progress(
+    session: &Session,
+    command: &str,
+    password: Option<&str>,
+    log: &mut dyn FnMut(String),
+    mut progress: Option<&mut dyn FnMut(crate::progress::Progress)>,
+) -> Result<String> {
     let mut channel = session.channel_session()?;
     channel.handle_extended_data(ExtendedData::Merge)?;
     channel.exec(command)?;
@@ -220,6 +229,7 @@ fn exec(
     channel.send_eof()?;
     let mut result = String::new();
     let mut chunk = [0; 4096];
+    let mut decoder = crate::progress::DeviceProgress::default();
     loop {
         let n = channel.read(&mut chunk)?;
         if n == 0 {
@@ -230,9 +240,23 @@ fn exec(
         let line = password
             .filter(|s| !s.is_empty())
             .map_or(line.clone(), |p| line.replace(p, "[密码已隐藏]"));
-        log(line.clone());
+        let line = if let Some(report) = progress.as_deref_mut() {
+            decoder.push(&line, report).join("")
+        } else {
+            line
+        };
+        if !line.is_empty() {
+            log(line.clone());
+        }
         if result.len() < 128 * 1024 {
             result.push_str(&line);
+        }
+    }
+    if progress.is_some() {
+        let tail = decoder.finish();
+        if !tail.is_empty() {
+            log(tail.clone());
+            result.push_str(&tail);
         }
     }
     channel.wait_close()?;
@@ -243,31 +267,31 @@ fn exec(
     );
     Ok(result)
 }
-fn upload(session: &Session, path: &Path, remote: &str, log: &mut dyn FnMut(String)) -> Result<()> {
+fn upload(
+    session: &Session,
+    path: &Path,
+    remote: &str,
+    offset: u64,
+    total: u64,
+    progress: &mut dyn FnMut(crate::progress::Progress),
+) -> Result<()> {
     let size = path.metadata()?.len();
     let sftp = session.sftp()?;
     let mut output = sftp.create(Path::new(remote))?;
     let mut input = fs::File::open(path)?;
-    let mut block = [0; 256 * 1024];
-    let (mut written, mut reported) = (0u64, 0u64);
-    loop {
-        let n = input.read(&mut block)?;
-        if n == 0 {
-            break;
-        }
-        output.write_all(&block[..n])?;
-        written += n as u64;
-        if written - reported >= 4 * 1024 * 1024 {
-            log(format!(
-                "上传：{} / {} MiB",
-                written / 1024 / 1024,
-                size / 1024 / 1024
-            ));
-            reported = written;
-        }
-    }
+    crate::progress::copy(
+        &mut input,
+        &mut output,
+        size,
+        crate::progress::Stage::Transfer,
+        &path.file_name().unwrap_or_default().to_string_lossy(),
+        &mut |mut value| {
+            value.completed += offset;
+            value.total = Some(total);
+            progress(value);
+        },
+    )?;
     output.close()?;
-    ensure!(written == size, "上传未完成");
     Ok(())
 }
 pub struct Operation<'a> {
@@ -281,6 +305,7 @@ pub fn operate(
     password: Zeroizing<String>,
     operation: Operation<'_>,
     log: &mut dyn FnMut(String),
+    progress: &mut dyn FnMut(crate::progress::Progress),
 ) -> Result<()> {
     let Operation {
         action,
@@ -322,13 +347,28 @@ pub fn operate(
         "临时目录无效"
     );
     let result = (|| -> Result<()> {
+        let total = super::BOOTSTRAP.len() as u64
+            + archive
+                .map(|p| p.metadata().map(|m| m.len()))
+                .transpose()?
+                .unwrap_or(0)
+            + sums
+                .map(|p| p.metadata().map(|m| m.len()))
+                .transpose()?
+                .unwrap_or(0);
+        let mut transfer =
+            crate::progress::Progress::new(crate::progress::Stage::Transfer, "传输安装引擎");
+        transfer.total = Some(total);
+        progress(transfer.clone());
         let sftp = session.sftp()?;
         let script = format!("{dir}/bootstrap.py");
         let mut file = sftp.create(Path::new(&script))?;
         file.write_all(super::BOOTSTRAP)?;
         file.close()?;
+        transfer.completed = super::BOOTSTRAP.len() as u64;
+        progress(transfer);
         let mut args = format!(
-            "sudo -S -p '' -k -- python3 {} {} --yes --repo {} --user {}",
+            "sudo -S -p '' -k -- python3 -u {} {} --yes --progress-json --repo {} --user {}",
             quote(&script),
             quote(action),
             quote(repo),
@@ -341,9 +381,23 @@ pub fn operate(
                 .and_then(|s| s.to_str())
                 .context("压缩包名无效")?;
             let target = format!("{dir}/{name}");
-            upload(session, archive, &target, log)?;
+            upload(
+                session,
+                archive,
+                &target,
+                super::BOOTSTRAP.len() as u64,
+                total,
+                progress,
+            )?;
             let checksums = format!("{dir}/SHA256SUMS");
-            upload(session, sums, &checksums, log)?;
+            upload(
+                session,
+                sums,
+                &checksums,
+                super::BOOTSTRAP.len() as u64 + archive.metadata()?.len(),
+                total,
+                progress,
+            )?;
             args += &format!(
                 " --archive {} --checksums {}",
                 quote(&target),
@@ -355,11 +409,21 @@ pub fn operate(
                 "安装或更新需要已校验的发行包"
             );
         }
-        exec(session, &args, Some(&password), log)?;
+        let mut installing =
+            crate::progress::Progress::new(crate::progress::Stage::Install, "设备端校验安装包");
+        installing.step = Some((1, 5));
+        progress(installing);
+        exec_with_progress(session, &args, Some(&password), log, Some(progress))?;
+        let mut activating = crate::progress::Progress::new(
+            crate::progress::Stage::Install,
+            "检查系统服务并清理临时文件",
+        );
+        activating.step = Some((5, 5));
+        progress(activating);
         if action != "uninstall" {
             exec(
                 session,
-                "systemctl is-active framely.service; systemctl is-enabled framely.service framely-session.service",
+                "systemctl is-active framely.service && systemctl is-enabled framely.service framely-session.service",
                 None,
                 log,
             )?;

@@ -336,7 +336,16 @@ impl Agent {
             return Ok(());
         }
         if path == "/host/poll" {
-            ensure!(self.native(&r), "Native authentication failed");
+            ensure!(!remote && self.native(&r), "Native authentication failed");
+            if r.method() == &Method::Post {
+                let mut bytes = Vec::new();
+                r.as_reader().take(32769).read_to_end(&mut bytes)?;
+                ensure!(bytes.len() <= 32768, "Visibility report too large");
+                let views: Value = serde_json::from_slice(&bytes)?;
+                if views.is_object() {
+                    self.core("host.ui.visibility", views)?;
+                }
+            }
             let mut queue = self.commands.lock().unwrap();
             let mut commands = Vec::new();
             let mut size = 0;
@@ -514,7 +523,10 @@ impl Agent {
             );
             let mut bytes = Vec::new();
             r.as_reader().read_to_end(&mut bytes)?;
-            let request: Value = serde_json::from_slice(&bytes)?;
+            let mut request: Value = serde_json::from_slice(&bytes)?;
+            if remote && request["method"] == "ui.visibility.get" {
+                request["params"] = json!({"view":""});
+            }
             let result = if remote && request["method"] == "agreement.decline" {
                 Ok(json!({"closed":false}))
             } else {
@@ -552,6 +564,7 @@ impl Agent {
                 | "agreement.decline"
                 | "agreement.revoke"
                 | "ui.events"
+                | "ui.visibility.get"
                 | "host.manager.open"
                 | "host.manager.close"
                 | "host.menu.close"
@@ -659,6 +672,15 @@ impl Agent {
             "install.start" => self.jobs.install(self.socket.clone(), p),
             "job.status" => self.jobs.status(p["job"].as_str().context("Missing job")?),
             "job.cancel" => self.jobs.cancel(p["job"].as_str().context("Missing job")?),
+            "ui.visibility.get" => {
+                let mut state = self.core("ui.visibility.get", json!({}))?;
+                state["pageVisible"] = json!(
+                    state["known"] == true
+                        && state["views"][p["view"].as_str().unwrap_or("")] == true
+                );
+                state.as_object_mut().unwrap().remove("views");
+                Ok(state)
+            }
             "ui.events" => {
                 let result = self
                     .events
@@ -1812,6 +1834,48 @@ mod tests {
         assert_eq!(v["commands"], json!([]));
         stop.store(true, Ordering::Relaxed);
         thread.join().unwrap();
+    }
+    #[test]
+    fn native_visibility_reports_require_native_auth_and_are_not_public_api() {
+        let root = tempfile::tempdir().unwrap();
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let agent = agent(&server, root.path());
+        let listener = std::os::unix::net::UnixListener::bind(&agent.socket).unwrap();
+        let socket_worker = std::thread::spawn(move || {
+            let mut core = crate::service::Service::load(&root.path().join("state"), 1000).unwrap();
+            for expected in ["host.ui.visibility", "agreement.status"] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = ipc::read(&mut stream).unwrap();
+                assert_eq!(request["method"], expected);
+                ipc::write(
+                    &mut stream,
+                    &json!({"result":core.handle(request["method"].as_str().unwrap(),request["params"].clone()).unwrap()}),
+                )
+                .unwrap();
+            }
+            assert_eq!(
+                core.handle("ui.visibility.get", json!({})).unwrap()["captureObscured"],
+                true
+            );
+        });
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker = http_server(server, agent.clone(), stop.clone());
+        let url = format!("{}/host/poll", agent.origin);
+        assert!(ureq::post(&url).send_json(json!({"menu":true})).is_err());
+        assert!(ureq::post(&url)
+            .set("Cookie", &format!("framely={}", agent.web_key))
+            .send_json(json!({"menu":true}))
+            .is_err());
+        ureq::post(&url)
+            .set("X-Framely-Native", &agent.native_key)
+            .send_json(json!({"menu":true}))
+            .unwrap();
+        assert!(agent
+            .api(json!({"method":"host.ui.visibility","params":{"menu":false}}))
+            .is_err());
+        socket_worker.join().unwrap();
+        stop.store(true, Ordering::Relaxed);
+        worker.join().unwrap();
     }
     #[test]
     fn version_history_checks_identity_duplicates_and_schema() {

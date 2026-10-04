@@ -111,3 +111,9 @@ Import `registerLifecycle`, `LifecycleContext`, `LifecyclePhase`, `LifecycleCall
 ## Preview and privilege boundaries
 
 Development preview simulates windows, notifications and some bridge operations. Test backend calls, real dependencies, VR inputs, haptics and runtime identity on the device. Pages cannot directly call management APIs or reserved `framely.lifecycle.*` methods. Runtime identity is configured in Manifest, not granted by the SDK.
+
+## Headset visibility and capture pause
+
+`framely.ui.getVisibility()` returns `{ known, captureObscured, pageVisible, sequence, sessionId }`. `framely.ui.onVisibilityChanged(callback, onError?)` subscribes and immediately queries the current snapshot; it returns an unsubscribe function. `useVisibility()` provides the same fields and `error`. Capture visibility combines the actual visibility of the quick panel, manager and every plugin window, excluding notifications and dock icons. Remote browser pages have `pageVisible: false` and cannot report headset visibility.
+
+Declare `backend.uiVisibilityEvents: true` to receive the reserved JSON-line RPC `framely.ui.visibility` at startup and on changes, independently of mounted pages. Reply with the request id. The backend snapshot includes `known`, `captureObscured`, `sequence` and `views`; `pageVisible` is frontend-only. A native heartbeat missing for more than two seconds makes `known` false. Capture backends should pause on `!known || captureObscured`. Existing backends do not receive this RPC without opting in. Node/TS can use `registerVisibility` from `@framely/sdk/visibility`; Python supports `serve(dispatch, visibility=callback)`.
