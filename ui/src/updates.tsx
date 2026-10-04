@@ -1,5 +1,5 @@
 import {t} from './i18n';
-import React,{useEffect,useState} from 'react';
+import React,{useEffect,useId,useLayoutEffect,useRef,useState} from 'react';
 import {api} from './api';
 import {runJob,Job,compareVersions} from './store';
 import {Select} from './localized-select';
@@ -9,6 +9,13 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
  const source:UpdateSource|null=status.database.updateSource??null;
  const channel:UpdateChannel=status.database.updateChannel??'stable';
  const[error,setError]=useState(''),[busy,setBusy]=useState(false),[job,setJob]=useState<Job|null>(null),[release,setRelease]=useState<any>(null),[ready,setReady]=useState(false),[checked,setChecked]=useState(false),[confirm,setConfirm]=useState<'apply'|'rollback'|null>(null),[installing,setInstalling]=useState(false);
+ const confirmation=useRef<HTMLDialogElement>(null),cancelConfirmation=useRef<HTMLButtonElement>(null),confirmationTitle=useId(),confirmationDescription=useId();
+ useLayoutEffect(()=>{
+  const dialog=confirmation.current;if(!confirm||!dialog)return;
+  const previous=document.activeElement as HTMLElement|null;
+  dialog.showModal();cancelConfirmation.current?.focus();
+  return()=>{dialog.close();if(previous?.isConnected)previous.focus();};
+ },[confirm]);
  function reset(){setRelease(null);setReady(false);setChecked(false);setConfirm(null);}
  useEffect(reset,[source?.url,channel]);
  const progress=job?.kind==='system.download'?job:status.systemUpdate;
@@ -71,15 +78,17 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
   </div>}
   {error&&<p className="error" role="alert">{error}</p>}
   {installing&&<p className="banner">{t('正在切换版本。Framely 入口会在服务恢复后重新出现。')}</p>}
-  {confirm&&<div className="confirm-box">
-   <h3>{confirm==='apply'?t('安装 Framely {0}？',{'0':release.version}):t('回滚 Framely？')}</h3>
+  {confirm&&<dialog ref={confirmation} className="modal update-confirmation" aria-labelledby={confirmationTitle} aria-describedby={confirmationDescription} onCancel={e=>{e.preventDefault();setConfirm(null);}} onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();setConfirm(null);}}}>
+   <h2 id={confirmationTitle}>{confirm==='apply'?t('安装 Framely {0}？',{'0':release.version}):t('回滚 Framely？')}</h2>
+   <div id={confirmationDescription}>
    {confirm==='apply'&&!ready&&<p>{t('确认后将下载并校验发行包，校验通过后自动安装。')}</p>}
    <p>{t('插件和数据会保留，Framely 界面会暂时关闭。SteamVR 不会被重启。')}</p>
    {confirm==='apply'&&older&&<p className="banner">{t('所选版本早于当前版本，安装将切换到较旧版本。')}</p>}
+   </div>
    <div className="row">
     <button className="primary" disabled={installing||busy} onClick={()=>void confirmUpdate()}>{confirm==='apply'?(ready?t('确认安装'):t('确认下载并安装')):t('确认回滚')}</button>
-    <button disabled={installing} onClick={()=>setConfirm(null)}>{t('取消')}</button>
+    <button ref={cancelConfirmation} disabled={installing} onClick={()=>setConfirm(null)}>{t('取消')}</button>
    </div>
-  </div>}
+  </dialog>}
  </section>;
 }

@@ -38,7 +38,7 @@ Deleted `/home` data cannot be recovered. OS updates may require manual interven
 
 Device and installer share the repository with independent versions/tags/workflows:
 
-- Device: root Cargo version, `v<version>` (currently `v0.4.2-preview.11`), `.github/workflows/release.yml`, Linux ARM64 and pinned CEF.
+- Device: root Cargo version, `v<version>` (currently `v0.4.2-preview.12`), `.github/workflows/release.yml`, Linux ARM64 and pinned CEF.
 - Installer: `installer/Cargo.toml`, `installer-v<version>` (currently `installer-v0.4.1-preview.8`), `.github/workflows/installer-release.yml`, Linux x64/ARM64, Windows x64, macOS Intel/Apple Silicon, pinned GPUI Kit.
 
 Versions need not match or ship together. Update the relevant Cargo.lock with version changes. Installer package/macOS versions use the installer version.
@@ -47,8 +47,8 @@ Both workflows cache dependencies/builds by product/platform/toolchain/configura
 
 ```bash
 # After committing and pushing the intended source:
-git tag v0.4.2-preview.11
-git push origin v0.4.2-preview.11
+git tag v0.4.2-preview.12
+git push origin v0.4.2-preview.12
 # Independent installer release:
 git tag installer-v0.4.1-preview.8
 git push origin installer-v0.4.1-preview.8
