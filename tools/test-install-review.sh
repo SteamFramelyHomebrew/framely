@@ -16,6 +16,8 @@ const out=process.env.FRAMELY_INSTALL_REVIEW_OUTPUT;
 await build({entryPoints:[process.env.FRAMELY_INSTALL_REVIEW_FIXTURE],bundle:true,outfile:`${out}/fixture.js`,define:{'process.env.NODE_ENV':'"production"'}});
 await writeFile(`${out}/index.html`,'<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="fixture.css"><div id="root"></div><script src="fixture.js"></script></html>');
 JS
+mkdir -p "$out/assets"
+cp -a assets/branding "$out/assets/branding"
 python3 - "$out" > "$out/server.log" 2>&1 <<'PY' &
 import functools,http.server,pathlib,sys
 root=pathlib.Path(sys.argv[1])

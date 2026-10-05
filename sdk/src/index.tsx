@@ -4,8 +4,8 @@ export * from './lifecycle';
 import {installScrollbars} from './scrollbars';
 import React from 'react';
 import {createRoot} from 'react-dom/client';
-export interface NotificationAction {id:string;label:string;icon:string}
-export interface Notification {id:string;title:string;body:string;image?:string;actions?:NotificationAction[];durationMs?:number}
+export interface NotificationAction {id:string;label:string;icon?:string;closeOnClick?:boolean;removeFromInboxOnClick?:boolean}
+export interface Notification {id:string;title:string;body:string;image?:string;actions?:NotificationAction[];durationMs?:number;inbox?:boolean}
 type Bridge={request:(op:string,p?:unknown)=>Promise<any>;subscribe:(f:(e:unknown)=>void)=>()=>void};
 function bridge():Bridge{const b=(window as any).__framelyBridge;if(!b)throw new Error('This page requires the Framely plugin host');return b;}
 export const framely={
@@ -14,7 +14,7 @@ export const framely={
  call:<T=unknown>(method:string,params:unknown={}):Promise<T>=>bridge().request('call',{method,params}),
  windows:{open:(window:string)=>bridge().request('window.open',{window}),close:(window:string)=>bridge().request('window.close',{window})},
  dependencies:():Promise<DependencyStatus[]>=>bridge().request('dependencies'),
- notifications:{send:(notification:Notification)=>bridge().request('notification.send',{notification}),remove:(id:string)=>bridge().request('notification.remove',{id})},
+ notifications:{send:(notification:Notification)=>bridge().request('notification.send',{notification}),remove:(id:string)=>bridge().request('notification.remove',{id}),dismiss:(id:string)=>bridge().request('notification.dismiss',{id})},
  onEvent:(callback:(event:unknown)=>void)=>bridge().subscribe(callback),
 };
 export function registerPlugin(pages:{QuickPage:React.ComponentType;WindowPage?:React.ComponentType;windows?:Record<string,React.ComponentType>}){installScrollbars();const key=location.pathname.split('/').pop();const Page=key==='quick'?pages.QuickPage:pages.windows?.[key??'']??pages.WindowPage??pages.QuickPage;const style=document.createElement('style');style.textContent='*{box-sizing:border-box}body{margin:0;padding:20px;background:#101820;color:#edf2fa;font:20px system-ui}button,input,textarea{font:inherit;color:inherit;border:1px solid #52627a;border-radius:6px;padding:12px;background:#24333e;margin:6px 6px 6px 0;min-height:48px}button{cursor:pointer}button:disabled{opacity:.5}input,textarea{width:100%}p{line-height:1.6}small{color:#acb9cf}';document.head.append(style);createRoot(document.getElementById('root')!).render(<Boundary><Page/></Boundary>);console.log('FRAMELY_PLUGIN_READY');}

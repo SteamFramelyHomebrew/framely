@@ -8,6 +8,7 @@ type UpdateSource={url:string};
 export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<void>}){
  const source:UpdateSource|null=status.database.updateSource??null;
  const channel:UpdateChannel=status.database.updateChannel??'stable';
+ const automatic=status.database.updateCheck??{enabled:true,intervalHours:6};
  const[error,setError]=useState(''),[busy,setBusy]=useState(false),[job,setJob]=useState<Job|null>(null),[release,setRelease]=useState<any>(null),[ready,setReady]=useState(false),[checked,setChecked]=useState(false),[confirm,setConfirm]=useState<'apply'|'rollback'|null>(null),[installing,setInstalling]=useState(false);
  const confirmation=useRef<HTMLDialogElement>(null),cancelConfirmation=useRef<HTMLButtonElement>(null),confirmationTitle=useId(),confirmationDescription=useId();
  useLayoutEffect(()=>{
@@ -26,6 +27,11 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
   try{await api('system.channel.save',{channel:value});}
   catch(e){setError(String(e));}
   finally{await refresh();setBusy(false);}
+ }
+ async function saveAutomatic(settings:{enabled:boolean;intervalHours:number}){
+  if(busy||installing)return;setBusy(true);setError('');
+  try{await api('system.check.settings.save',{settings});await refresh();}
+  catch(e){setError(String(e));}finally{setBusy(false);}
  }
  async function run(method:string,params:unknown={},onDone?:(value:any)=>void){
   setBusy(true);setError('');
@@ -62,6 +68,13 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
   <div className="row">
    <button className="primary" disabled={busy||installing||!source} onClick={()=>{reset();void run('system.check.start',{},v=>{setRelease(v.release?{...v.release,targetVersion:v.version}:null);setReady(false);setChecked(true);});}}>{busy?t('处理中…'):t('检查更新')}</button>
    <button disabled={busy||installing||!status.previousRelease} onClick={()=>setConfirm('rollback')}>{t('回滚上一版本')}</button>
+  </div>
+  <div className="automatic-update-settings">
+   <label><input type="checkbox" role="switch" checked={automatic.enabled} disabled={busy||installing||!source} onChange={e=>void saveAutomatic({...automatic,enabled:e.target.checked})}/><span>{t('自动检查更新')}</span></label>
+   <label>{t('检查间隔')}</label><Select label={t('检查间隔')} value={String(automatic.intervalHours)} disabled={busy||installing||!source||!automatic.enabled} onChange={value=>void saveAutomatic({...automatic,intervalHours:Number(value)})} options={[...new Set([1,6,12,24,automatic.intervalHours])].sort((a,b)=>a-b).map(hours=>({value:String(hours),label:hours===1?t('每小时'):t('每 {0} 小时',{0:hours})}))}/>
+   <p className="sub">{t('发现新版本时发送通知，您可以忽略提醒或打开更新页面。')}</p>
+   {status.automaticUpdate?.checking&&<p className="sub" role="status">{t('正在自动检查更新…')}</p>}
+   {status.automaticUpdate?.error&&<p className="error">{t('自动检查未完成，将在下次检查时重试。')} {t(status.automaticUpdate.error)}</p>}
   </div>
   {checked&&!release&&<p className="banner" role="status">{t('所选渠道暂无可用发行版本。')}</p>}
   {job&&<p className="banner" role="status">{job.kind==='system.check'?t('正在读取更新清单…'):job.phase==='verifying'?t('下载完成，正在校验发行包…'):t('正在下载发行包…')}</p>}

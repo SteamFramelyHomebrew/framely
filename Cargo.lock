@@ -291,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "framely"
-version = "0.4.2-preview.12"
+version = "0.4.3-preview.1"
 dependencies = [
  "anyhow",
  "base64",

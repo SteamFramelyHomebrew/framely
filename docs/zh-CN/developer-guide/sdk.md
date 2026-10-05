@@ -25,7 +25,8 @@ registerPlugin({QuickPage, windows: {main: MainWindow}});
 | `framely.windows.open(key)` | 窗口 key；异步结果 | 打开已在 Manifest 声明的窗口 |
 | `framely.windows.close(key)` | 窗口 key；异步结果 | 关闭窗口，不停用后端 |
 | `framely.notifications.send(notification)` | 通知对象；异步结果 | 发送或按 ID 更新通知 |
-| `framely.notifications.remove(id)` | 通知 ID；异步结果 | 撤回通知 |
+| `framely.notifications.remove(id)` | 通知 ID；异步结果 | 关闭弹窗并移除收件箱副本 |
+| `framely.notifications.dismiss(id)` | 通知 ID；异步结果 | 仅关闭弹窗，保留收件箱副本 |
 | `framely.dependencies()` | `Promise<DependencyStatus[]>` | 查询本插件声明的依赖状态 |
 | `framely.language.get()` | `Promise<{preference, language}>` | 获取语言偏好和当前生效语言 |
 | `framely.onEvent(callback)` | 返回取消订阅函数 | 接收宿主转发的事件 |
@@ -43,14 +44,38 @@ try {
 
 ```tsx
 await framely.notifications.send({
-  id: 'task', title: '完成', body: '文件已处理', durationMs: 8000,
+  id: 'task', title: '完成', body: '文件已处理', inbox: true, durationMs: 8000,
   actions: [{id: 'open', label: '打开', icon: '↗'}],
 });
 ```
 
-`id`、`title`、`body` 必填。`image` 可选，接受 PNG/JPEG data URL 或 HTTPS URL，字符串最大 1 MiB。`actions` 最多 3 项，每项有 `id`、`label`、`icon`。`durationMs` 范围 1000–60000，省略时默认 8000 ms。`id` 和按钮 `id` 遵循本体 ID 规则，按钮 ID 在同一通知内不得重复；`title` 最大 160 字节、`body` 4096 字节、按钮 `label` 非空且最多 80 字节、`icon` 最多 16 字节。每插件每 10 秒最多发送 10 次，全局最多 64 条同时存在的通知；同 ID 更新不额外占队列位置。
+`id`、`title`、`body` 必填。`inbox` 默认 `false`：浮窗启用时，只有明确设置 `inbox: true` 的通知才进入快捷面板的“通知”收件箱。收件箱消息在弹窗到期、关闭弹窗、插件停用或重启、本体重启后都会保留；按钮策略、主动移除或卸载插件会移除消息。重启后恢复的收件箱消息不会重新弹出。
 
-按钮动作调用后端 `notification.action`，参数 `{id, action}`；同时转发 `notification.action` 页面事件。无后端插件可只监听页面事件。同一 ID 用于更新，调用 remove 撤回。
+| 字段 | 默认值 | 行为 |
+| --- | --- | --- |
+| `inbox` | `false` | 保存到收件箱；用户浮窗设置也可要求保存 |
+| `durationMs` | `8000` | 弹窗自动关闭倒计时，单位毫秒；支持 `1000-60000`，`0` 表示持续显示直到主动关闭 |
+| `actions[].closeOnClick` | `true` | 此按钮操作成功后关闭弹窗 |
+| `actions[].removeFromInboxOnClick` | `true` | 此按钮操作成功后移除收件箱副本 |
+
+用户的通知设置优先于发送方偏好。全局浮窗或此插件的浮窗开关关闭时，Framely 不展示弹窗，并将消息转存到收件箱，即使 `inbox` 是 `false`。查看收件箱会清除启动图标的未读角标，但保留消息及按钮。插件不能覆盖用户的浮窗和角标设置。
+
+两个按钮策略独立配置。例如查看状态后仍要保留消息，可将两个字段均设为 `false`：
+
+```tsx
+await framely.notifications.send({
+  id: 'capture', title: '录制中', body: '当前录制正在进行。',
+  inbox: true, durationMs: 0,
+  actions: [{id: 'status', label: '查看状态',
+    closeOnClick: false, removeFromInboxOnClick: false}],
+});
+```
+
+弹窗显示剩余关闭时间，收件箱显示接收时间。关闭弹窗保留其收件箱副本。`framely.notifications.remove(id)` 同时撤回弹窗和收件箱消息；`framely.notifications.dismiss(id)` 仅关闭弹窗。重复发送同 ID 会替换消息并重新开始倒计时。按钮操作失败时保留消息供重试。按钮使用 `label` 文字显示，旧版 `icon` 字符串保持可选兼容。
+
+`image` 可选，接受 PNG/JPEG data URL 或 HTTPS URL，字符串最大 1 MiB。`actions` 最多 3 项，每项必填 `id`、`label`。通知和按钮 ID 遵循本体 ID 规则，按钮 ID 在同一通知内不得重复；`title` 最大 160 字节、`body` 4096 字节、按钮 `label` 非空且最多 80 字节、可选 `icon` 最多 16 字节。每插件每 10 秒最多发送 10 次，全局最多 64 个同时显示的弹窗及 256 条收件箱消息。达到上限后，新消息发送会报错，请先移除旧消息；替换同 ID 不额外占用位置。
+
+按钮调用后端 `notification.action`，参数为 `{id, action}`；后端调用成功后转发同名页面事件。纯前端插件可以监听该事件。插件停用时，其收件箱消息仍可查看和移除，操作按钮需重新启用插件后使用。
 
 ## React hooks
 

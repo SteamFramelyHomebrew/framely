@@ -150,7 +150,7 @@ struct GitHubRelease {
     draft: bool,
     assets: Vec<GitHubAsset>,
 }
-fn descriptor_version(version: &str) -> Result<semver::Version> {
+pub(crate) fn descriptor_version(version: &str) -> Result<semver::Version> {
     // Runtime VERSION appends a twelve-digit content hash to the Cargo version.
     let version = version
         .rsplit_once('-')

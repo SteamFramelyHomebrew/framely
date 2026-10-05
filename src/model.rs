@@ -583,13 +583,121 @@ pub struct Database {
     pub update_source: Option<UpdateSource>,
     #[serde(default, skip_serializing_if = "UpdateChannel::is_stable")]
     pub update_channel: UpdateChannel,
+    #[serde(default)]
+    pub update_check: UpdateCheckSettings,
+    #[serde(default)]
+    pub update_notice: Option<UpdateNotice>,
+    #[serde(default)]
+    pub notification_inbox: BTreeMap<String, NotificationEntry>,
+    #[serde(default)]
+    pub notification_settings: NotificationSettings,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NotificationPreference {
+    #[serde(default = "yes")]
+    pub popups: bool,
+    #[serde(default = "yes")]
+    pub badge: bool,
+}
+impl Default for NotificationPreference {
+    fn default() -> Self {
+        Self {
+            popups: true,
+            badge: true,
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NotificationSettings {
+    #[serde(default = "yes")]
+    pub popups: bool,
+    #[serde(default = "yes")]
+    pub badge: bool,
+    #[serde(default)]
+    pub plugins: BTreeMap<String, NotificationPreference>,
+}
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            popups: true,
+            badge: true,
+            plugins: BTreeMap::new(),
+        }
+    }
+}
+impl NotificationSettings {
+    pub fn popups_for(&self, plugin: &str) -> bool {
+        self.popups && self.plugins.get(plugin).is_none_or(|p| p.popups)
+    }
+    pub fn badge_for(&self, plugin: &str) -> bool {
+        self.badge && self.plugins.get(plugin).is_none_or(|p| p.badge)
+    }
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NotificationSettingsPatch {
+    pub plugin: Option<String>,
+    pub popups: Option<bool>,
+    pub badge: Option<bool>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateCheckSettings {
+    pub enabled: bool,
+    pub interval_hours: u64,
+}
+impl Default for UpdateCheckSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_hours: 6,
+        }
+    }
+}
+impl UpdateCheckSettings {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            (1..=168).contains(&self.interval_hours),
+            "自动检查间隔须为 1-168 小时"
+        );
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateNotice {
+    pub source: UpdateSource,
+    pub channel: UpdateChannel,
+    pub version: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NotificationEntry {
+    pub plugin: String,
+    pub plugin_name: String,
+    pub created_at: u64,
+    pub expires_at: Option<u64>,
+    pub toast: bool,
+    pub in_inbox: bool,
+    #[serde(default)]
+    pub read: bool,
+    pub notification: Notification,
+    #[serde(default)]
+    pub update: Option<UpdateNotice>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Action {
     pub id: String,
     pub label: String,
+    #[serde(default)]
     pub icon: String,
+    #[serde(default = "yes")]
+    pub close_on_click: bool,
+    #[serde(default = "yes")]
+    pub remove_from_inbox_on_click: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -603,6 +711,8 @@ pub struct Notification {
     pub actions: Vec<Action>,
     #[serde(default = "ttl")]
     pub duration_ms: u64,
+    #[serde(default)]
+    pub inbox: bool,
 }
 fn ttl() -> u64 {
     8000
@@ -615,7 +725,7 @@ impl Notification {
             "Notification limit exceeded"
         );
         ensure!(
-            (1000..=60000).contains(&self.duration_ms),
+            self.duration_ms == 0 || (1000..=60000).contains(&self.duration_ms),
             "Invalid notification duration"
         );
         let mut ids = std::collections::BTreeSet::new();

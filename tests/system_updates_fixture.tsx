@@ -10,12 +10,13 @@ const wait=(ms=70)=>new Promise(resolve=>setTimeout(resolve,ms));
 let status:any={version:'0.4.3-preview.1',build:'0.4.3-preview.1-012345abcdef',database:{updateSource:{url:'https://github.com/example/framely/releases/latest/download/framely-release.json'}},previousRelease:'releases/old'};
 let updateStatus:React.Dispatch<React.SetStateAction<any>>,remount:()=>void;
 let kind='',empty=false,hold=false,verifying=false,failCheck=false,failDownload=false,failApply=false;
-let checks=0,downloads=0,attempts=0,installs=0,rollbacks=0;
+let checks=0,downloads=0,attempts=0,installs=0,rollbacks=0,automaticSaves=0;
 const release=()=>({version:(status.database.updateChannel==='testing'?'0.4.3-preview.2':'0.4.2')+'-abcdef012345',size:1024*1024,changelog:'Fixture release notes'});
 window.fetch=async(_url,init)=>{
  const {method,params}=JSON.parse(String(init?.body));
  let result:any=true;
- if(method==='system.channel.save')status={...status,database:{...status.database,updateChannel:params.channel}};
+ if(method==='system.check.settings.save'){automaticSaves++;status={...status,database:{...status.database,updateCheck:params.settings}};}
+ else if(method==='system.channel.save')status={...status,database:{...status.database,updateChannel:params.channel}};
  else if(method==='system.check.start'){kind='system.check';checks++;result={job:'fixture'};}
  else if(method==='system.download.start'){kind='system.download';downloads++;result={job:'fixture'};}
  else if(method==='system.job.status'){
@@ -42,6 +43,14 @@ async function choose(label:string){(document.querySelector('.framely-select but
  try{
   configureLanguage('zh-CN',[]);updateStatus({...status});await wait();
   if(!document.querySelector('.framely-select button')?.textContent?.includes('正式版'))throw Error('legacy source did not default to stable');
+  const automaticSwitch=()=>document.querySelector('.automatic-update-settings input[type=checkbox]') as HTMLInputElement;
+  if(!automaticSwitch().checked)throw Error('automatic checks did not default to enabled');
+  automaticSwitch().click();await until(()=>automaticSaves===1);await wait();
+  if(status.database.updateCheck.enabled||(document.querySelector('.automatic-update-settings .framely-select button') as HTMLButtonElement).disabled===false)throw Error('disabled automatic check settings not reflected');
+  automaticSwitch().click();await until(()=>automaticSaves===2);await wait();
+  (document.querySelector('.automatic-update-settings .framely-select button') as HTMLButtonElement).click();await wait();
+  ([...document.querySelectorAll('[role=option]')].find(o=>o.textContent==='每 12 小时') as HTMLButtonElement).click();await until(()=>automaticSaves===3);await wait();
+  if(status.database.updateCheck.intervalHours!==12)throw Error('automatic interval not saved');
   button('检查更新').click();await until(()=>!!document.querySelector('.release-card'));
   if(!document.querySelector('.release-card')?.textContent?.includes('较旧版本'))throw Error('channel downgrade not identified');
   button('下载并安装').focus();button('下载并安装').click();await wait();
@@ -72,7 +81,7 @@ async function choose(label:string){(document.querySelector('.framely-select but
   if(document.querySelector('.release-card')?.textContent?.includes('较旧版本'))throw Error('new preview reported as downgrade');
   if([...document.querySelectorAll('button')].some(b=>b.textContent==='安装已校验版本'))throw Error('download reused across channels');
   hold=true;failApply=false;button('下载并安装').click();await wait();button('确认下载并安装').click();await until(()=>downloads===3);await wait();
-  if(!(document.querySelector('.framely-select button') as HTMLButtonElement).disabled||!button('处理中…').disabled)throw Error('settings mutable during download');
+  if(!(document.querySelector('.framely-select button') as HTMLButtonElement).disabled||!automaticSwitch().disabled||!button('处理中…').disabled)throw Error('settings mutable during download');
   if(attempts!==2)throw Error('installation started before verification');
   await until(()=>!!document.querySelector('progress[aria-label="下载进度"]'));
   verifying=true;

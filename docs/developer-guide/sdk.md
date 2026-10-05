@@ -25,7 +25,8 @@ registerPlugin({QuickPage, windows: {main: MainWindow}});
 | `framely.windows.open(key)` | Declared key; asynchronous result | Open a declared window |
 | `framely.windows.close(key)` | Key; asynchronous result | Close a window without disabling the backend |
 | `framely.notifications.send(notification)` | Notification; asynchronous result | Send or replace by ID |
-| `framely.notifications.remove(id)` | Notification ID; asynchronous result | Withdraw notification |
+| `framely.notifications.remove(id)` | Notification ID; asynchronous result | Close the popup and remove the inbox copy |
+| `framely.notifications.dismiss(id)` | Notification ID; asynchronous result | Close the popup, retaining the inbox copy |
 | `framely.dependencies()` | `Promise<DependencyStatus[]>` | Query declared dependency state |
 | `framely.language.get()` | `Promise<{preference, language}>` | Language preference and effective language |
 | `framely.onEvent(callback)` | Unsubscribe function | Receive forwarded events |
@@ -43,14 +44,38 @@ try {
 
 ```tsx
 await framely.notifications.send({
-  id: 'task', title: 'Done', body: 'File processed', durationMs: 8000,
+  id: 'task', title: 'Done', body: 'File processed', inbox: true, durationMs: 8000,
   actions: [{id: 'open', label: 'Open', icon: '↗'}],
 });
 ```
 
-`id`, `title`, `body` are required. Optional `image` accepts PNG/JPEG data URLs or HTTPS, up to a 1 MiB string. At most three actions, each with `id`, `label`, `icon`. `durationMs` is 1000–60000; omission defaults to 8000 ms. Notification/action IDs follow core ID rules; action IDs must be unique within a notification. Title is at most 160 bytes, body 4096, nonempty action label 80, and action icon 16. Each plugin may send at most ten notifications per ten seconds; the global queue permits 64 concurrent notifications. Updating an existing ID does not occupy another slot.
+`id`, `title`, `body` are required. `inbox` defaults to `false`: with popups enabled, only notifications explicitly sent with `inbox: true` appear in the quick panel's Notifications tab. Inbox messages survive popup expiry, closing the popup, plugin disable/restart, and Framely restart. They are removed by an action's policy, explicit removal, or plugin uninstall. Restored inbox messages do not replay as popups.
 
-Buttons invoke backend `notification.action` with `{id, action}` and forward a page event of the same name. UI-only plugins can listen for the event. Reuse an ID to update; remove it to withdraw.
+| Field | Default | Behavior |
+| --- | --- | --- |
+| `inbox` | `false` | Save the message in the inbox; user popup settings may also require saving it |
+| `durationMs` | `8000` | Popup countdown in milliseconds; `1000-60000`, or `0` to stay open until dismissed |
+| `actions[].closeOnClick` | `true` | Close the popup after this action succeeds |
+| `actions[].removeFromInboxOnClick` | `true` | Remove the inbox copy after this action succeeds |
+
+User notification settings take priority over sender preferences. If the global popup switch or this plugin's popup switch is off, Framely suppresses the popup and saves the message in the inbox even when `inbox` is false. Reading the inbox clears the launcher unread badge but leaves messages and actions available. Plugins cannot override popup or badge settings.
+
+The two action policies are independent. For a status button that keeps the message, set both to `false`:
+
+```tsx
+await framely.notifications.send({
+  id: 'capture', title: 'Recording', body: 'Recording is in progress.',
+  inbox: true, durationMs: 0,
+  actions: [{id: 'status', label: 'View status',
+    closeOnClick: false, removeFromInboxOnClick: false}],
+});
+```
+
+Popups display the remaining auto-close countdown; inbox entries show their received time. Closing a popup keeps its saved inbox copy. `remove(id)` withdraws both copies; `dismiss(id)` closes only the popup. Reuse the same ID to replace a message and restart its countdown. Failed actions leave the message available for retry. Buttons use their text `label`; the legacy `icon` string remains optional for compatibility.
+
+Optional `image` accepts PNG/JPEG data URLs or HTTPS, up to a 1 MiB string. At most three actions, each with required `id` and `label`. Notification/action IDs follow core ID rules; action IDs must be unique within a notification. Title is at most 160 bytes, body 4096, nonempty action label 80, and optional action icon 16. Each plugin may send at most ten notifications per ten seconds; the global queue permits 64 simultaneous popups and 256 saved inbox messages. When full, sending a new message fails; remove older messages first. Replacing an existing ID does not occupy another slot.
+
+Buttons invoke backend `notification.action` with `{id, action}` and forward a page event of the same name after a successful backend response. UI-only plugins can listen for the event. A disabled plugin's saved messages remain readable and removable, but their action buttons are disabled until it is enabled again.
 
 ## React hooks
 

@@ -299,6 +299,7 @@ fn notification_limits_and_sources() {
         image: None,
         actions: vec![],
         duration_ms: 8000,
+        inbox: false,
     };
     n.validate().unwrap();
     let mut invalid = n.clone();
@@ -307,6 +308,8 @@ fn notification_limits_and_sources() {
             id: i.to_string(),
             label: "x".into(),
             icon: "x".into(),
+            close_on_click: true,
+            remove_from_inbox_on_click: true,
         })
         .collect();
     assert!(invalid.validate().is_err());

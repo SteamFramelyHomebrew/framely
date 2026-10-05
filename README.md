@@ -9,6 +9,8 @@
 
 A React plugin manager for Steam Frame, with a Rust core service, a separate CEF/OpenVR host, a network management panel, and a desktop installer. Manage plugins, sources, windows, notifications, and updates.
 
+![Framely plugin library](docs/images/plugin-library.png)
+
 ## Installation
 
 The target device is a Linux ARM64 Steam Frame. Download the `Framely Installer` for your computer from [Releases](https://github.com/SteamFramelyHomebrew/framely/releases), connect to the device, and install Framely. Alternatively, run this in the Frame SSH terminal to install the latest stable release:

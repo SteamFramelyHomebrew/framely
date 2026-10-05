@@ -9,6 +9,8 @@
 
 Steam Frame 的 React 插件管理器：Rust 核心服务、独立 CEF/OpenVR 宿主、网络管理面板和电脑端安装器。可管理插件、来源、窗口、通知和更新。
 
+![Framely 插件库](docs/images/plugin-library.png)
+
 ## 安装
 
 目标为 Linux ARM64 Steam Frame。电脑端从 [Releases](https://github.com/SteamFramelyHomebrew/framely/releases) 下载对应平台的 `Framely Installer`，连接设备后安装本体。也可在 Frame 的 SSH 终端安装最新正式版：

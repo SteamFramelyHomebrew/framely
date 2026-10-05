@@ -31,7 +31,12 @@ pub struct Service {
     pub manager: u32,
     running: BTreeMap<String, Running>,
     pub events: Events,
-    notifications: BTreeMap<String, Value>,
+    notifications: BTreeMap<String, NotificationEntry>,
+    automatic_updater: crate::update::Updater,
+    auto_update_job: Option<(String, UpdateSource, UpdateChannel)>,
+    next_update_check: Instant,
+    last_update_check: Option<u64>,
+    auto_update_error: Option<String>,
     rates: BTreeMap<String, VecDeque<Instant>>,
     recovery: BTreeMap<String, Recovery>,
     updater: crate::update::Updater,
@@ -43,6 +48,7 @@ pub struct Service {
 }
 impl Service {
     pub fn prepare_uninstall(&mut self) -> Result<Value> {
+        self.cancel_automatic_check();
         self.updater.ensure_idle()?;
         self.updater.jobs.ensure_idle()?;
         let roots: Vec<_> = self.db.plugins.keys().cloned().collect();
@@ -73,8 +79,10 @@ impl Service {
             .with_context(|| format!("插件 {id} 卸载失败，本体保留，请重试"))?;
             fs::remove_dir_all(self.root.join("plugins").join(id))?;
             self.db.plugins.remove(id);
+            self.db.notification_settings.plugins.remove(id);
             self.runtime.remove(id);
-            self.save()?;
+            self.notifications.retain(|_, n| n.plugin != *id);
+            self.save_notifications()?;
         }
         Ok(json!({"uninstalled": ids}))
     }
@@ -86,6 +94,7 @@ impl Service {
         } else {
             Database::default()
         };
+        db.update_check.validate()?;
         if db.update_source.is_none() {
             db.update_source = fs::read(root.join("update-source.json"))
                 .ok()
@@ -146,6 +155,15 @@ impl Service {
                 }
             }
         }
+        let notifications = db
+            .notification_inbox
+            .iter()
+            .map(|(key, entry)| {
+                let mut entry = entry.clone();
+                entry.toast = false;
+                (key.clone(), entry)
+            })
+            .collect();
         let service = Self {
             verifier: Default::default(),
             root: root.into(),
@@ -153,7 +171,12 @@ impl Service {
             manager,
             running: BTreeMap::new(),
             events: Arc::default(),
-            notifications: BTreeMap::new(),
+            notifications,
+            automatic_updater: Default::default(),
+            auto_update_job: None,
+            next_update_check: Instant::now() + Duration::from_secs(30),
+            last_update_check: None,
+            auto_update_error: None,
             rates: BTreeMap::new(),
             recovery: BTreeMap::new(),
             updater: crate::update::Updater::default(),
@@ -222,7 +245,10 @@ impl Service {
         );
     }
     fn cleanup_resources(&mut self, id: &str) {
-        self.notifications.retain(|_, v| v["plugin"] != id);
+        for entry in self.notifications.values_mut().filter(|v| v.plugin == id) {
+            entry.toast = false;
+        }
+        self.notifications.retain(|_, v| v.toast || v.in_inbox);
         self.rates.remove(id);
         process::event(&self.events, json!({"kind":"plugin.disabled","plugin":id}));
         process::event(
@@ -507,6 +533,7 @@ impl Service {
         Ok(())
     }
     pub fn shutdown(&mut self) {
+        self.cancel_automatic_check();
         let roots: Vec<_> = self.running.keys().cloned().collect();
         let ids = crate::relations::order(&self.db, &roots, false).unwrap_or(roots);
         for id in ids.into_iter().rev() {
@@ -583,6 +610,7 @@ impl Service {
         }
     }
     pub fn maintenance(&mut self) {
+        self.expire_notifications();
         if self.visibility.expire(Instant::now()) {
             self.publish_visibility();
         }
@@ -590,6 +618,7 @@ impl Service {
         if !self.agreement_accepted() {
             return;
         }
+        self.automatic_update_check();
         let now = Instant::now();
         let exited: Vec<_> = self
             .running
@@ -690,6 +719,7 @@ impl Service {
                     "status"
                         | "events"
                         | "host.ui.visibility"
+                        | "host.notification.badge"
                         | "ui.visibility.get"
                         | "language.list"
                         | "language.save"
@@ -778,6 +808,9 @@ impl Service {
                     self.stop_one(&id, "agreement-revoked");
                 }
                 self.notifications.clear();
+                self.db.notification_inbox.clear();
+                self.cancel_automatic_check();
+                self.save()?;
                 process::event(&self.events, json!({"kind":"agreement.revoked"}));
                 Ok(json!(true))
             }
@@ -805,7 +838,7 @@ impl Service {
             "status" => {
                 self.maintenance();
                 Ok(
-                    json!({"agreement":{"version":AGREEMENT_VERSION,"accepted":self.agreement_accepted()},"version":env!("CARGO_PKG_VERSION"),"build":fs::read_to_string(self.root.join("current/VERSION")).unwrap_or_else(|_|env!("CARGO_PKG_VERSION").into()).trim(),"systemUpdate":fs::read(self.root.join("update-status.json")).ok().and_then(|b|serde_json::from_slice::<Value>(&b).ok()),"previousRelease":fs::read_to_string(self.root.join("previous-release")).ok().filter(|s|!s.trim().is_empty()),"apiVersion":API_VERSION,"runtime":self.runtime,"database":self.db,"running":self.running.iter_mut().filter_map(|(id,r)|if !r.exited(){Some(id.clone())}else{None}).collect::<Vec<_>>(),"notifications":self.notifications.values().collect::<Vec<_>>() }),
+                    json!({"agreement":{"version":AGREEMENT_VERSION,"accepted":self.agreement_accepted()},"version":env!("CARGO_PKG_VERSION"),"build":fs::read_to_string(self.root.join("current/VERSION")).unwrap_or_else(|_|env!("CARGO_PKG_VERSION").into()).trim(),"systemUpdate":fs::read(self.root.join("update-status.json")).ok().and_then(|b|serde_json::from_slice::<Value>(&b).ok()),"previousRelease":fs::read_to_string(self.root.join("previous-release")).ok().filter(|s|!s.trim().is_empty()),"apiVersion":API_VERSION,"runtime":self.runtime,"database":self.db,"running":self.running.iter_mut().filter_map(|(id,r)|if !r.exited(){Some(id.clone())}else{None}).collect::<Vec<_>>(),"notifications":self.notifications.values().filter(|n| n.toast).collect::<Vec<_>>(),"inbox":self.notifications.values().filter(|n| n.in_inbox).collect::<Vec<_>>(),"notificationBadge":self.notification_badge(),"automaticUpdate":{"checking":self.auto_update_job.is_some(),"lastCheckedAt":self.last_update_check,"error":self.auto_update_error} }),
                 )
             }
             "inspect" => {
@@ -933,7 +966,9 @@ impl Service {
                     }
                 }
                 self.db.plugins.remove(&id);
-                self.save()?;
+                self.db.notification_settings.plugins.remove(&id);
+                self.notifications.retain(|_, n| n.plugin != id);
+                self.save_notifications()?;
                 fs::remove_dir_all(self.root.join("plugins").join(&id))?;
                 if p["purge"].as_bool() == Some(true) {
                     let data = self.root.join("data").join(&id);
@@ -997,42 +1032,103 @@ impl Service {
                 );
                 Ok(json!(true))
             }
-            "notification.send" => self.notify(&id, p["notification"].clone()),
-            "notification.remove" => {
-                self.active(&id)?;
-                let key = p["id"].as_str().context("Missing notification ID")?;
-                valid_id(key)?;
-                self.notifications.remove(&format!("{id}:{key}"));
-                process::event(&self.events, json!({"kind":"notification.changed"}));
+            "host.notification.badge" => Ok(json!(self.notification_badge())),
+            "notification.settings.save" => {
+                let patch: NotificationSettingsPatch = serde_json::from_value(p)?;
+                ensure!(
+                    patch.popups.is_some() || patch.badge.is_some(),
+                    "Missing notification setting"
+                );
+                let mut settings = self.db.notification_settings.clone();
+                if let Some(id) = patch.plugin {
+                    // Core notifications already use the empty sender identity.
+                    if !id.is_empty() {
+                        self.plugin(&id)?;
+                    }
+                    let preference = settings.plugins.entry(id).or_default();
+                    if let Some(value) = patch.popups {
+                        preference.popups = value;
+                    }
+                    if let Some(value) = patch.badge {
+                        preference.badge = value;
+                    }
+                } else {
+                    if let Some(value) = patch.popups {
+                        settings.popups = value;
+                    }
+                    if let Some(value) = patch.badge {
+                        settings.badge = value;
+                    }
+                }
+                self.expire_notifications();
+                let new_inbox = self
+                    .notifications
+                    .values()
+                    .filter(|n| n.in_inbox || n.toast && !settings.popups_for(&n.plugin))
+                    .count();
+                ensure!(new_inbox <= 256, "Notification inbox full");
+                self.db.notification_settings = settings;
+                for entry in self.notifications.values_mut() {
+                    if entry.toast && !self.db.notification_settings.popups_for(&entry.plugin) {
+                        entry.toast = false;
+                        entry.in_inbox = true;
+                    }
+                }
+                self.save_notifications()?;
                 Ok(json!(true))
             }
-            "notification.action" => {
-                let key = p["id"].as_str().context("Missing ID")?;
-                let action = p["action"].as_str().context("Missing action")?;
-                let n = self
-                    .notifications
-                    .get(&format!("{id}:{key}"))
-                    .context("Notification expired")?;
-                ensure!(
-                    n["expiresAt"].as_u64().unwrap_or(0) > now_ms(),
-                    "Notification expired"
-                );
-                ensure!(
-                    n["notification"]["actions"]
-                        .as_array()
-                        .is_some_and(|a| a.iter().any(|v| v["id"] == action)),
-                    "Action not declared"
-                );
-                process::event(
-                    &self.events,
-                    json!({"kind":"plugin.event","plugin":id,"event":"notification.action","data":{"id":key,"action":action}}),
-                );
-                if self.active(&id)?.manifest.backend.is_some() {
-                    self.handle("plugin.call",json!({"plugin":id,"method":"notification.action","params":{"id":key,"action":action}}))
-                } else {
-                    Ok(json!(true))
+            "notification.read" => {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct ReadEntry {
+                    plugin: String,
+                    id: String,
+                    created_at: u64,
                 }
+                let entries: Vec<ReadEntry> = serde_json::from_value(p["entries"].clone())?;
+                ensure!(entries.len() <= 256, "Too many notifications");
+                let mut changed = false;
+                for item in entries {
+                    if let Some(n) = self
+                        .notifications
+                        .get_mut(&format!("{}:{}", item.plugin, item.id))
+                    {
+                        if n.in_inbox && !n.read && n.created_at == item.created_at {
+                            n.read = true;
+                            changed = true;
+                        }
+                    }
+                }
+                if changed {
+                    self.save_notifications()?;
+                }
+                Ok(json!(true))
             }
+            "notification.send" => self.notify(&id, p["notification"].clone()),
+            "notification.remove" | "notification.dismiss" => {
+                if !id.is_empty() {
+                    self.plugin(&id)?;
+                }
+                let key = p["id"].as_str().context("Missing notification ID")?;
+                valid_id(key)?;
+                let compound = format!("{id}:{key}");
+                if let Some(entry) = self.notifications.get_mut(&compound) {
+                    ensure!(
+                        p["createdAt"]
+                            .as_u64()
+                            .is_none_or(|time| time == entry.created_at),
+                        "Notification has changed"
+                    );
+                    entry.toast = false;
+                    if method == "notification.remove" {
+                        entry.in_inbox = false;
+                    }
+                }
+                self.notifications.retain(|_, n| n.toast || n.in_inbox);
+                self.save_notifications()?;
+                Ok(json!(true))
+            }
+            "notification.action" => self.notification_action(&id, &p),
             "events" => {
                 let events: Vec<_> = self.events.lock().unwrap().drain(..).collect();
                 let mut out = Vec::new();
@@ -1055,8 +1151,7 @@ impl Service {
                         out.push(e);
                     }
                 }
-                self.notifications
-                    .retain(|_, v| v["expiresAt"].as_u64().unwrap_or(0) > now_ms());
+                self.expire_notifications();
                 Ok(json!(out))
             }
             "system.source.save" => {
@@ -1072,6 +1167,7 @@ impl Service {
                 } else {
                     let _ = fs::remove_file(self.root.join("update-source.json"));
                 }
+                self.reset_automatic_updates();
                 self.db.update_source = source;
                 self.updater.clear();
                 self.save()?;
@@ -1080,8 +1176,18 @@ impl Service {
             "system.channel.save" => {
                 let channel: UpdateChannel = serde_json::from_value(p["channel"].clone())?;
                 self.updater.ensure_idle()?;
+                self.reset_automatic_updates();
                 self.db.update_channel = channel;
                 self.updater.clear();
+                self.save()?;
+                Ok(json!(true))
+            }
+            "system.check.settings.save" => {
+                let settings: UpdateCheckSettings = serde_json::from_value(p["settings"].clone())?;
+                settings.validate()?;
+                self.cancel_automatic_check();
+                self.db.update_check = settings;
+                self.next_update_check = Instant::now() + Duration::from_secs(30);
                 self.save()?;
                 Ok(json!(true))
             }
@@ -1305,15 +1411,269 @@ impl Service {
         }
         ensure!(rate.len() < 10, "Notification rate exceeded");
         rate.push_back(now);
+        self.insert_notification(id, &name, n, None)?;
+        Ok(json!(true))
+    }
+    fn insert_notification(
+        &mut self,
+        id: &str,
+        name: &str,
+        notification: Notification,
+        update: Option<UpdateNotice>,
+    ) -> Result<()> {
+        self.expire_notifications();
+        let key = format!("{id}:{}", notification.id);
+        let toast = self.db.notification_settings.popups_for(id);
+        let in_inbox = notification.inbox || !toast;
         ensure!(
-            self.notifications.len() < 64
-                || self.notifications.contains_key(&format!("{id}:{}", n.id)),
+            !toast
+                || self.notifications.values().filter(|n| n.toast).count() < 64
+                || self.notifications.get(&key).is_some_and(|n| n.toast),
             "Notification queue full"
         );
-        let entry = json!({"plugin":id,"pluginName":name,"expiresAt":now_ms()+n.duration_ms,"notification":n});
-        self.notifications.insert(format!("{id}:{}", n.id), entry);
+        ensure!(
+            !in_inbox
+                || self.notifications.values().filter(|n| n.in_inbox).count() < 256
+                || self.notifications.get(&key).is_some_and(|n| n.in_inbox),
+            "Notification inbox full"
+        );
+        let created_at = now_ms().max(self.notifications.get(&key).map_or(0, |n| n.created_at + 1));
+        let expires_at =
+            (notification.duration_ms != 0).then(|| created_at + notification.duration_ms);
+        let entry = NotificationEntry {
+            plugin: id.into(),
+            plugin_name: name.into(),
+            created_at,
+            expires_at,
+            toast,
+            in_inbox,
+            read: false,
+            notification,
+            update,
+        };
+        self.notifications.insert(key, entry);
+        self.save_notifications()
+    }
+    fn notification_badge(&self) -> usize {
+        if !self.agreement_accepted() {
+            return 0;
+        }
+        self.notifications
+            .values()
+            .filter(|n| n.in_inbox && !n.read && self.db.notification_settings.badge_for(&n.plugin))
+            .count()
+    }
+    fn save_notifications(&mut self) -> Result<()> {
+        self.db.notification_inbox = self
+            .notifications
+            .iter()
+            .filter(|(_, n)| n.in_inbox)
+            .map(|(k, n)| (k.clone(), n.clone()))
+            .collect();
+        self.save()?;
         process::event(&self.events, json!({"kind":"notification.changed"}));
-        Ok(json!(true))
+        Ok(())
+    }
+    fn expire_notifications(&mut self) {
+        let now = now_ms();
+        let mut changed = false;
+        for n in self.notifications.values_mut() {
+            if n.toast && n.expires_at.is_some_and(|time| time <= now) {
+                n.toast = false;
+                changed = true;
+            }
+        }
+        self.notifications.retain(|_, n| n.toast || n.in_inbox);
+        if changed {
+            process::event(&self.events, json!({"kind":"notification.changed"}));
+        }
+    }
+    fn notification_action(&mut self, id: &str, p: &Value) -> Result<Value> {
+        self.expire_notifications();
+        let key = p["id"].as_str().context("Missing ID")?;
+        let action = p["action"].as_str().context("Missing action")?;
+        let compound = format!("{id}:{key}");
+        let entry = self
+            .notifications
+            .get(&compound)
+            .context("Notification expired")?
+            .clone();
+        ensure!(
+            p["createdAt"]
+                .as_u64()
+                .is_none_or(|time| time == entry.created_at),
+            "Notification has changed"
+        );
+        let policy = entry
+            .notification
+            .actions
+            .iter()
+            .find(|a| a.id == action)
+            .context("Action not declared")?;
+        let result = if let Some(update) = &entry.update {
+            ensure!(
+                self.db.update_source.as_ref() == Some(&update.source)
+                    && self.db.update_channel == update.channel,
+                "Update source or channel has changed"
+            );
+            match action {
+                "ignore" => json!(true),
+                "open" => {
+                    process::event(
+                        &self.events,
+                        json!({"kind":"manager.open","page":"updates"}),
+                    );
+                    json!({"openUpdates":true})
+                }
+                _ => bail!("Action not declared"),
+            }
+        } else {
+            self.active(id)?;
+            let result = if self.plugin(id)?.manifest.backend.is_some() {
+                match self.handle("plugin.call", json!({"plugin":id,"method":"notification.action","params":{"id":key,"action":action}})) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        // Starting a failed backend may clear transient resources. Keep the
+                        // message for retry, and never remove it as a successful action.
+                        if self.notifications.get(&compound).is_none_or(|n| n.created_at == entry.created_at) {
+                            self.notifications.insert(compound.clone(), entry.clone());
+                            self.save_notifications()?;
+                        }
+                        return Err(error);
+                    }
+                }
+            } else {
+                json!(true)
+            };
+            process::event(
+                &self.events,
+                json!({"kind":"plugin.event","plugin":id,"event":"notification.action","data":{"id":key,"action":action}}),
+            );
+            result
+        };
+        if let Some(n) = self
+            .notifications
+            .get_mut(&compound)
+            .filter(|n| n.created_at == entry.created_at)
+        {
+            if policy.close_on_click {
+                n.toast = false;
+            }
+            if policy.remove_from_inbox_on_click {
+                n.in_inbox = false;
+            }
+        }
+        self.notifications.retain(|_, n| n.toast || n.in_inbox);
+        self.save_notifications()?;
+        Ok(result)
+    }
+    fn cancel_automatic_check(&mut self) {
+        if let Some((job, _, _)) = self.auto_update_job.take() {
+            let _ = self.automatic_updater.jobs.cancel(&job);
+        }
+        self.auto_update_error = None;
+    }
+    fn reset_automatic_updates(&mut self) {
+        self.cancel_automatic_check();
+        self.db.update_notice = None;
+        self.notifications.retain(|_, n| n.update.is_none());
+        self.db.notification_inbox.retain(|_, n| n.update.is_none());
+        self.next_update_check = Instant::now() + Duration::from_secs(30);
+        process::event(&self.events, json!({"kind":"notification.changed"}));
+    }
+    fn automatic_update_check(&mut self) {
+        if let Some((job, source, channel)) = self.auto_update_job.clone() {
+            if let Ok(result) = self.automatic_updater.jobs.status(&job) {
+                if matches!(
+                    result["phase"].as_str(),
+                    Some("done" | "failed" | "cancelled")
+                ) {
+                    self.auto_update_job = None;
+                    self.last_update_check = Some(now_ms());
+                    self.auto_update_error = result["error"].as_str().map(str::to_owned);
+                    if result["phase"] == "done"
+                        && self.db.update_check.enabled
+                        && self.db.update_source.as_ref() == Some(&source)
+                        && self.db.update_channel == channel
+                    {
+                        if let Err(e) = self.announce_update(&result["result"], source, channel) {
+                            self.auto_update_error = Some(e.to_string());
+                        }
+                    }
+                }
+            } else {
+                self.auto_update_job = None;
+            }
+        }
+        if !self.db.update_check.enabled
+            || self.auto_update_job.is_some()
+            || Instant::now() < self.next_update_check
+            || self.updater.ensure_idle().is_err()
+        {
+            return;
+        }
+        let Some(source) = self.db.update_source.clone() else {
+            return;
+        };
+        let installing = fs::read(self.root.join("update-status.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .is_some_and(|v| v["phase"] == "installing");
+        if installing {
+            return;
+        }
+        self.next_update_check =
+            Instant::now() + Duration::from_secs(self.db.update_check.interval_hours * 3600);
+        match self.automatic_updater.check(
+            source.clone(),
+            self.db.update_channel,
+            self.db.proxy.clone(),
+        ) {
+            Ok(job) => {
+                self.auto_update_job = Some((
+                    job["job"].as_str().unwrap().into(),
+                    source,
+                    self.db.update_channel,
+                ));
+                self.auto_update_error = None;
+            }
+            Err(e) => {
+                self.auto_update_error = Some(e.to_string());
+                self.last_update_check = Some(now_ms());
+            }
+        }
+    }
+    fn announce_update(
+        &mut self,
+        result: &Value,
+        source: UpdateSource,
+        channel: UpdateChannel,
+    ) -> Result<()> {
+        let Some(version) = result["release"]["version"].as_str() else {
+            return Ok(());
+        };
+        let current = fs::read_to_string(self.root.join("current/VERSION"))
+            .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").into());
+        if crate::update::descriptor_version(version)?
+            .cmp_precedence(&crate::update::descriptor_version(current.trim())?)
+            != std::cmp::Ordering::Greater
+        {
+            return Ok(());
+        }
+        let notice = UpdateNotice {
+            source,
+            channel,
+            version: version.into(),
+        };
+        if self.db.update_notice.as_ref() == Some(&notice) {
+            return Ok(());
+        }
+        let notification: Notification = serde_json::from_value(
+            json!({"id":"framely.update","title":format!("Framely {version} is available"),"body":"Open Updates to review and install this version, or ignore this reminder.","inbox":true,"durationMs":15000,"actions":[{"id":"ignore","label":"Ignore"},{"id":"open","label":"Open updates"}]}),
+        )?;
+        self.insert_notification("", "Framely", notification, Some(notice.clone()))?;
+        self.db.update_notice = Some(notice);
+        self.save()
     }
     fn install(&mut self, p: Value) -> Result<Value> {
         ensure!(
@@ -1912,5 +2272,437 @@ mod request_tests {
             .unwrap();
         assert!(result.get("database").is_some());
         assert_eq!(worker.join().unwrap(), json!(false));
+    }
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+    fn plugin(core: &mut Service) {
+        core.db.plugins.insert("test.notice".into(), serde_json::from_value(json!({"manifest":{"schemaVersion":1,"apiVersion":1,"id":"test.notice","name":"Notice tests","author":"Framely","version":"1.0.0","ui":{"quickPage":"page.js"},"files":{}},"enabled":true,"favorite":false,"order":0,"source":null})).unwrap());
+    }
+    fn send(core: &mut Service, id: &str, extra: Value) {
+        let mut n = json!({"id":id,"title":"Download finished","body":"Ready to open","actions":[{"id":"open","label":"Open"}]});
+        for (k, v) in extra.as_object().unwrap() {
+            n[k] = v.clone();
+        }
+        core.handle(
+            "notification.send",
+            json!({"plugin":"test.notice","notification":n}),
+        )
+        .unwrap();
+    }
+    fn action(core: &mut Service, id: &str) -> Result<Value> {
+        core.handle(
+            "notification.action",
+            json!({"plugin":"test.notice","id":id,"action":"open"}),
+        )
+    }
+    #[test]
+    fn popup_settings_preserve_suppressed_messages_and_survive_reload() {
+        let root = tempfile::tempdir().unwrap();
+        let mut core = crate::tests::accepted_service(root.path(), 1000).unwrap();
+        plugin(&mut core);
+        assert!(core.db.notification_settings.popups);
+        assert!(core.db.notification_settings.badge);
+        send(&mut core, "visible", json!({}));
+        core.handle("notification.settings.save", json!({"popups":false}))
+            .unwrap();
+        assert!(!core.notifications["test.notice:visible"].toast);
+        assert!(core.notifications["test.notice:visible"].in_inbox);
+        send(&mut core, "silent", json!({}));
+        let status = core.handle("status", json!({})).unwrap();
+        assert_eq!(status["notifications"].as_array().unwrap().len(), 0);
+        assert_eq!(status["inbox"].as_array().unwrap().len(), 2);
+        assert_eq!(status["notificationBadge"], 2);
+        let mut reloaded = Service::load(root.path(), 1000).unwrap();
+        assert!(!reloaded.db.notification_settings.popups);
+        assert_eq!(reloaded.notification_badge(), 2);
+        reloaded
+            .handle("notification.settings.save", json!({"popups":true}))
+            .unwrap();
+        assert!(reloaded.notifications.values().all(|n| !n.toast));
+        send(&mut reloaded, "next", json!({}));
+        assert!(reloaded.notifications["test.notice:next"].toast);
+        assert!(!reloaded.notifications["test.notice:next"].in_inbox);
+    }
+    #[test]
+    fn plugin_notification_preferences_are_independent_and_global_switches_take_priority() {
+        let root = tempfile::tempdir().unwrap();
+        let mut core = crate::tests::accepted_service(root.path(), 1000).unwrap();
+        plugin(&mut core);
+        core.handle(
+            "notification.settings.save",
+            json!({"plugin":"test.notice","popups":false}),
+        )
+        .unwrap();
+        core.handle(
+            "notification.settings.save",
+            json!({"plugin":"test.notice","badge":false}),
+        )
+        .unwrap();
+        send(&mut core, "silent", json!({}));
+        assert!(!core.notifications["test.notice:silent"].toast);
+        assert!(core.notifications["test.notice:silent"].in_inbox);
+        assert_eq!(core.notification_badge(), 0);
+        core.handle(
+            "notification.settings.save",
+            json!({"plugin":"test.notice","badge":true}),
+        )
+        .unwrap();
+        assert_eq!(core.notification_badge(), 1);
+        core.handle(
+            "notification.settings.save",
+            json!({"badge":false,"popups":false}),
+        )
+        .unwrap();
+        core.handle(
+            "notification.settings.save",
+            json!({"plugin":"test.notice","popups":true}),
+        )
+        .unwrap();
+        send(&mut core, "global", json!({}));
+        assert!(!core.notifications["test.notice:global"].toast);
+        assert_eq!(core.notification_badge(), 0);
+        assert!(core.db.notification_settings.plugins["test.notice"].badge);
+        core.handle("notification.settings.save", json!({"badge":true}))
+            .unwrap();
+        assert_eq!(core.notification_badge(), 2);
+        assert!(core
+            .handle(
+                "notification.settings.save",
+                json!({"plugin":"missing","badge":false})
+            )
+            .is_err());
+        assert!(core
+            .handle("notification.settings.save", json!({"badge":"false"}))
+            .is_err());
+        assert!(core
+            .handle("notification.settings.save", json!({"unknown":true}))
+            .is_err());
+        assert_eq!(core.notification_badge(), 2);
+    }
+    #[test]
+    fn framely_notification_preferences_control_update_reminders_and_survive_reload() {
+        let root = tempfile::tempdir().unwrap();
+        let mut core = crate::tests::accepted_service(root.path(), 1000).unwrap();
+        plugin(&mut core);
+        send(&mut core, "saved", json!({"inbox":true}));
+        let source = UpdateSource {
+            url: "https://example.org/framely-release.json".into(),
+        };
+        core.db.update_source = Some(source.clone());
+        core.announce_update(
+            &json!({"release":{"version":"0.5.0-abcdef012345"}}),
+            source.clone(),
+            UpdateChannel::Stable,
+        )
+        .unwrap();
+        assert!(core.notifications[":framely.update"].toast);
+        assert_eq!(core.notification_badge(), 2);
+        core.handle(
+            "notification.settings.save",
+            json!({"plugin":"","popups":false,"badge":false}),
+        )
+        .unwrap();
+        assert!(core.db.notification_settings.popups && core.db.notification_settings.badge);
+        assert!(!core.notifications[":framely.update"].toast);
+        assert!(core.notifications[":framely.update"].in_inbox);
+        assert!(core.notifications["test.notice:saved"].toast);
+        assert_eq!(core.notification_badge(), 1);
+        core.announce_update(
+            &json!({"release":{"version":"0.5.1-abcdef012345"}}),
+            source,
+            UpdateChannel::Stable,
+        )
+        .unwrap();
+        assert!(!core.notifications[":framely.update"].toast);
+        assert!(core.notifications[":framely.update"].in_inbox);
+        let mut core = Service::load(root.path(), 1000).unwrap();
+        assert!(!core.db.notification_settings.plugins[""].popups);
+        assert!(!core.db.notification_settings.plugins[""].badge);
+        assert_eq!(core.notification_badge(), 1);
+        core.handle(
+            "notification.settings.save",
+            json!({"plugin":"","badge":true}),
+        )
+        .unwrap();
+        assert_eq!(core.notification_badge(), 2);
+        assert!(!core.notifications[":framely.update"].toast);
+        core.handle("notification.settings.save", json!({"badge":false}))
+            .unwrap();
+        assert_eq!(core.notification_badge(), 0);
+        assert!(core.db.notification_settings.plugins[""].badge);
+    }
+    #[test]
+    fn reading_inbox_clears_badge_without_removing_messages_or_reading_replacements() {
+        let root = tempfile::tempdir().unwrap();
+        let mut core = crate::tests::accepted_service(root.path(), 1000).unwrap();
+        plugin(&mut core);
+        send(&mut core, "saved", json!({"inbox":true}));
+        let old = core.notifications["test.notice:saved"].created_at;
+        send(&mut core, "saved", json!({"inbox":true}));
+        core.handle(
+            "notification.read",
+            json!({"entries":[{"plugin":"test.notice","id":"saved","createdAt":old}]}),
+        )
+        .unwrap();
+        assert_eq!(core.notification_badge(), 1);
+        let current = core.notifications["test.notice:saved"].created_at;
+        core.handle(
+            "notification.read",
+            json!({"entries":[{"plugin":"test.notice","id":"saved","createdAt":current}]}),
+        )
+        .unwrap();
+        assert_eq!(core.notification_badge(), 0);
+        assert!(core.notifications["test.notice:saved"].toast);
+        assert_eq!(core.db.notification_inbox.len(), 1);
+        let reloaded = Service::load(root.path(), 1000).unwrap();
+        assert_eq!(reloaded.notification_badge(), 0);
+        assert!(reloaded.db.notification_inbox["test.notice:saved"].read);
+    }
+    #[test]
+    fn notifications_opt_in_to_persistent_inbox_and_default_actions_remove() {
+        let root = tempfile::tempdir().unwrap();
+        let mut core = crate::tests::accepted_service(root.path(), 1000).unwrap();
+        plugin(&mut core);
+        send(&mut core, "transient", json!({}));
+        send(&mut core, "saved", json!({"inbox":true}));
+        assert_eq!(core.db.notification_inbox.len(), 1);
+        core.notifications
+            .get_mut("test.notice:saved")
+            .unwrap()
+            .expires_at = Some(0);
+        core.notifications
+            .get_mut("test.notice:transient")
+            .unwrap()
+            .expires_at = Some(0);
+        core.expire_notifications();
+        assert!(!core.notifications.contains_key("test.notice:transient"));
+        assert!(!core.notifications["test.notice:saved"].toast);
+        let mut reloaded = Service::load(root.path(), 1000).unwrap();
+        assert_eq!(reloaded.notifications.len(), 1);
+        assert!(!reloaded.notifications["test.notice:saved"].toast);
+        action(&mut reloaded, "saved").unwrap();
+        assert!(reloaded.notifications.is_empty());
+        assert!(Service::load(root.path(), 1000)
+            .unwrap()
+            .db
+            .notification_inbox
+            .is_empty());
+    }
+    #[test]
+    fn notification_action_policies_are_independent_and_stale_actions_are_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let mut core = crate::tests::accepted_service(root.path(), 1000).unwrap();
+        plugin(&mut core);
+        for close in [false, true] {
+            for remove in [false, true] {
+                let id = format!("policy.{close}.{remove}");
+                send(
+                    &mut core,
+                    &id,
+                    json!({"inbox":true,"durationMs":0,"actions":[{"id":"open","label":"Open","closeOnClick":close,"removeFromInboxOnClick":remove}]}),
+                );
+                action(&mut core, &id).unwrap();
+                let entry = core.notifications.get(&format!("test.notice:{id}"));
+                assert_eq!(entry.is_some(), !close || !remove);
+                if let Some(entry) = entry {
+                    assert_eq!(entry.toast, !close);
+                    assert_eq!(entry.in_inbox, !remove);
+                    assert!(entry.expires_at.is_none());
+                }
+            }
+        }
+        send(&mut core, "replace", json!({"inbox":true}));
+        let old = core.notifications["test.notice:replace"].created_at;
+        send(&mut core, "replace", json!({"inbox":true}));
+        assert!(core
+            .handle(
+                "notification.action",
+                json!({"plugin":"test.notice","id":"replace","action":"open","createdAt":old})
+            )
+            .is_err());
+        assert!(core.notifications["test.notice:replace"].toast);
+    }
+    #[test]
+    fn dismiss_and_disable_keep_inbox_but_removal_drops_it() {
+        let root = tempfile::tempdir().unwrap();
+        let mut core = crate::tests::accepted_service(root.path(), 1000).unwrap();
+        plugin(&mut core);
+        send(&mut core, "saved", json!({"inbox":true}));
+        core.handle(
+            "notification.dismiss",
+            json!({"plugin":"test.notice","id":"saved"}),
+        )
+        .unwrap();
+        assert!(!core.notifications["test.notice:saved"].toast);
+        assert!(core.notifications["test.notice:saved"].in_inbox);
+        core.cleanup_resources("test.notice");
+        core.db.plugins.get_mut("test.notice").unwrap().enabled = false;
+        assert!(action(&mut core, "saved").is_err());
+        assert!(core.notifications.contains_key("test.notice:saved"));
+        core.handle(
+            "notification.remove",
+            json!({"plugin":"test.notice","id":"saved"}),
+        )
+        .unwrap();
+        assert!(core.db.notification_inbox.is_empty());
+    }
+    #[test]
+    fn failed_notification_backend_keeps_message_for_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let mut core = crate::tests::accepted_service(root.path(), 1000).unwrap();
+        plugin(&mut core);
+        crate::process::TEST_TOOLS
+            .with(|p| *p.borrow_mut() = Some(root.path().join("missing-tools")));
+        send(&mut core, "saved", json!({"inbox":true}));
+        core.db
+            .plugins
+            .get_mut("test.notice")
+            .unwrap()
+            .manifest
+            .backend =
+            Some(serde_json::from_value(json!({"entry":"missing","runAs":"steamos"})).unwrap());
+        assert!(action(&mut core, "saved").is_err());
+        assert!(core.notifications["test.notice:saved"].toast);
+        assert!(core.db.notification_inbox.contains_key("test.notice:saved"));
+        crate::process::TEST_TOOLS.with(|p| *p.borrow_mut() = None);
+    }
+    #[test]
+    fn automatic_update_notifications_ignore_old_versions_and_deduplicate_after_reload() {
+        let root = tempfile::tempdir().unwrap();
+        let mut core = crate::tests::accepted_service(root.path(), 1000).unwrap();
+        let source = UpdateSource {
+            url: "https://example.org/framely-release.json".into(),
+        };
+        core.db.update_source = Some(source.clone());
+        for version in ["0.1.0", "0.4.2-preview.12-012345abcdef"] {
+            core.announce_update(
+                &json!({"release":{"version":version}}),
+                source.clone(),
+                UpdateChannel::Stable,
+            )
+            .unwrap();
+            assert!(core.notifications.is_empty());
+        }
+        let result = json!({"release":{"version":"0.5.0-abcdef012345"}});
+        core.announce_update(&result, source.clone(), UpdateChannel::Stable)
+            .unwrap();
+        assert_eq!(core.notifications.len(), 1);
+        core.handle(
+            "notification.action",
+            json!({"id":"framely.update","action":"ignore"}),
+        )
+        .unwrap();
+        assert!(core.notifications.is_empty());
+        let mut core = Service::load(root.path(), 1000).unwrap();
+        core.announce_update(&result, source.clone(), UpdateChannel::Stable)
+            .unwrap();
+        assert!(core.notifications.is_empty());
+        core.announce_update(
+            &json!({"release":{"version":"0.5.1-abcdef012345"}}),
+            source,
+            UpdateChannel::Stable,
+        )
+        .unwrap();
+        assert_eq!(
+            core.handle(
+                "notification.action",
+                json!({"id":"framely.update","action":"open"})
+            )
+            .unwrap(),
+            json!({"openUpdates":true})
+        );
+        assert!(core
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "manager.open" && e["page"] == "updates"));
+        assert!(core.db.notification_inbox.is_empty());
+    }
+    #[test]
+    fn automatic_update_schedule_settings_and_stale_completions() {
+        let root = tempfile::tempdir().unwrap();
+        let mut core = crate::tests::accepted_service(root.path(), 1000).unwrap();
+        let source = UpdateSource {
+            url: "https://example.org/framely-release.json".into(),
+        };
+        core.db.update_source = Some(source.clone());
+        assert!(core.db.update_check.enabled);
+        assert_eq!(core.db.update_check.interval_hours, 6);
+        core.handle(
+            "system.check.settings.save",
+            json!({"settings":{"enabled":false,"intervalHours":12}}),
+        )
+        .unwrap();
+        core.next_update_check = Instant::now();
+        core.automatic_update_check();
+        assert!(core.auto_update_job.is_none());
+        assert!(
+            !Service::load(root.path(), 1000)
+                .unwrap()
+                .db
+                .update_check
+                .enabled
+        );
+        for hours in [0, 169] {
+            assert!(core
+                .handle(
+                    "system.check.settings.save",
+                    json!({"settings":{"enabled":true,"intervalHours":hours}})
+                )
+                .is_err());
+        }
+        core.db.update_check.enabled = true;
+        core.next_update_check = Instant::now() + Duration::from_secs(3600);
+        core.automatic_update_check();
+        assert!(core.auto_update_job.is_none());
+        // Inject a completed background job to exercise the timer's completion path
+        // without any external network request or UI polling.
+        let job = core
+            .automatic_updater
+            .jobs
+            .task("system.check", |_| {
+                Ok(json!({"release":{"version":"0.5.0-abcdef012345"}}))
+            })
+            .unwrap();
+        let id = job["job"].as_str().unwrap().to_owned();
+        for _ in 0..100 {
+            if core.automatic_updater.jobs.status(&id).unwrap()["phase"] == "done" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        core.auto_update_job = Some((id, source.clone(), UpdateChannel::Stable));
+        core.automatic_update_check();
+        assert_eq!(core.db.notification_inbox.len(), 1);
+        assert!(core.last_update_check.is_some());
+        core.handle("system.channel.save", json!({"channel":"testing"}))
+            .unwrap();
+        assert!(core.db.notification_inbox.is_empty());
+        assert!(core.db.update_notice.is_none());
+        // A result from the previous channel arriving late cannot recreate its reminder.
+        core.auto_update_job = Some((
+            job["job"].as_str().unwrap().into(),
+            source,
+            UpdateChannel::Stable,
+        ));
+        core.automatic_update_check();
+        assert!(core.db.notification_inbox.is_empty());
+        // A due check advances the configured timer even if source validation fails;
+        // this exercises failure/retry scheduling without contacting a server.
+        core.db.update_source = Some(UpdateSource {
+            url: "file:///invalid-release.json".into(),
+        });
+        core.next_update_check = Instant::now();
+        core.automatic_update_check();
+        assert!(core.auto_update_error.is_some());
+        assert!(core.auto_update_job.is_none());
+        assert!(
+            core.next_update_check.duration_since(Instant::now())
+                > Duration::from_secs(12 * 3600 - 2)
+        );
     }
 }

@@ -15,6 +15,7 @@
   "plugin:init": "node tools/plugin-dev.mjs init"
  },
  "dependencies": {
+  "@tabler/icons-react": "3.48.0",
   "react": "19.2.0",
   "react-dom": "19.2.0"
  },

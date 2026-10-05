@@ -358,7 +358,10 @@ impl Agent {
                 commands.push(queue.pop_front().unwrap());
             }
             drop(queue);
-            return send_json(r, json!({"commands":commands}));
+            let badge = self
+                .core("host.notification.badge", json!({}))
+                .unwrap_or(json!(0));
+            return send_json(r, json!({"commands":commands,"notificationBadge":badge}));
         }
         if let Some(rel) = path.strip_prefix("/plugin-assets/") {
             let (id, file) = rel.split_once('/').context("Invalid asset path")?;
@@ -696,8 +699,13 @@ impl Agent {
                     _ => "menu.close",
                 };
                 let mut command = json!({"kind":kind});
-                if method == "host.manager.open" && p["page"] == "catalog" {
-                    command["page"] = json!("catalog");
+                if method == "host.manager.open"
+                    && matches!(
+                        p["page"].as_str(),
+                        Some("catalog" | "updates" | "notification-settings")
+                    )
+                {
+                    command["page"] = p["page"].clone();
                 }
                 push(&self.commands, command);
                 Ok(json!(true))
@@ -787,8 +795,11 @@ impl Agent {
             | "window.open"
             | "window.close"
             | "notification.send"
+            | "notification.dismiss"
             | "notification.remove"
             | "notification.action"
+            | "notification.settings.save"
+            | "notification.read"
             | "sources.save"
             | "subscriptions.add"
             | "subscriptions.change"
@@ -802,6 +813,7 @@ impl Agent {
             | "safeMode"
             | "system.source.save"
             | "system.channel.save"
+            | "system.check.settings.save"
             | "system.check.start"
             | "system.download.start"
             | "system.job.status"
@@ -1115,6 +1127,7 @@ pub fn serve(
                         "window.close",
                         "plugin.disabled",
                         "notification.changed",
+                        "manager.open",
                     ]
                     .contains(&e["kind"].as_str().unwrap_or(""))
                     {
@@ -1473,12 +1486,14 @@ mod tests {
         })
     }
     #[test]
-    fn manager_store_entry_preserves_catalog_target_and_rejects_arbitrary_pages() {
+    fn manager_entry_preserves_catalog_and_update_targets_and_rejects_arbitrary_pages() {
         let root = tempfile::tempdir().unwrap();
         let server = Server::http("127.0.0.1:0").unwrap();
         let agent = agent(&server, root.path());
         for params in [
             json!({"page":"catalog"}),
+            json!({"page":"updates"}),
+            json!({"page":"notification-settings"}),
             json!({}),
             json!({"page":"https://example.org"}),
         ] {
@@ -1488,8 +1503,13 @@ mod tests {
         }
         let commands = agent.commands.lock().unwrap();
         assert_eq!(commands[0], json!({"kind":"manager.open","page":"catalog"}));
-        assert_eq!(commands[1], json!({"kind":"manager.open"}));
-        assert_eq!(commands[2], json!({"kind":"manager.open"}));
+        assert_eq!(commands[1], json!({"kind":"manager.open","page":"updates"}));
+        assert_eq!(
+            commands[2],
+            json!({"kind":"manager.open","page":"notification-settings"})
+        );
+        assert_eq!(commands[3], json!({"kind":"manager.open"}));
+        assert_eq!(commands[4], json!({"kind":"manager.open"}));
     }
     #[test]
     fn declining_agreement_only_closes_current_view() {
@@ -1871,7 +1891,11 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&agent.socket).unwrap();
         let socket_worker = std::thread::spawn(move || {
             let mut core = crate::service::Service::load(&root.path().join("state"), 1000).unwrap();
-            for expected in ["host.ui.visibility", "agreement.status"] {
+            for expected in [
+                "host.ui.visibility",
+                "host.notification.badge",
+                "agreement.status",
+            ] {
                 let (mut stream, _) = listener.accept().unwrap();
                 let request = ipc::read(&mut stream).unwrap();
                 assert_eq!(request["method"], expected);
@@ -2244,7 +2268,7 @@ mod tests {
             .unwrap();
         print!("{}", String::from_utf8_lossy(&store_result.stdout));
         eprint!("{}", String::from_utf8_lossy(&store_result.stderr));
-        agent.core("notification.send",json!({"plugin":"test.bridge","notification":{"id":"toast","title":"Toast integration","body":"Compact notification body","image":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1kAAAAASUVORK5CYII=","durationMs":15000,"actions":[{"id":"ok","label":"确认","icon":"✓"},{"id":"save","label":"保存","icon":"↓"},{"id":"more","label":"详情","icon":"⋯"}]}})).unwrap();
+        agent.core("notification.send",json!({"plugin":"test.bridge","notification":{"id":"toast","title":"Toast integration","body":"Compact notification body","image":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1kAAAAASUVORK5CYII=","durationMs":15000,"actions":[{"id":"ok","label":"确认","icon":"✓","closeOnClick":false,"removeFromInboxOnClick":false},{"id":"save","label":"保存","icon":"↓"},{"id":"more","label":"详情","icon":"⋯"}]}})).unwrap();
         let notification_result = Command::new(std::env::var_os("FRAMELY_BROWSER_PROBE").unwrap())
             .arg(format!(
                 "{}/boot/{}?view=notifications",

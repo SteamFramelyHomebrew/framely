@@ -1,0 +1,13 @@
+#include "plugin_navigation.h"
+#include <cassert>
+int main() {
+ const std::string origin="http://localhost:19626";
+ assert(allow_plugin_navigation(origin+"/window",origin,true,true));
+ assert(allow_plugin_navigation("about:blank",origin,false,false));
+ assert(allow_plugin_navigation("http://localhost:19629/framely-window/main",origin,false,true));
+ assert(allow_plugin_navigation("http://localhost:19629/framely-window/login?ticket=test",origin,false,true));
+ assert(!allow_plugin_navigation("http://localhost:19629/",origin,true,true));
+ assert(!allow_plugin_navigation("http://localhost:19629/",origin,false,false));
+ for (const auto& url : {"https://example.com/", "http://192.168.5.67:19629/", "http://localhost.evil:19629/", "http://localhost:19629@evil/", "http://localhost:19629\\@evil/", "http://localhost:0/", "http://localhost:65536/", "http://localhost:/", "http://localhost:999999999999999999999/"})
+   assert(!allow_plugin_navigation(url,origin,false,true));
+}
