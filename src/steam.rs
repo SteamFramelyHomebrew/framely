@@ -120,7 +120,7 @@ fn root<'a>(v: &'a BTreeMap<String, Value>, key: &str) -> Option<&'a BTreeMap<St
         None
     }
 }
-pub fn discover(home: &Path) -> Vec<App> {
+pub(crate) fn library_roots(home: &Path) -> BTreeSet<PathBuf> {
     let steam = home.join(".local/share/Steam");
     let steam = if steam.exists() {
         steam
@@ -147,6 +147,16 @@ pub fn discover(home: &Path) -> Vec<App> {
             }
         }
     }
+    libraries
+}
+pub fn discover(home: &Path) -> Vec<App> {
+    let steam = home.join(".local/share/Steam");
+    let steam = if steam.exists() {
+        steam
+    } else {
+        home.join(".steam/steam")
+    };
+    let libraries = library_roots(home);
     let mut apps = BTreeMap::new();
     for library in libraries {
         let Ok(entries) = fs::read_dir(library.join("steamapps")) else {

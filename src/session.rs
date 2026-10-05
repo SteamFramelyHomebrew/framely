@@ -336,6 +336,12 @@ impl Agent {
             }
             return Ok(());
         }
+        if remote && r.method() == &Method::Get && path == "/" {
+            r.respond(
+                Response::empty(StatusCode(302)).with_header(header("Location", "/manager")),
+            )?;
+            return Ok(());
+        }
         if path == "/host/poll" {
             ensure!(!remote && self.native(&r), "Native authentication failed");
             if r.method() == &Method::Post {
@@ -645,6 +651,57 @@ impl Agent {
                 // HTTP requests run on workers, so dictionary loading never blocks native input.
                 self.launcher_search.lock().unwrap().batch(&path, &names)
             }
+            "apk.upload.start" => {
+                let size = p["size"].as_u64().context("Missing APK upload size")?;
+                let root = crate::apk::upload_dir(&crate::steam::home()?, size)?;
+                self.jobs.uploads.start_in(size, &root)
+            }
+            "apk.selection" => {
+                let app = p["app"].as_str().context("Missing APK application")?;
+                ensure!(app.len() <= 512, "Invalid APK application");
+                self.events.lock().unwrap().append(
+                    json!({"kind":"apk.selection","app":app,"uninstall":p["uninstall"]==true}),
+                );
+                Ok(json!(true))
+            }
+            "apk.operation.active" => Ok(self.jobs.active_apk()),
+            "apk.list.start" => {
+                let home = crate::steam::home()?;
+                self.jobs.task("apk:list", move |cancel| {
+                    cancel.check()?;
+                    crate::apk::list(&home)
+                })
+            }
+            "apk.inspect.start" => {
+                let home = crate::steam::home()?;
+                let staged = self
+                    .jobs
+                    .uploads
+                    .take(p["upload"].as_str().context("Missing APK upload")?)?;
+                self.jobs.task("apk:inspect", move |cancel| {
+                    crate::apk::inspect(&home, &staged.path, &cancel)
+                })
+            }
+            "apk.review.drop" => crate::apk::reviews_drop(
+                &crate::steam::home()?,
+                p["ticket"].as_str().context("Missing APK review")?,
+            ),
+            "apk.cleanup.list" => crate::apk::cleanup_list(&crate::steam::home()?),
+            "apk.logs" => crate::apk::logs(
+                &crate::steam::home()?,
+                p["app"].as_str().context("Missing APK application")?,
+            ),
+            "apk.operation.start" => {
+                let home = crate::steam::home()?;
+                let kind = p["operation"]
+                    .as_str()
+                    .context("Missing APK operation")?
+                    .to_owned();
+                self.jobs
+                    .task_progress("apk:operation", move |cancel, progress| {
+                        crate::apk::operate(&home, &kind, &p, cancel, progress)
+                    })
+            }
             "desktop.list" => Ok(json!(crate::desktop::discover(&crate::steam::home()?))),
             "desktop.launch" => {
                 let id = p["app"].as_str().context("Missing desktop app")?;
@@ -804,6 +861,7 @@ impl Agent {
                                 | "updates"
                                 | "notification-settings"
                                 | "launcher-settings"
+                                | "apk"
                         )
                     )
                 {
@@ -2083,6 +2141,9 @@ mod tests {
             .split(';')
             .next()
             .unwrap();
+        let landing = client.get(&origin).set("Cookie", cookie).call().unwrap();
+        assert_eq!(landing.status(), 302);
+        assert_eq!(landing.header("Location"), Some("/manager"));
         let result: Value = client
             .post(&format!("{origin}/api"))
             .set("Cookie", cookie)

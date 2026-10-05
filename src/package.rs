@@ -28,7 +28,11 @@ impl Drop for Staged {
 }
 impl Staged {
     pub fn create() -> Result<Self> {
-        let directory = PathBuf::from("/tmp").join(format!(
+        Self::create_in(Path::new("/tmp"))
+    }
+    /// Session-local staging; privileged IPC continues to require /tmp snapshots.
+    pub fn create_in(parent: &Path) -> Result<Self> {
+        let directory = parent.join(format!(
             "framely-package-{}",
             hex::encode(rand::random::<[u8; 24]>())
         ));

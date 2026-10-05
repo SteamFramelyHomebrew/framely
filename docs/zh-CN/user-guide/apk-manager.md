@@ -1,0 +1,82 @@
+# APK 管理
+
+[English](../../user-guide/apk-manager.md)
+
+[文档首页](../README.md) · [启动台](../launcher.md)
+
+APK 管理用于安装和管理 Steam Frame 上的 Lepton 侧载应用，本地管理面板与登录后的网络面板均可使用。它只管理用户提供的文件，不提供商店、推荐、下载源或自动更新。
+
+通过顶部切换器可在插件管理与 APK 管理面板之间切换。直接访问设备 IP 默认进入插件管理；APK 管理有独立的应用、容器和数据清理导航。
+
+## 环境与发现
+
+先通过 Steam 安装 Lepton。Framely 使用 Steam 会话用户的 Lepton 与 Podman，不以 root 操作，也不全局安装 Android。应用兼容性取决于 Lepton；Google 服务、设备专用接口和 DRM 可能不可用。
+
+打开“APK 管理 → 刷新”，扫描标准 Lepton 容器目录、Framely 已保存记录及运行中容器的兼容数据标签。扫描不会启动容器。Steam 管理的 APK 在容器视图中标识，更新和卸载仍通过 Steam。
+
+其他工具使用自定义位置时，在“容器 → 其他数据位置”添加包含 `data_overlay/system/packages.xml` 的 `baked` 目录。如果原容器名称与上级目录不同，还需填写原容器名称。目录必须属于会话用户；移除扫描位置不会删除数据。无法自动发现的自定义布局需手动登记。
+
+应用按“容器＋包名”识别，同包在不同容器里分别管理。改变容器名称或数据位置可能改变应用身份。
+
+## 安装与更新
+
+点击“安装 APK”，选择单个 `.apk`，核对名称、包名、版本、最低 Android SDK 和目标容器。网络上传暂存于 Frame 持久化文件系统，避免占满较小的 `/tmp`。上传显示真实字节进度；后续显示处理阶段，不使用假百分比。
+
+新应用默认独立容器。现有容器只有在不会覆盖其他应用的共享 APK 挂载层时才可作为目标。Lepton 建议每个应用独立容器，因为容器内没有通常 Android 应用之间的强制隔离。
+
+安装不会自动打开应用，完成后可以点击“打开”。没有检测到启动入口的 APK 仍可管理，但不会放进启动台。
+
+更新时进入应用管理，点击“安装新版 APK”。先核对包名与版本，再由 Android 在覆盖安装时执行签名兼容校验。默认拒绝降级；签名失败不会自动卸载重装。同包覆盖安装保留数据。更新可能停止目标容器，影响其中其他应用。
+
+替换已有安装前，会停止容器并保存数据快照，排除临时 overlay 工作目录、运行时套接字和 FIFO，保留删除标记。恢复前核对 SHA-256 文件清单；校验失败不会替换数据。备份失败则中止替换。快照是恢复材料，不保证所有 Android 数据迁移都可逆。只有 Framely 创建、且记录中只有一个应用的容器提供一键恢复；共享和外部容器需手动恢复。一键恢复先备份当前状态，恢复后需启动应用核对存档。
+
+修改操作开始后等待实际结果，不能安全中断时不提供取消。上传与准备阶段可取消。异常中断后先“核对实际安装状态”，再重试或清理数据；容器读不到不代表应用已卸载。
+
+## 启动入口与窗口
+
+后台识别清单中的 MAIN/LAUNCHER、电视启动入口和已知 VR 入口，并结合运行中的 Android 包管理器解析结果。停用的包与组件排除。有入口不代表一定能正常运行。
+
+默认自动处理窗口显示。“高级设置 → 显示安卓窗口”用于排查，并在重启容器后生效。它不会把二维应用转成 VR，也不会把 VR 应用转成二维。Lepton 开发容器重启后可能改变 APK 挂载路径；Android 无法识别时，Framely 会重新登记同签名 APK，保留数据并报告错误。非标准应用还可从已启用、已声明的 Activity 中指定启动入口。
+
+启动台继续按稳定的容器与包名保存收藏、搜索和排序。更新或刷新不重排图标；卸载隐藏图标，保留收藏与位置记录，在原容器重新安装后恢复。长按本地 Lepton 图标可进入管理或卸载确认。
+
+## 关闭、卸载与清理
+
+“关闭应用”只停止目标包；“停止容器”影响其中全部应用。只有明确由 Framely 创建的容器允许删除，并需确认受影响应用及永久数据删除。
+
+卸载默认保留存档与设置，开启“删除应用数据”才彻底删除。保留数据的应用显示在“已卸载但保留数据”中，可以重新安装或清除保留数据。
+
+Android 清除已卸载包的保留状态时可能需要原签名 APK。Framely 管理卸载时会保存原 APK。如果其他工具已卸载应用且找不到原 APK，需要先提供原 APK 重新安装，再清除保留数据；不会绕过签名或删除任意目录假装成功。
+
+“数据清理”列出保留数据、旧 APK、恢复快照及过期临时文件。存档与备份默认不选中；未知归属数据只展示，不自动删除。删除前重新核验，已重新安装的应用不会被当作残留清理。批量结果显示实际释放的文件字节及各项失败原因。由于压缩、reflink 和共享存储，文件字节数与物理磁盘占用可能不同。
+
+切换面板不会中止已提交的任务；重新打开 APK 管理会继续显示进度。恢复流程使用本地事务记录，意外中断后会在下次修改操作前恢复到完整状态。
+
+## 日志与面板外恢复
+
+在应用的“日志 → 导出日志”保存操作记录。Android 详细错误保留在日志中，分享前应检查内容。
+
+以 Steam 会话用户执行：
+
+```bash
+/home/.framely/current/bin/framely apk list
+/home/.framely/current/bin/framely apk inspect --file /path/to/app.apk
+/home/.framely/current/bin/framely apk install '{"ticket":"REVIEW_TICKET","approve":true}'
+/home/.framely/current/bin/framely apk launch '{"app":"CONTEXT/PACKAGE"}'
+/home/.framely/current/bin/framely apk logs '{"app":"CONTEXT/PACKAGE"}'
+/home/.framely/current/bin/framely apk cleanup-list
+```
+
+校验票据有效期为 15 分钟。APK、管理记录和恢复材料位于 `~/.local/share/framely/apk-manager`，托管 Lepton 数据位于 `~/.local/share/lepton/contexts`。卸载 Framely 保留这些用户目录；卸载前应备份。APK 命令仍需兼容的 Framely 二进制，Lepton 本身由 Steam 独立安装。
+
+手动启动 Framely 托管容器时，必须保留数据：
+
+```bash
+LEPTON_NO_CLEANUP=true ~/.local/share/Steam/steamapps/common/Lepton/lepton start CONTEXT
+```
+
+不要将 Lepton 的全局清理命令用作单应用卸载。
+
+## 格式范围
+
+首版支持单个 APK。不包含分包、XAPK/APKM、OBB 导入、Google Play 安装及自动创建 Steam 快捷方式；不支持的包格式会明确拒绝。

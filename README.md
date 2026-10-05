@@ -49,6 +49,7 @@ Start at the [documentation index](docs/README.md):
 
 - [Install, update, repair, roll back, and uninstall](docs/user-guide/installation.md)
 - [Basic usage](docs/user-guide/basic-usage.md) · [Install and manage plugins](docs/user-guide/plugins.md)
+- [APK Manager](docs/user-guide/apk-manager.md) · [Space launcher](docs/launcher.md)
 - [Network management panel](docs/user-guide/network-panel.md)
 - [Plugin development through publishing](docs/developer-guide/README.md) · [Publish plugins and sources](docs/developer-guide/publishing.md)
 - [SDK API](docs/developer-guide/sdk.md) · [Manifest configuration](docs/developer-guide/manifest.md) · [Lifecycle](docs/plugin-lifecycle.md)
