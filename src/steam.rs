@@ -5,7 +5,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
-    process::Stdio,
 };
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -302,16 +301,11 @@ fn launch_installed(home: &Path, id: u32) -> Result<()> {
         apps.iter().any(|a| a.id == id),
         "Steam app is no longer installed"
     );
-    let output = crate::process::tool("steam")
-        .arg(format!("steam://rungameid/{id}"))
-        .stdin(Stdio::null())
-        .output()
-        .context("Cannot contact Steam")?;
-    ensure!(
-        output.status.success(),
-        "Steam launch failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    crate::process::launch_handoff(
+        crate::process::tool("steam").arg(format!("steam://rungameid/{id}")),
+        std::time::Duration::from_secs(10),
+    )
+    .map_err(|error| anyhow::anyhow!("Steam launch failed: {error:#}"))?;
     Ok(())
 }
 #[cfg(test)]

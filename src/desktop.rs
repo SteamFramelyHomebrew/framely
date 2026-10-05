@@ -313,17 +313,11 @@ pub fn launch(home: &Path, id: &str) -> Result<()> {
 fn launch_target(target: Target) -> Result<()> {
     match target {
         Target::Desktop(path) => {
-            let output = crate::process::tool("gio")
-                .arg("launch")
-                .arg(path)
-                .stdin(Stdio::null())
-                .output()
-                .context("Cannot launch desktop application")?;
-            ensure!(
-                output.status.success(),
-                "Desktop launch failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            crate::process::launch_handoff(
+                crate::process::tool("gio").arg("launch").arg(path),
+                std::time::Duration::from_secs(10),
+            )
+            .map_err(|error| anyhow::anyhow!("Desktop launch failed: {error:#}"))?;
         }
         Target::Lepton {
             runner,
@@ -332,18 +326,19 @@ fn launch_target(target: Target) -> Result<()> {
         } => {
             // Use the same session-owned context and Android launcher intent; never
             // reinstall the APK or accept an arbitrary shell command from the UI.
-            let running = crate::process::tool("podman")
-                .args([
+            let running = crate::process::command_output_timeout(
+                crate::process::tool("podman").args([
                     "inspect",
                     "--format",
                     "{{.State.Running}}",
                     &format!("lepton-{context}"),
-                ])
-                .stdin(Stdio::null())
-                .output()
-                .is_ok_and(|o| {
-                    o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true"
-                });
+                ]),
+                std::time::Duration::from_secs(5),
+                true,
+            )
+            .context("Cannot inspect Lepton context")?;
+            let running = running.status.success()
+                && String::from_utf8_lossy(&running.stdout).trim() == "true";
             let child = if running {
                 None
             } else {
@@ -357,11 +352,16 @@ fn launch_target(target: Target) -> Result<()> {
                         .context("Cannot start Lepton context")?,
                 )
             };
+            if let Some(mut child) = child {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
             let start = std::time::Instant::now();
             let mut ready = false;
             while start.elapsed() < std::time::Duration::from_secs(35) {
-                let output = crate::process::tool("podman")
-                    .args([
+                let output = crate::process::command_output_timeout(
+                    crate::process::tool("podman").args([
                         "exec",
                         &format!("lepton-{context}"),
                         "monkey",
@@ -370,19 +370,18 @@ fn launch_target(target: Target) -> Result<()> {
                         "-c",
                         "android.intent.category.LAUNCHER",
                         "1",
-                    ])
-                    .stdin(Stdio::null())
-                    .output();
-                if output.is_ok_and(|o| o.status.success()) {
+                    ]),
+                    std::time::Duration::from_secs(35)
+                        .saturating_sub(start.elapsed())
+                        .min(std::time::Duration::from_secs(5)),
+                    false,
+                )
+                .context("Lepton launch handoff failed")?;
+                if output.status.success() {
                     ready = true;
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-            if let Some(mut child) = child {
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
             }
             ensure!(
                 ready,
@@ -467,6 +466,26 @@ mod tests {
         .unwrap();
         assert_eq!(fs::read_to_string(dir.path().join("podman-args")).unwrap(),"exec\nlepton-existing\nmonkey\n-p\ncom.example.app\n-c\nandroid.intent.category.LAUNCHER\n1\n");
         crate::process::TEST_TOOLS.with(|p| *p.borrow_mut() = None);
+    }
+    #[test]
+    fn stalled_lepton_inspect_and_launch_are_bounded() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let podman = dir.path().join("podman");
+        for inspect in [true, false] {
+            fs::write(&podman, if inspect { "#!/bin/sh\nexec sleep 30\n" } else { "#!/bin/sh\nif [ \"$1\" = inspect ]; then echo true; exit 0; fi\nexec sleep 30\n" }).unwrap();
+            fs::set_permissions(&podman, fs::Permissions::from_mode(0o755)).unwrap();
+            crate::process::TEST_TOOLS.with(|p| *p.borrow_mut() = Some(dir.path().into()));
+            let started = std::time::Instant::now();
+            let result = launch_target(Target::Lepton {
+                runner: dir.path().join("must-not-start"),
+                context: "existing".into(),
+                package: "com.example.app".into(),
+            });
+            crate::process::TEST_TOOLS.with(|p| *p.borrow_mut() = None);
+            assert!(format!("{:#}", result.unwrap_err()).contains("timed out"));
+            assert!(started.elapsed() < std::time::Duration::from_secs(7));
+        }
     }
     #[test]
     fn unknown_id_never_launches() {

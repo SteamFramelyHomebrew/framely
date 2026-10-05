@@ -36,18 +36,100 @@ pub(crate) fn tool(name: &str) -> Command {
     }
     Command::new(name)
 }
+/// Wait only for the launcher helper. Applications may inherit its standard
+/// streams and keep them open for their entire lifetime, so never use output().
+pub(crate) fn launch_handoff(command: &mut Command, timeout: Duration) -> Result<()> {
+    let output = command_output_timeout(command, timeout, false)?;
+    ensure!(
+        output.status.success(),
+        "Launch failed ({}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(())
+}
+
+pub(crate) fn command_output_timeout(
+    command: &mut Command,
+    timeout: Duration,
+    capture_stdout: bool,
+) -> Result<std::process::Output> {
+    use std::io::{Seek, SeekFrom};
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = std::env::temp_dir().join(format!(
+        "framely-launch-{}",
+        hex::encode(rand::random::<[u8; 16]>())
+    ));
+    let mut errors = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    // Keep only the open file descriptors; inherited stderr must not become a
+    // pipe whose EOF depends on a browser or another long-lived application.
+    fs::remove_file(&path)?;
+    let mut stdout = tempfile_output()?;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(if capture_stdout {
+            Stdio::from(stdout.try_clone()?)
+        } else {
+            Stdio::null()
+        })
+        .stderr(errors.try_clone()?)
+        .spawn()?;
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            result => {
+                let _ = child.kill();
+                let _ = child.wait();
+                if let Err(error) = result {
+                    return Err(error.into());
+                }
+                anyhow::bail!("Launch handoff timed out; check whether the application opened before retrying");
+            }
+        }
+    };
+    errors.seek(SeekFrom::Start(0))?;
+    let mut stderr = Vec::new();
+    errors.take(64 * 1024).read_to_end(&mut stderr)?;
+    stdout.seek(SeekFrom::Start(0))?;
+    let mut output = Vec::new();
+    if capture_stdout {
+        stdout.take(64 * 1024).read_to_end(&mut output)?;
+    }
+    Ok(std::process::Output {
+        status,
+        stdout: output,
+        stderr,
+    })
+}
+fn tempfile_output() -> Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = std::env::temp_dir().join(format!(
+        "framely-output-{}",
+        hex::encode(rand::random::<[u8; 16]>())
+    ));
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    fs::remove_file(path)?;
+    Ok(file)
+}
+
 pub fn open_web_link(url: &str) -> Result<()> {
     validate_web_link(url)?;
-    let result = tool("xdg-open")
-        .arg(url)
-        .stdin(Stdio::null())
-        .output()
-        .context("无法启动系统浏览器")?;
-    ensure!(
-        result.status.success(),
-        "无法打开链接：{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    launch_handoff(tool("xdg-open").arg(url), Duration::from_secs(10))
+        .map_err(|error| anyhow::anyhow!("无法打开链接：{error:#}"))?;
     Ok(())
 }
 
@@ -462,4 +544,43 @@ pub fn user_home(uid: u32) -> Result<String> {
         }
     }
     anyhow::bail!("Steam user not found")
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+    #[test]
+    fn captured_status_does_not_wait_for_inherited_stdout() {
+        let output = command_output_timeout(
+            Command::new("/bin/sh").args(["-c", "printf true; sleep 2 &"]),
+            Duration::from_secs(1),
+            true,
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"true");
+    }
+    #[test]
+    fn helper_exit_does_not_wait_for_application_streams() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 2 &"]);
+        let began = Instant::now();
+        launch_handoff(&mut command, Duration::from_secs(1)).unwrap();
+        assert!(began.elapsed() < Duration::from_secs(1));
+    }
+    #[test]
+    fn handoff_failure_keeps_diagnostics_and_stalled_helper_is_bounded() {
+        let mut failed = Command::new("/bin/sh");
+        failed.args(["-c", "printf 'cannot open application' >&2; exit 4"]);
+        assert!(launch_handoff(&mut failed, Duration::from_secs(1))
+            .unwrap_err()
+            .to_string()
+            .contains("cannot open application"));
+        let mut stalled = Command::new("/bin/sleep");
+        stalled.arg("3");
+        assert!(launch_handoff(&mut stalled, Duration::from_millis(40))
+            .unwrap_err()
+            .to_string()
+            .contains("timed out"));
+    }
 }
