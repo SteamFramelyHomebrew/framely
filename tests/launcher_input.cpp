@@ -44,4 +44,10 @@ vr::RenderModel_ComponentState_t joystick_rest{},joystick_x{},joystick_y{},joyst
  assert(!dock.holds(now+std::chrono::milliseconds(3250)));
  dock.clear();assert(!dock.holds(now+std::chrono::seconds(3)));
 
+ // A Dock depth gesture consumes stick input; a still-deflected stick must
+ // not navigate after the guard expires until it has returned to neutral.
+ LauncherStick depthStick;assert(!depthStick.update(0,0,true));
+ assert(!depthStick.update(0,.9f,false));assert(!depthStick.update(0,.9f,true));
+ assert(!depthStick.update(0,0,true));assert(depthStick.update(0,.9f,true)==2);
+
 }

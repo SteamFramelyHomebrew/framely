@@ -29,7 +29,8 @@ server_pid=$!
 for _ in {1..100}; do [[ ! -f $out/port ]] || break; sleep 0.05; done
 port=$(cat "$out/port")
 cp -a "$cef/Resources/." "$cef/Release/"
-g++ -std=c++17 -O2 -I"$cef" tests/browser_probe.cpp -L"$cef/Release" -lcef -pthread '-Wl,-rpath,$ORIGIN' -o "$cef/Release/framely-browser-probe"
+node tools/build-scroll-gestures.mjs "$out"
+g++ -std=c++17 -O2 -I"$out" -I"$cef" tests/browser_probe.cpp -L"$cef/Release" -lcef -pthread '-Wl,-rpath,$ORIGIN' -o "$cef/Release/framely-browser-probe"
 for mode in desktop mobile; do
  mkdir "$out/$mode"
  export FRAMELY_CEF_ROOT="$cef" FRAMELY_INSTALL_REVIEW_TEST=1 FRAMELY_PREVIEW_DIR="$out/$mode" GSETTINGS_BACKEND=memory
