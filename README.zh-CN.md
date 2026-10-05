@@ -49,6 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/i
 
 - [安装、更新、修复、回滚与卸载](docs/zh-CN/user-guide/installation.md)
 - [基本使用](docs/zh-CN/user-guide/basic-usage.md) · [插件安装与管理](docs/zh-CN/user-guide/plugins.md)
+- [APK 管理](docs/zh-CN/user-guide/apk-manager.md) · [空间启动台](docs/zh-CN/launcher.md)
 - [网络管理面板](docs/zh-CN/user-guide/network-panel.md)
 - [插件开发到发布完整流程](docs/zh-CN/developer-guide/README.md) · [发布插件和插件源](docs/zh-CN/developer-guide/publishing.md)
 - [SDK API](docs/zh-CN/developer-guide/sdk.md) · [Manifest 配置](docs/zh-CN/developer-guide/manifest.md) · [生命周期](docs/zh-CN/plugin-lifecycle.md)

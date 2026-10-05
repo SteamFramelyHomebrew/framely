@@ -27,12 +27,15 @@ impl Uploads {
         }
     }
     pub fn start(&self, total: u64) -> Result<Value> {
+        self.start_in(total, std::path::Path::new("/tmp"))
+    }
+    pub fn start_in(&self, total: u64, parent: &std::path::Path) -> Result<Value> {
         ensure!(total > 0, "Empty package");
         let mut slot = self.0.lock().unwrap();
         Self::expire(&mut slot);
         ensure!(slot.is_none(), "An upload is already running");
         let id = hex::encode(rand::random::<[u8; 24]>());
-        let package = crate::package::Staged::create()?;
+        let package = crate::package::Staged::create_in(parent)?;
         let file = OpenOptions::new().write(true).open(&package.path)?;
         *slot = Some(Upload {
             id: id.clone(),
@@ -123,6 +126,27 @@ mod tests {
         drop(package);
         assert!(!directory.exists());
         assert!(uploads.take(&id).is_err());
+    }
+    #[test]
+    fn persistent_uploads_are_private_and_removed_on_cancel_or_drop() {
+        let parent = tempfile::tempdir().unwrap();
+        let uploads = Uploads::default();
+        let started = uploads.start_in(3, parent.path()).unwrap();
+        let id = started["upload"].as_str().unwrap();
+        uploads.append(id, 0, b"apk").unwrap();
+        let staged = uploads.take(id).unwrap();
+        assert!(staged.path.starts_with(parent.path()));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&staged.path).unwrap().permissions().mode() & 0o777,
+            0o400
+        );
+        let path = staged.path.clone();
+        drop(staged);
+        assert!(!path.exists());
+        let started = uploads.start_in(1, parent.path()).unwrap();
+        uploads.abort(started["upload"].as_str().unwrap()).unwrap();
+        assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
     }
     #[test]
     fn cancellation_expiry_and_chunk_bound() {

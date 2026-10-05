@@ -1,3 +1,5 @@
+#include "../native/page_scroll_injection.h"
+#include "include/capi/cef_load_handler_capi.h"
 #include "../native/paint_buffer.h"
 #include "../native/launcher_pointer.h"
 // Integration test only: render the real manager and exercise its iframe bridge.
@@ -22,6 +24,7 @@ static Handler<cef_client_t> client;
 static Handler<cef_render_handler_t> render;
 static Handler<cef_display_handler_t> display;
 static Handler<cef_life_span_handler_t> life;
+static Handler<cef_load_handler_t> load;
 static std::vector<unsigned char> pixels;static int pixel_width=0,pixel_height=0;
 static void snapshot(const std::string& name){const char* dir=std::getenv("FRAMELY_PREVIEW_DIR");if(!dir||pixels.empty())return;std::ofstream out(std::string(dir)+"/"+name+".ppm",std::ios::binary);out<<"P6\n"<<pixel_width<<" "<<pixel_height<<"\n255\n";for(size_t i=0;i<pixels.size();i+=4){unsigned char rgb[]={pixels[i+2],pixels[i+1],pixels[i]};out.write(reinterpret_cast<char*>(rgb),3);}}
 static bool install_review_mode=std::getenv("FRAMELY_INSTALL_REVIEW_TEST")!=nullptr;
@@ -32,6 +35,9 @@ static bool ready=false,passed=false,failed=false,closed=false;static int paints
 static void str(cef_string_t& s,const std::string& v){cef_string_utf8_to_utf16(v.data(),v.size(),&s);}
 static std::string text(const cef_string_t* s){cef_string_utf8_t o{};cef_string_utf16_to_utf8(s->str,s->length,&o);std::string r(o.str,o.length);cef_string_utf8_clear(&o);return r;}
 int main(int argc,char** argv){
+ load.api.on_load_end=[](cef_load_handler_t*,cef_browser_t*,cef_frame_t* frame,int){inject_page_scroll(frame);};
+ client.api.get_load_handler=[](cef_client_t*){return load.acquire();};
+
  std::cout.setf(std::ios::unitbuf);std::string url=argc>1?argv[1]:"",runtime=argc>2?argv[2]:"",cef=std::getenv("FRAMELY_CEF_ROOT")?std::getenv("FRAMELY_CEF_ROOT"):"";
  cef_main_args_t args{argc,argv};if(std::strcmp(cef_api_hash(CEF_API_VERSION,0),CEF_API_HASH_PLATFORM))return 2;int child=cef_execute_process(&args,nullptr,nullptr);if(child>=0)return child;if(url.empty()||runtime.empty()||cef.empty())return 2;
  cef_settings_t settings{};settings.size=sizeof(settings);settings.windowless_rendering_enabled=1;str(settings.root_cache_path,runtime+"/cache");str(settings.log_file,runtime+"/cef.log");str(settings.resources_dir_path,cef+"/Resources");str(settings.locales_dir_path,cef+"/Resources/locales");

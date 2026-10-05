@@ -42,7 +42,7 @@
 .launcher-shell button:disabled{opacity:.4;cursor:default}.launcher-shell button:not(.launch-icon):focus-visible{outline:2px solid var(--launch-blue);outline-offset:4px}
 .launcher-shell .modal-backdrop{position:absolute;inset:0;background:#101d2b65;z-index:5;display:grid;place-items:center}.launcher-shell .modal{position:relative;transform:none;inset:auto;width:560px;max-width:90%;margin:0;border-radius:22px}
 @keyframes launcher-menu-in{from{opacity:0;translate:0 6px}to{opacity:1;translate:0 0}}
-@media(max-width:900px){.launcher-shell{padding:65px 22px 80px 96px}.launcher-grid{width:calc(100% - 176px)}.launcher-page,.launcher-adjacent-page{gap:8px}.launch-icon{width:92px;height:92px;min-height:92px}.launch-disc{width:82px;height:82px}.launch-name{font-size:15px;height:39px}.launch-monogram{font-size:26px}.launcher-error,.launcher-shell>.banner{left:96px;right:22px}.launcher-pages{left:50%}.launcher-drag-edge.right{right:88px}}
+@media(max-width:900px){.launcher-shell{padding:65px 22px 80px 96px}.launcher-grid{width:calc(100% - 176px)}.launcher-page,.launcher-adjacent-page{gap:8px}.launch-icon{width:92px;height:92px;min-height:92px}.launch-disc{width:82px;height:82px}.launch-name{font-size:15px;height:39px}.launch-monogram{font-size:26px}.launcher-error,.launcher-shell>.banner{left:96px;right:22px}.launcher-pages{left:50%}}
 @media(prefers-reduced-transparency:reduce){.launch-disc{background:#273644}.launcher-tools{background:#273644}.launch-menu{background:#20303d}}
 @media(prefers-reduced-motion:reduce){.launch-disc,.launch-favorite,.launcher-category-label,:is(.launcher-filters,.launcher-shortcuts) button,.launcher-category-active,.launcher-pages button span{transition:none}.launch-menu,.launch-item{animation:none}}
 .launcher-settings label{display:flex;align-items:center;justify-content:space-between;padding:16px 0;width:100%;gap:24px;border-bottom:1px solid #ffffff10}.launcher-settings label small{display:block;color:#a1adb7;margin-top:6px}.launcher-settings input[type=checkbox]{width:26px;height:26px}.launcher-settings input[type=number]{width:100px;padding:10px;background:#111a22;color:#fff;border:1px solid #44515c;border-radius:8px;font:inherit}
@@ -51,13 +51,13 @@
 .launcher-edit-toolbar span,.launcher-edit-toolbar button{display:flex;align-items:center;gap:10px}.launcher-edit-toolbar button{border-radius:32px;padding:10px 20px;background:#a7bac72b;border:1px solid #e8f4ff30;color:#d9e3ec;box-shadow:inset 0 1px 1px #f0f7ff30,inset 0 -1px 1px #0c172549,0 10px 30px #0b16252b}
 .launcher-editing .launch-disc{animation:launcher-wiggle .32s ease-in-out infinite alternate}.launcher-editing .launch-item:nth-child(2n) .launch-disc{animation-direction:alternate-reverse}
 .launch-item-dragged .launch-disc{opacity:.22;animation:none}.launcher-drag-ghost{position:fixed;transform:translate(-50%,-50%) scale(1.1);pointer-events:none;z-index:7;filter:drop-shadow(0 12px 18px #06132066)}
-.launcher-drag-edge{position:absolute;top:150px;bottom:150px;width:8px;border-radius:8px;background:#b4dbf477;pointer-events:none;z-index:6}.launcher-drag-edge.left{left:max(45px,96px)}.launcher-drag-edge.right{right:45px}
+.launcher-drag-edge{pointer-events:none;z-index:6}
 @keyframes launcher-wiggle{from{rotate:-1.4deg}to{rotate:1.4deg}}
 @media(prefers-reduced-motion:reduce){.launcher-editing .launch-disc{animation:none}}
 
 .launcher-edit-toolbar button:hover:not(:disabled){background:#e3f1ff26;color:#f3f8fc}
 
-@media(max-width:900px){.launcher-drag-edge.right{right:88px}}
+
 
 .launcher-panning{overflow:hidden}.launcher-adjacent-page{pointer-events:none}.launcher-adjacent-page .launch-icon{display:block}.launcher-panning .launcher-page{will-change:translate}
 /* Search shares the category capsule material without moving the icon canvas. */
@@ -76,3 +76,16 @@
 
 .launcher-shortcuts{left:auto;right:0}
 .launcher-shortcuts .launcher-category-label{left:auto;right:calc(100% + 20px)}
+
+/* These viewport boundaries also drive icon clamping and dwell paging. */
+/* Apple-inspired spatial edge shading, not Apple's native material.
+   The invisible 8px boundary remains exact; feathered shading faces the grid. */
+.launcher-shell .launcher-drag-edge{position:fixed;right:auto;bottom:auto;width:8px;background:transparent;border:0;box-shadow:none}
+.launcher-drag-edge::before,.launcher-drag-edge::after{content:"";position:absolute;top:8%;bottom:8%;left:-4px;width:76px;pointer-events:none;opacity:.35;transform-origin:left center;transition:opacity 220ms,transform 220ms}
+.launcher-drag-edge::before{background:radial-gradient(ellipse at 0% 50%,#d9eaf744 0%,#c6e0f021 30%,#b4dbf408 58%,transparent 78%)}
+.launcher-drag-edge::after{left:-12px;width:62px;background:radial-gradient(ellipse at 20% 50%,#10213252 0%,#10213219 45%,transparent 75%)}
+.launcher-drag-edge.right::before{left:auto;right:-4px;transform-origin:right center;background:radial-gradient(ellipse at 100% 50%,#d9eaf744 0%,#c6e0f021 30%,#b4dbf408 58%,transparent 78%)}
+.launcher-drag-edge.right::after{left:auto;right:-12px;transform-origin:right center;background:radial-gradient(ellipse at 80% 50%,#10213252 0%,#10213219 45%,transparent 75%)}
+.launcher-drag-edge.active::before{opacity:1;transform:scaleX(1.18)}.launcher-drag-edge.active::after{opacity:.8;transform:scaleX(1.12)}
+@media(prefers-reduced-motion:reduce){.launcher-drag-edge::before,.launcher-drag-edge::after{transition:none}}
+@media(prefers-reduced-transparency:reduce){.launcher-drag-edge::before{opacity:.8}.launcher-drag-edge.active::before{opacity:1}}

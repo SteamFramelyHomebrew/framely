@@ -1,7 +1,10 @@
+mod apk;
+mod apk_metadata;
 mod auth;
 mod desktop;
 mod diagnostics;
 mod http;
+mod file_browser;
 mod ipc;
 mod jobs;
 mod launcher_search;
@@ -35,6 +38,15 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Cmd {
+    /// Manage sideloaded APKs as the Steam session user (also works without the panel).
+    Apk {
+        operation: String,
+        #[arg(default_value = "{}")]
+        params: String,
+        /// Local APK file for inspection; file paths are never accepted by the web API.
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
     /// Export logs even when the manager service is unavailable.
     ExportLogs {
         #[arg(long, default_value = "/var/lib/framely")]
@@ -140,6 +152,36 @@ enum Cmd {
 }
 fn run() -> Result<()> {
     match Cli::parse().command {
+        Cmd::Apk {
+            operation,
+            params,
+            file,
+        } => {
+            let home = steam::home()?;
+            let p: Value = serde_json::from_str(&params)?;
+            let result = match operation.as_str() {
+                "metadata" => json!(apk_metadata::read(
+                    &file.context("Use --file for APK inspection")?
+                )?),
+                "list" => apk::list(&home)?,
+                "cleanup-list" => apk::cleanup_list(&home)?,
+                "logs" => apk::logs(&home, p["app"].as_str().context("Missing app")?)?,
+                "inspect" => apk::inspect(
+                    &home,
+                    &file.context("Use --file for APK inspection")?,
+                    &jobs::Cancellation::default(),
+                )?,
+                _ => apk::operate(
+                    &home,
+                    &operation,
+                    &p,
+                    jobs::Cancellation::default(),
+                    std::sync::Arc::new(|p| eprintln!("{p}")),
+                )?,
+            };
+            println!("{}", serde_json::to_string(&result)?);
+            Ok(())
+        }
         Cmd::ExportLogs { state, output } => {
             let archive = diagnostics::collect(&state)?;
             let bytes = STANDARD.decode(archive["data"].as_str().context("Missing archive")?)?;

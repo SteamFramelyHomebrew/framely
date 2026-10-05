@@ -62,3 +62,6 @@ The output must be a new file. If the binary cannot run, an extracted release al
 Point the laser at a page and move either controller's stick to scroll, without clicking or focusing the page first. Scrolling follows the element under the laser, including nested plugin panels. Keyboard input pauses page scrolling. Launcher stick navigation keeps its category/page controls.
 
 Hold the primary trigger and move the laser up or down to drag scrollable page content. Small movements remain ordinary clicks; once a vertical drag starts, releasing does not activate the pressed button. Text inputs, sliders and explicit custom drag targets keep their own interactions. The launcher retains its icon arrangement and horizontal page-drag gestures.
+
+
+Launcher blank-space clicks only dismiss the icon menu. Click outside the launcher window or press B to dismiss it (B exits arrangement first). Steam’s move/depth controls keep the window open and pause stick navigation until the stick returns to neutral. While dragging an icon in arrangement mode, horizontal stick input changes pages; vertical input does not change categories. The boundary rails remain an alternative: hold the pointer beyond a rail for 650 ms to move to the adjacent page.

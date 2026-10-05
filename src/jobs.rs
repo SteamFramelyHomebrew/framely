@@ -110,7 +110,7 @@ impl Jobs {
     fn create(&self, kind: &str) -> Result<(String, Cancellation, bool)> {
         let mut state = self.state.lock().unwrap();
         Self::expire(&mut state);
-        if kind.starts_with("catalog:") {
+        if kind.starts_with("catalog:") || kind == "apk:list" {
             if let Some((id, job)) = state.jobs.iter().find(|(_, j)| {
                 j.active && j.public["kind"] == kind && !j.cancel.flag.load(Ordering::Acquire)
             }) {
@@ -157,11 +157,29 @@ impl Jobs {
             .public
             .clone())
     }
+    pub fn active_apk(&self) -> Value {
+        let state = self.state.lock().unwrap();
+        state
+            .jobs
+            .iter()
+            .find(|(_, job)| {
+                job.public["kind"] == "apk:operation"
+                    && !matches!(
+                        job.public["phase"].as_str(),
+                        Some("done" | "failed" | "cancelled")
+                    )
+            })
+            .map(|(id, _)| json!({"job":id}))
+            .unwrap_or(json!({"job":null}))
+    }
     pub fn cancel(&self, id: &str) -> Result<Value> {
         let cancel = {
             let state = self.state.lock().unwrap();
             let j = state.jobs.get(id).context("任务不存在")?;
-            ensure!(j.public["kind"] != "install", "安装已经开始，不能中途取消");
+            ensure!(
+                j.public["kind"] != "install" && j.public["cancellable"] != false,
+                "安装已经开始，不能中途取消"
+            );
             j.cancel.clone()
         };
         // Serialize cancellation with state-changing commits, never with the jobs lock held.
@@ -613,6 +631,17 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("job timeout");
+    }
+    #[test]
+    fn submitted_apk_operations_reject_cancellation_without_waiting_for_worker() {
+        let jobs = Jobs::default();
+        let (id, _, _) = jobs.create("apk:operation").unwrap();
+        assert_eq!(jobs.active_apk()["job"], id);
+        jobs.patch(&id, json!({"cancellable":false,"phase":"installing"}));
+        assert!(jobs.cancel(&id).is_err());
+        assert_eq!(jobs.status(&id).unwrap()["phase"], "installing");
+        jobs.patch(&id, json!({"phase":"done"}));
+        assert_eq!(jobs.active_apk()["job"], Value::Null);
     }
     #[test]
     fn cancellation_and_limits_do_not_allow_unreviewed_install() {
