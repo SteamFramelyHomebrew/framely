@@ -1,11 +1,10 @@
 //! User-session applications: XDG desktop entries and installed Lepton packages.
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
-    process::Stdio,
 };
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -256,17 +255,11 @@ fn launch_target(target: Target) -> Result<()> {
     match target {
         Target::ManagedLepton(id) => crate::apk::launch_app(&crate::steam::home()?, &id)?,
         Target::Desktop(path) => {
-            let output = crate::process::tool("gio")
-                .arg("launch")
-                .arg(path)
-                .stdin(Stdio::null())
-                .output()
-                .context("Cannot launch desktop application")?;
-            ensure!(
-                output.status.success(),
-                "Desktop launch failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            crate::process::launch_handoff(
+                crate::process::tool("gio").arg("launch").arg(path),
+                std::time::Duration::from_secs(10),
+            )
+            .map_err(|error| anyhow::anyhow!("Desktop launch failed: {error:#}"))?;
         }
     }
     Ok(())
@@ -323,7 +316,7 @@ mod tests {
         assert_eq!(apps[0].id, "test/com.example.app");
     }
     #[test]
-    fn launch_handoffs_use_literal_arguments_and_reuse_live_lepton_context() {
+    fn desktop_launch_handoff_uses_literal_arguments() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let tools = dir.path().join("tools");

@@ -577,6 +577,7 @@
     "日志": "Logs",
     "切换管理面板": "Switch manager",
     "插件管理": "Plugin Manager",
-    "Lepton 侧载管理": "Lepton sideload management"
+    "Lepton 侧载管理": "Lepton sideload management",
+    "操作等待超时；请确认应用是否已打开后再重试。": "The operation timed out. Check whether the application opened before retrying."
   }
 }
