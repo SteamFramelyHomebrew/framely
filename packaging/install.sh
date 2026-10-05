@@ -146,6 +146,24 @@ rollback_on_failure() {
 }
 trap rollback_on_failure ERR
 systemctl stop framely-session.service framely.service 2>/dev/null || true
+# Clear the uninstall guard retained by older releases only for a clean reinstall.
+# Existing installations, repairs and incomplete plugin cleanup retain safe mode.
+if ! $repair && [[ -z $old && -f $root/state.json ]]; then
+  python3 - "$root/state.json" <<'PY_REINSTALL'
+import json, os, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+state = json.loads(path.read_text())
+if state.get('safeMode') is True and state.get('plugins') == {}:
+    state['safeMode'] = False
+    temporary = path.with_name('state.json.reinstall')
+    with temporary.open('w') as output:
+        os.chmod(temporary, 0o600)
+        json.dump(state, output, ensure_ascii=False)
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, path)
+PY_REINSTALL
+fi
 ln -s "releases/$version" "$root/current.new"
 mv -Tf "$root/current.new" "$root/current"
 cat > /etc/systemd/system/framely.service <<EOF

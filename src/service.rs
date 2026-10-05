@@ -85,6 +85,10 @@ impl Service {
             self.notifications.retain(|_, n| n.plugin != *id);
             self.save_notifications()?;
         }
+        // Safe mode is an uninstall guard, not the default for a later install.
+        // A failed hook exits above and leaves the guard persisted.
+        self.db.safe_mode = false;
+        self.save()?;
         Ok(json!({"uninstalled": ids}))
     }
     pub fn load(root: &Path, manager: u32) -> Result<Self> {

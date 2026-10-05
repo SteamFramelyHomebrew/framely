@@ -1578,13 +1578,14 @@ fn manager_uninstall_disables_all_plugins_and_removes_packages_before_body() {
         .unwrap();
     assert_eq!(result["uninstalled"].as_array().unwrap().len(), 2);
     assert!(core.db.plugins.is_empty());
-    assert!(core.db.safe_mode);
+    assert!(!core.db.safe_mode);
     assert!(!root.path().join("plugins/test.first").exists());
     assert!(!root.path().join("plugins/test.second").exists());
     assert!(root.path().join("data/test.first/saved").exists());
     assert!(root.path().join("manager-marker").exists());
     let reloaded = Service::load(root.path(), 1000).unwrap();
     assert!(reloaded.db.plugins.is_empty());
+    assert!(!reloaded.db.safe_mode);
     core.handle("system.uninstall.prepare", json!({"approve":true}))
         .unwrap();
 }
@@ -1616,6 +1617,7 @@ fn manager_uninstall_failure_keeps_plugin_and_persists_disabling() {
     assert!(root.path().join("plugins/test.retained").exists());
     let reloaded = Service::load(root.path(), 1000).unwrap();
     assert!(!reloaded.db.plugins["test.retained"].enabled);
+    assert!(reloaded.db.safe_mode);
 }
 
 #[test]
