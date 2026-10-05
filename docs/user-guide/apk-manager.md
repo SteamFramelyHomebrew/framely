@@ -12,7 +12,7 @@ Install Lepton through Steam first. Framely uses the Steam session user's Lepton
 
 Open **APK Manager → Refresh**. Discovery reads the standard Lepton context directories, saved Framely records and running containers' compatibility-data labels. It does not start containers during scanning. Steam-managed APKs appear in the container view; use Steam for their updates and removal.
 
-For data stored elsewhere, open **Containers → Additional data locations** and add the `baked` directory containing `data_overlay/system/packages.xml`. Enter the original Lepton context name when it differs from the enclosing directory. Paths must belong to the session user. Removing a scan location does not delete its data. Custom tools can use layouts Framely cannot discover; missing locations must be registered explicitly.
+For data stored elsewhere, open **Containers → Additional data locations** and add the `baked` directory containing `data_overlay/system/packages.xml`. Enter the original Lepton context name when it differs from the enclosing directory. Names cannot conflict with containers belonging to other data locations. Paths must belong to the session user. Removing a scan location does not delete its data. Custom tools can use layouts Framely cannot discover; missing locations must be registered explicitly.
 
 Applications are identified by context plus package name. The same package in two containers is treated as two applications. A context name or location change can therefore create a different identity.
 
@@ -26,9 +26,9 @@ After installation, choose **Open** if desired; installation does not automatica
 
 To update, open the app's management dialog and choose **Install newer APK**. Package identity and version are checked; Android enforces signing compatibility during replacement. Downgrades are refused, and signature failures never trigger an uninstall/reinstall workaround. Same-package replacement retains data. Updating may stop the target container, affecting its other applications.
 
-Before replacing an existing installation, Framely saves a container-data snapshot while it is stopped. Scratch overlay work directories, runtime sockets and FIFOs are excluded. Backups include a SHA-256 integrity inventory checked before restoration. Backup failure aborts replacement. Snapshots are recovery material, not a guarantee that every Android data migration is reversible. One-click restore is limited to Framely-created containers with a single recorded application; shared and external snapshots require manual recovery. Restoration creates another snapshot of the current state and requires launching the app to verify saved data afterward.
+Before replacing an existing installation, Framely saves a container-data snapshot while it is stopped. Scratch overlay work directories, runtime sockets and FIFOs are excluded. Backups include a SHA-256 integrity inventory checked before restoration. Backup failure aborts replacement. Snapshots are recovery material, not a guarantee that every Android data migration is reversible. One-click restore supports sideloaded containers with a single recorded application and a matching data location, including external containers; shared snapshots require manual recovery. Restoration creates another snapshot of the current state and requires launching the app to verify saved data afterward.
 
-Once a modifying operation starts, cancellation is disabled until its actual outcome is known. Uploads and preparation can be cancelled. Switching panels does not stop a submitted task; reopening APK Manager resumes its progress display. Interrupted restores are recovered from a local transaction journal before the next modifying operation. After interruption, use **Reconcile installed state** before retrying or deleting data. An unreadable container is not treated as proof that its application was uninstalled.
+Once a modifying operation starts, cancellation is disabled until its actual outcome is known. Uploads and preparation can be cancelled. Switching panels does not stop a submitted task; reopening APK Manager resumes its progress display. Interrupted restores are recovered from a local transaction journal before the next modifying operation. After interruption, use **Reconcile installed state** before retrying or deleting data. An unreadable container displays Installation state unknown, preserves the previous record and disables launching, reinstallation and deletion until its actual state is reconciled.
 
 ## Launch and window display
 
@@ -40,7 +40,7 @@ Launcher favorites, search and manual ordering continue to use stable context/pa
 
 ## Close, uninstall and clean data
 
-**Close app** force-stops only the selected package. **Stop container** affects every app inside it. Container deletion is offered only for containers explicitly created by Framely, and requires confirmation of the affected apps and permanent data loss.
+**Close app** force-stops only the selected package. **Stop container** affects every app inside it. All non-Steam sideloaded containers with a verified data location support deletion after confirmation of affected apps and permanent data loss. Standard Lepton context directories are removed as a whole; registered external locations remove only the baked directory, preserving unrelated files in the parent. Uninstalling an app, even with Delete app data enabled, does not delete its container.
 
 Uninstallation retains saved data by default. Enable **Delete app data** to remove it. Retained apps appear under **Uninstalled, data retained**, where you can reinstall or remove retained data.
 

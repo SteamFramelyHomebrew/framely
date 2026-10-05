@@ -59,6 +59,7 @@ struct Container {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct App {
+    state_known: bool,
     id: String,
     context: String,
     metadata: Metadata,
@@ -321,6 +322,7 @@ fn containers(home: &Path, db: &Database) -> Vec<Container> {
                 if let Ok(baked) = validate_baked(&Path::new(p.trim()).join("baked")) {
                     if let Some(c) = out.iter_mut().find(|c| c.baked == baked) {
                         c.name = n.into();
+                        c.steam |= n.starts_with("steamlaunch-");
                         c.running = true;
                     } else {
                         out.push(Container {
@@ -554,6 +556,7 @@ fn installed(c: &Container) -> Result<Vec<(Metadata, PathBuf)>> {
 fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App>, Vec<String>) {
     let mut out = Vec::new();
     let mut warnings = Vec::new();
+    let mut failed_contexts = std::collections::BTreeSet::new();
     for c in cs {
         match installed(c) {
             Ok(packages) => {
@@ -579,7 +582,11 @@ fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App
                     } else {
                         0
                     };
+                    let activity = rec
+                        .and_then(|r| r.activity.clone())
+                        .filter(|a| metadata.declared_activities.contains(a));
                     out.push(App {
+                        state_known: true,
                         id,
                         context: c.id.clone(),
                         metadata,
@@ -589,25 +596,36 @@ fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App
                         steam: c.steam,
                         size: n,
                         pending: rec.and_then(|r| r.pending.clone()),
-                        activity: rec.and_then(|r| r.activity.clone()),
+                        activity,
                         show_window: rec.and_then(|r| r.show_window),
                     });
                 }
             }
-            Err(e) => warnings.push(format!("{}: {e:#}", c.name)),
+            Err(e) => {
+                failed_contexts.insert(c.id.clone());
+                warnings.push(format!("{}: {e:#}", c.name));
+            }
         }
     }
     for r in db.records.values() {
         if !out.iter().any(|a| a.id == r.id) {
             let available = cs.iter().any(|c| c.id == r.context);
+            let state_known = available
+                && !failed_contexts.contains(&r.context)
+                && (r.removed
+                    || cs.iter().any(|c| {
+                        c.id == r.context
+                            && restriction(c, &r.metadata.package).is_some_and(|r| !r.0)
+                    }));
             out.push(App {
+                state_known,
                 id: r.id.clone(),
                 context: r.context.clone(),
                 metadata: r.metadata.clone(),
-                installed: false,
+                installed: !state_known && !r.removed,
                 running: false,
                 managed: cs.iter().any(|c| c.id == r.context && c.managed),
-                steam: false,
+                steam: cs.iter().any(|c| c.id == r.context && c.steam),
                 size: cs
                     .iter()
                     .find(|c| c.id == r.context)
@@ -621,12 +639,7 @@ fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App
                 pending: r.pending.clone().or_else(|| {
                     if !available {
                         Some("Container unavailable; data has not been deleted".into())
-                    } else if !r.removed
-                        && !cs.iter().any(|c| {
-                            c.id == r.context
-                                && restriction(c, &r.metadata.package).is_some_and(|r| !r.0)
-                        })
-                    {
+                    } else if !state_known {
                         Some("APK could not be read; reconcile before deleting data".into())
                     } else {
                         None
@@ -657,6 +670,7 @@ fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App
                     continue;
                 }
                 out.push(App {
+                    state_known: true,
                     id,
                     context: c.id.clone(),
                     metadata: Metadata {
@@ -730,7 +744,7 @@ pub fn list(home: &Path) -> Result<Value> {
         }
     }
     Ok(
-        json!({"apps":apps,"containers":cs,"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok()}),
+        json!({"apps":apps,"containers":cs.iter().map(|c| { let occupied=apps.iter().any(|a| a.context==c.id&&a.installed); let known=!warnings.iter().any(|w|w.starts_with(&format!("{}:",c.name)))&&!apps.iter().any(|a|a.context==c.id&&!a.state_known); let shared_mount=c.baked.join("app_overlay/base.apk").exists()||c.baked.join("app_lowerdir/base.apk").exists(); let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(!c.steam&&known&&!(occupied&&shared_mount)); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok()}),
     )
 }
 pub fn launcher(home: &Path) -> Vec<Value> {
@@ -739,7 +753,10 @@ pub fn launcher(home: &Path) -> Vec<Value> {
     let (apps, _) = apps(home, &db, &cs, false);
     apps.into_iter()
         .filter(|a| {
-            a.installed && !a.steam && (!a.metadata.activities.is_empty() || a.activity.is_some())
+            a.state_known
+                && a.installed
+                && !a.steam
+                && (!a.metadata.activities.is_empty() || a.activity.is_some())
         })
         .map(|a| json!({"id":a.id,"kind":"lepton","name":a.metadata.name,"icon":a.metadata.icon}))
         .collect()
@@ -969,6 +986,9 @@ fn copy(from: &Path, to: &Path, log: &Path) -> Result<()> {
     Ok(())
 }
 fn record_app(db: &mut Database, a: &App) {
+    if !a.state_known {
+        return;
+    }
     db.records
         .entry(a.id.clone())
         .and_modify(|r| {
@@ -996,9 +1016,15 @@ fn app(home: &Path, db: &Database, id: &str) -> Result<(App, Container)> {
         .context("APK application not found")?;
     ensure!(!a.steam, "Manage Steam APKs through Steam");
     let c = cs
-        .into_iter()
+        .iter()
         .find(|c| c.id == a.context)
+        .cloned()
         .context("Container unavailable; add its data location first")?;
+    ensure!(
+        !cs.iter()
+            .any(|other| other.name == c.name && other.baked != c.baked),
+        "Container name is ambiguous; correct its data location first"
+    );
     Ok((a, c))
 }
 fn discard_runtime_files(path: &Path) -> Result<()> {
@@ -1054,9 +1080,29 @@ fn snapshot_inventory(
     Ok(())
 }
 fn recover_restores(home: &Path, db: &mut Database) -> Result<()> {
-    for id in db.owned_contexts.clone() {
-        ensure!(safe(&id), "Invalid managed context");
-        let parent = home.join(".local/share/lepton/contexts").join(&id);
+    let base = home.join(".local/share/lepton/contexts");
+    let mut locations = BTreeMap::new();
+    for id in &db.owned_contexts {
+        ensure!(safe(id), "Invalid managed context");
+        locations.insert(id.clone(), base.join(id));
+    }
+    if let Ok(entries) = fs::read_dir(&base) {
+        for e in entries.flatten() {
+            let id = e.file_name().to_string_lossy().into_owned();
+            if safe(&id) && !id.starts_with("steamlaunch-") && e.file_type()?.is_dir() {
+                locations.insert(id, e.path());
+            }
+        }
+    }
+    for baked in &db.roots {
+        if let Some(parent) = baked.parent() {
+            locations.insert(
+                format!("external-{}", hash(&baked.to_string_lossy())),
+                parent.to_path_buf(),
+            );
+        }
+    }
+    for (id, parent) in locations {
         let journal = parent.join("framely-restore.json");
         if !journal.exists() {
             continue;
@@ -1315,9 +1361,12 @@ fn purge_retained(home: &Path, db: &mut Database, id: &str, log: &Path) -> Resul
 }
 fn clean_candidates(home: &Path, db: &Database) -> Result<Vec<Value>> {
     let cs = containers(home, db);
-    let (apps, _) = apps(home, db, &cs, true);
+    let (apps, warnings) = apps(home, db, &cs, true);
     let mut out = Vec::new();
-    for a in apps.iter().filter(|a| !a.installed && a.pending.is_none()) {
+    for a in apps
+        .iter()
+        .filter(|a| a.state_known && !a.installed && a.pending.is_none())
+    {
         out.push(json!({"id":format!("data:{}",a.id),"kind":"data","name":a.metadata.name,"bytes":a.size,"sensitive":true,"app":a.id}));
     }
     for c in &cs {
@@ -1372,7 +1421,24 @@ fn clean_candidates(home: &Path, db: &Database) -> Result<Vec<Value>> {
                     && snapshot
                         .as_ref()
                         .is_some_and(|s| s["checksums"].is_object())
-                    && context.is_some_and(|id| db.owned_contexts.iter().any(|v| v == id))
+                    && context.is_some_and(|id| {
+                        cs.iter().any(|c| {
+                            c.id == id
+                                && !c.steam
+                                && snapshot
+                                    .as_ref()
+                                    .is_some_and(|s| s["context"]["baked"] == json!(c.baked))
+                                && !warnings
+                                    .iter()
+                                    .any(|w| w.starts_with(&format!("{}:", c.name)))
+                                && !apps.iter().any(|a| a.context == id && !a.state_known)
+                                && apps
+                                    .iter()
+                                    .filter(|a| a.context == id && a.installed)
+                                    .count()
+                                    <= 1
+                        })
+                    })
                     && snapshot
                         .as_ref()
                         .is_some_and(|s| s["records"].as_array().is_some_and(|v| v.len() == 1));
@@ -1472,6 +1538,7 @@ pub fn operate(
     let result = (|| -> Result<Value> {
         match kind {
             "root.add" => {
+                let cs = containers(home, &db);
                 let path = p["path"].as_str().context("Missing data directory")?;
                 let path = validate_baked(Path::new(path))?;
                 ensure!(
@@ -1485,8 +1552,27 @@ pub fn operate(
                         safe(context) && !context.starts_with("steamlaunch-"),
                         "Invalid side-loaded context name"
                     );
+                    ensure!(
+                        !cs.iter().any(|c| c.name == context && c.baked != path),
+                        "Container name is already used by another data directory"
+                    );
                     db.root_contexts.insert(path.clone(), context.into());
                 }
+                let name = db.root_contexts.get(&path).cloned().unwrap_or_else(|| {
+                    path.parent()
+                        .and_then(|p| p.file_name())
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                });
+                ensure!(
+                    safe(&name) && !name.starts_with("steamlaunch-"),
+                    "Invalid side-loaded context name"
+                );
+                ensure!(
+                    !cs.iter().any(|c| c.name == name && c.baked != path),
+                    "Container name is already used by another data directory"
+                );
                 if !db.roots.contains(&path) {
                     db.roots.push(path)
                 }
@@ -1526,6 +1612,11 @@ pub fn operate(
                 });
                 ensure!(!c.steam, "Manage Steam APKs through Steam");
                 ensure!(
+                    !cs.iter()
+                        .any(|other| other.name == c.name && other.baked != c.baked),
+                    "Container name is ambiguous; correct its data location first"
+                );
+                ensure!(
                     c.managed || cs.iter().any(|x| x.id == context),
                     "Unknown target container"
                 );
@@ -1544,7 +1635,7 @@ pub fn operate(
                 }
                 if c.baked.exists() {
                     let packages = installed(&c)?;
-                    ensure!(packages.iter().all(|(m,_)|m.package==metadata.package)||!c.baked.join("app_overlay/base.apk").exists(),"This Lepton context uses one shared APK mount; install the new app in an independent container");
+                    ensure!(packages.iter().all(|(m,_)|m.package==metadata.package)||!(c.baked.join("app_overlay/base.apk").exists()||c.baked.join("app_lowerdir/base.apk").exists()),"This Lepton context uses one shared APK mount; install the new app in an independent container");
                 }
                 let previous = if c.baked.exists() {
                     installed(&c)?
@@ -1562,7 +1653,7 @@ pub fn operate(
                 if p["app"].is_string() {
                     let (a, old) = app(home, &db, id)?;
                     ensure!(
-                        old.id == c.id && a.metadata.package == metadata.package,
+                        a.state_known && old.id == c.id && a.metadata.package == metadata.package,
                         "APK package or target container does not match"
                     );
                 }
@@ -1599,10 +1690,6 @@ pub fn operate(
             "reconcile" => {
                 let cs = containers(home, &db);
                 let (actual, warnings) = apps(home, &db, &cs, false);
-                ensure!(
-                    warnings.is_empty(),
-                    "Some containers cannot be read; inspect warnings before reconciliation"
-                );
                 let a = actual
                     .iter()
                     .find(|a| a.id == id)
@@ -1611,6 +1698,18 @@ pub fn operate(
                     .iter()
                     .find(|c| c.id == a.context)
                     .context("Container unavailable; add its data location first")?;
+                ensure!(
+                    !warnings
+                        .iter()
+                        .any(|w| w.starts_with(&format!("{}:", c.name))),
+                    "This container cannot be read; inspect warnings before reconciliation"
+                );
+                ensure!(!c.steam, "Manage Steam APKs through Steam");
+                ensure!(
+                    !cs.iter()
+                        .any(|other| other.name == c.name && other.baked != c.baked),
+                    "Container name is ambiguous; correct its data location first"
+                );
                 cancel.commit(|| {
                     progress(json!({"cancellable":false}));
                     start(home, c, a.show_window, &log)?;
@@ -1628,6 +1727,10 @@ pub fn operate(
             }
             "settings" => {
                 let (a, _) = app(home, &db, id)?;
+                ensure!(
+                    a.state_known,
+                    "APK state is unknown; reconcile before changing the application"
+                );
                 record_app(&mut db, &a);
                 let rec = db.records.get_mut(id).unwrap();
                 if let Some(v) = p.get("activity") {
@@ -1651,6 +1754,10 @@ pub fn operate(
             }
             "launch" | "close" | "uninstall" | "purge" | "clear" => {
                 let (a, c) = app(home, &db, id)?;
+                ensure!(
+                    a.state_known,
+                    "APK state is unknown; reconcile before changing the application"
+                );
                 record_app(&mut db, &a);
                 cancel.check()?;
                 if kind == "purge" && !a.installed {
@@ -1759,42 +1866,49 @@ pub fn operate(
                 let context = p["context"].as_str().context("Missing container")?;
                 let cs = containers(home, &db);
                 let c = cs
-                    .into_iter()
+                    .iter()
                     .find(|c| c.id == context)
+                    .cloned()
                     .context("Unknown container")?;
                 ensure!(!c.steam, "Manage Steam containers through Steam");
+                ensure!(
+                    !cs.iter()
+                        .any(|other| other.name == c.name && other.baked != c.baked),
+                    "Container name is ambiguous; correct its data location first"
+                );
+                ensure!(
+                    validate_baked(&c.baked)? == c.baked,
+                    "Container data location changed"
+                );
                 cancel.commit(|| {
                     progress(json!({"cancellable":false}));
                     match kind {
                         "container.start" => start(home, &c, None, &log)?,
                         "container.stop" => stop(&c, &log)?,
                         "container.delete" => {
-                            ensure!(
-                                c.managed,
-                                "Only Framely-created containers can be deleted here"
-                            );
+                            let standard = home.join(".local/share/lepton/contexts").join(&c.name);
+                            let default_location = !fs::symlink_metadata(&standard).is_ok_and(|m|m.file_type().is_symlink()) && fs::canonicalize(&standard).is_ok_and(|p| p.join("baked") == c.baked);
+                            let target = if default_location { standard } else { c.baked.clone() };
+                            // An external compatdata parent can contain unrelated files. Delete only baked.
                             stop(&c, &log)?;
-                            let expected = home.join(".local/share/lepton/contexts").join(&c.name);
-                            ensure!(
-                                fs::canonicalize(&expected)?.join("baked") == c.baked,
-                                "Container data location changed"
-                            );
-                            remove_tree(&expected)?;
+                            ensure!(validate_baked(&c.baked)? == c.baked, "Container data location changed");
+                            if crate::process::command_output_timeout(crate::process::tool("podman").args(["inspect", "--format", "{{.Id}}", &format!("lepton-{}", c.name)]), Duration::from_secs(10), false)?.status.success() {
+                                podman(&["rm", &format!("lepton-{}",c.name)],Some(&log))?;
+                            }
+                            remove_tree(&target)?;
+                            db.roots.retain(|p| p != &c.baked);
+                            db.root_contexts.remove(&c.baked);
                             db.records.retain(|_, r| r.context != context);
                             db.owned_contexts.retain(|id| id != context);
                             save(home, &db)?;
                         }
                         _ => {
-                            ensure!(
-                                c.managed,
-                                "Restore is available only for Framely-created containers"
-                            );
                             let backup = p["backup"].as_str().context("Missing backup")?;
                             ensure!(safe(backup), "Invalid backup");
                             let d = r.join("backups").join(backup);
                             let snapshot = verified_snapshot(&d)?;
                             ensure!(
-                                snapshot["context"]["id"] == context,
+                                snapshot["context"]["id"] == context && snapshot["context"]["baked"] == json!(c.baked),
                                 "Backup belongs to another container"
                             );
                             ensure!(
@@ -1969,7 +2083,7 @@ mod tests {
                 r#"#!/bin/sh
 case "$1" in
  inspect) cat '{state}';;
- ps) echo lepton-test;;
+ ps) if [ "$(cat '{state}')" = true ]; then echo lepton-test; fi;;
  stop) echo false > '{state}'; echo stopped;;
  cp) /bin/cp "$2" '{incoming}';;
  exec)
@@ -2046,9 +2160,110 @@ esac
         assert_eq!(v["containers"][0]["managed"], false);
         assert_eq!(launcher(&f.home).len(), 1);
         assert!(f
-            .operation("container.delete", json!({"context":"test","approve":true}))
+            .operation("container.delete", json!({"context":"test"}))
             .is_err());
         assert!(f.save_file().exists());
+        f.operation("container.delete", json!({"context":"test","approve":true}))
+            .unwrap();
+        assert!(!f.save_file().exists());
+    }
+    #[test]
+    fn external_delete_preserves_parent_and_names_cannot_alias() {
+        let f = Fixture::new();
+        let existing = f.home.join(".local/share/lepton/contexts/test/baked");
+        let parent = f.dir.path().join("custom");
+        fs::create_dir(&parent).unwrap();
+        let baked = parent.join("baked");
+        copy(&existing, &baked, &f.dir.path().join("copy.log")).unwrap();
+        fs::write(parent.join("keep"), "unrelated").unwrap();
+        assert!(f
+            .operation("root.add", json!({"path":baked,"context":"test"}))
+            .is_err());
+        f.operation("root.add", json!({"path":baked,"context":"custom"}))
+            .unwrap();
+        let context = format!("external-{}", hash(&baked.to_string_lossy()));
+        f.operation(
+            "container.delete",
+            json!({"context":context,"approve":true}),
+        )
+        .unwrap();
+        assert!(!baked.exists());
+        assert!(parent.join("keep").exists());
+        assert!(f.save_file().exists());
+        assert!(load(&f.home).unwrap().roots.is_empty());
+    }
+    #[test]
+    fn registered_external_restore_recovers_without_a_baked_directory() {
+        let f = Fixture::new();
+        let original = f.home.join(".local/share/lepton/contexts/test/baked");
+        let parent = f.dir.path().join("external");
+        fs::create_dir(&parent).unwrap();
+        let baked = parent.join("baked");
+        copy(&original, &baked, &f.dir.path().join("copy.log")).unwrap();
+        f.operation("root.add", json!({"path":baked,"context":"external"}))
+            .unwrap();
+        fs::rename(&baked, parent.join("previous-test")).unwrap();
+        copy(
+            &parent.join("previous-test"),
+            &parent.join("restore-test"),
+            &f.dir.path().join("copy.log"),
+        )
+        .unwrap();
+        fs::write(
+            parent.join("framely-restore.json"),
+            serde_json::to_vec(
+                &json!({"old":"previous-test","replacement":"restore-test","records":[]}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut db = load(&f.home).unwrap();
+        recover_restores(&f.home, &mut db).unwrap();
+        assert!(baked.join("app_overlay/base.apk").exists());
+        assert!(!parent.join("framely-restore.json").exists());
+        assert!(!parent.join("restore-test").exists());
+    }
+    #[test]
+    fn unreadable_state_is_not_uninstallation_or_a_launch_target() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let packages = f
+            .home
+            .join(".local/share/lepton/contexts/test/baked/data_overlay/system/packages.xml");
+        fs::write(&packages, [255u8]).unwrap();
+        let data = list(&f.home).unwrap();
+        let a = &data["apps"][0];
+        assert_eq!(a["stateKnown"], false);
+        assert_eq!(a["installed"], true);
+        assert!(launcher(&f.home).is_empty());
+        assert!(f
+            .operation(
+                "uninstall",
+                json!({"app":"test/com.example.app","approve":true})
+            )
+            .is_err());
+        assert!(f
+            .operation(
+                "clear",
+                json!({"app":"test/com.example.app","approve":true})
+            )
+            .is_err());
+        assert!(f.save_file().exists());
+        assert!(!load(&f.home).unwrap().records["test/com.example.app"].removed);
+    }
+    #[test]
+    fn additional_apps_policy_depends_on_shared_mount_not_creator() {
+        let f = Fixture::new();
+        let data = list(&f.home).unwrap();
+        assert_eq!(data["containers"][0]["acceptsAdditionalApps"], false);
+        let baked = f.home.join(".local/share/lepton/contexts/test/baked");
+        let direct = baked.join("data_overlay/app/xyz/com.example.app");
+        fs::create_dir_all(&direct).unwrap();
+        fs::rename(baked.join("app_overlay/base.apk"), direct.join("base.apk")).unwrap();
+        fs::write(f.dir.path().join("running"), "false").unwrap();
+        let data = list(&f.home).unwrap();
+        assert_eq!(data["containers"][0]["acceptsAdditionalApps"], true);
+        assert_eq!(data["containers"][0]["managed"], false);
     }
     #[test]
     fn review_tampering_expiry_and_cancel_are_rejected() {
@@ -2167,7 +2382,6 @@ esac
         let mut db = load(&f.home).unwrap();
         let (found, _) = apps(&f.home, &db, &containers(&f.home, &db), false);
         record_app(&mut db, &found[0]);
-        db.owned_contexts.push("test".into());
         save(&f.home, &db).unwrap();
         let c = containers(&f.home, &db)
             .into_iter()
@@ -2178,6 +2392,10 @@ esac
             std::os::unix::net::UnixListener::bind(c.baked.join("data_overlay/transient.sock"))
                 .unwrap();
         let id = backup(&f.home, &c, &db, &f.dir.path().join("test.log")).unwrap();
+        assert!(clean_candidates(&f.home, &db)
+            .unwrap()
+            .iter()
+            .any(|v| v["name"] == id && v["restorable"] == true));
         fs::write(f.save_file(), "changed progress").unwrap();
         let scratch = c.baked.join("data_workdir/work");
         fs::create_dir_all(&scratch).unwrap();
@@ -2267,6 +2485,11 @@ esac
     fn disabled_packages_are_hidden_from_launcher_and_symlinks_are_rejected() {
         let f = Fixture::new();
         let b = f.home.join(".local/share/lepton/contexts/test/baked");
+        f.operation(
+            "settings",
+            json!({"app":"test/com.example.app","activity":"com.example.app.Main"}),
+        )
+        .unwrap();
         fs::write(b.join("data_overlay/system/users/0/package-restrictions.xml"),"<package-restrictions><pkg name=\"com.example.app\" enabled=\"3\"/></package-restrictions>").unwrap();
         assert!(launcher(&f.home).is_empty());
         let r = init(&f.home).unwrap();

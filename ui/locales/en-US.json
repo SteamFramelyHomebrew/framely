@@ -485,6 +485,7 @@
     "快捷操作": "Quick actions",
     "APK 管理": "APK Manager",
     "安装和管理 Lepton 侧载应用。": "Install and manage sideloaded Lepton apps.",
+    "安装应用": "Install app",
     "安装 APK": "Install APK",
     "容器": "Containers",
     "数据清理": "Data cleanup",
@@ -578,6 +579,10 @@
     "切换管理面板": "Switch manager",
     "插件管理": "Plugin Manager",
     "Lepton 侧载管理": "Lepton sideload management",
-    "操作等待超时；请确认应用是否已打开后再重试。": "The operation timed out. Check whether the application opened before retrying."
+    "操作等待超时；请确认应用是否已打开后再重试。": "The operation timed out. Check whether the application opened before retrying.",
+    "未发现已安装的应用，启动容器不会安装 APK。": "No installed apps were found. Starting the container does not install an APK.",
+    "安装状态未知": "Installation state unknown",
+    "请通过 Steam 管理此应用。": "Manage this application through Steam.",
+    "共享容器的备份需手动恢复；独立侧载容器支持一键恢复。": "Shared container backups require manual restoration. Independent sideloaded containers support one-click restoration."
   }
 }
