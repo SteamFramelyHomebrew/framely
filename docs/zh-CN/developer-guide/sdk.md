@@ -157,3 +157,7 @@ const off = framely.ui.onVisibilityChanged(state => {
 ## 启动台操作与本体兼容
 
 [启动台操作与本体兼容](launcher.md)
+
+### 本体页面滚动
+
+本体桥接脚本会为现有插件页面和新版 SDK 页面安装主扳机纵向拖动滚动。它选择指针下可滚动的祖先区域，并在边界继续滚动外层。输入框、文本域、可编辑内容和滑块保留自身交互。若插件需要自行处理纵向拖拽，请在对应元素或其祖先上设置 `data-framely-no-scroll-drag`；原生 `draggable="true"` 元素也会排除。无需新增清单字段或重新打包插件。

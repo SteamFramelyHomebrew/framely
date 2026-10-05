@@ -2059,3 +2059,15 @@ fn launcher_categories_migrate_validate_and_favorites_survive_reload() {
         .unwrap();
     assert_eq!(loaded.db.launcher.all_categories.len(), 4);
 }
+
+#[test]
+fn launcher_trigger_defaults_preserve_explicit_preferences() {
+    assert!(LauncherSettings::default().primary_trigger);
+    let missing: LauncherSettings = serde_json::from_value(json!({})).unwrap();
+    assert!(missing.primary_trigger);
+    let saved: LauncherSettings = serde_json::from_value(json!({"primaryTrigger":false})).unwrap();
+    assert!(!saved.primary_trigger);
+    let restored: LauncherSettings =
+        serde_json::from_value(serde_json::to_value(saved).unwrap()).unwrap();
+    assert!(!restored.primary_trigger);
+}

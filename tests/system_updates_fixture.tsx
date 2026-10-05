@@ -2,7 +2,7 @@
 // Run: bash tools/test-install-review.sh /path/to/cef tests/system_updates_fixture.tsx
 import React,{useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {SystemUpdates} from '../ui/src/updates';
+import {SystemUpdates,sameSystemVersion} from '../ui/src/updates';
 import {configureLanguage} from '../ui/src/i18n';
 import '../ui/src/style.css';
 const root=createRoot(document.getElementById('root')!);
@@ -120,6 +120,11 @@ async function choose(label:string){(document.querySelector('.framely-select but
   if(rollbacks!==0)throw Error('rollback bypassed confirmation');
   button('Confirm rollback').click();await until(()=>rollbacks===1);
   if(downloads!==4)throw Error('rollback downloaded a release');
+  if(!sameSystemVersion('0.4.3-preview.2-16320a685fb1','0.4.3-preview.2-3640daa86d54')||sameSystemVersion('0.4.3-preview.3-16320a685fb1','0.4.3-preview.2-3640daa86d54'))throw Error('Build hash changed version comparison');
+  status={...status,version:'0.4.3-preview.2',build:'0.4.3-preview.2-3640daa86d54'};
+  updateStatus({...status});remount();await wait();
+  button('Check for updates').click();await until(()=>!!document.body.textContent?.includes('No update is needed'));
+  if(document.querySelector('.update-release-dialog')||document.querySelector('.update-confirmation')||downloads!==4||attempts!==4)throw Error('Same version with different hash offered installation');
   console.log('FRAMELY_BRIDGE_PASS');
  }catch(error){console.error('FRAMELY_BRIDGE_FAIL '+error);}
 };

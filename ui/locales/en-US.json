@@ -480,6 +480,8 @@
     "还没有收藏的应用": "No favorites yet",
     "收藏分类": "Favorites",
     "读音搜索暂不可用，仍可使用原文搜索。": "Phonetic search is unavailable. You can still search original names.",
-    "启动方式与菜单": "Launch controls and menus"
+    "启动方式与菜单": "Launch controls and menus",
+    "当前已是此版本，无需重复更新。": "This version is already installed. No update is needed.",
+    "快捷操作": "Quick actions"
   }
 }

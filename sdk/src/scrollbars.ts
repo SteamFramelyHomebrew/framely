@@ -1,5 +1,7 @@
+import {installScrollGestures} from './scroll-gestures';
 // Shared by the manager and host bootstrap, including already-installed plugins.
 export function installScrollbars(){
+ installScrollGestures();
  if(document.getElementById('framely-scrollbars'))return;
  const style=document.createElement('style');style.id='framely-scrollbars';
  style.textContent=`

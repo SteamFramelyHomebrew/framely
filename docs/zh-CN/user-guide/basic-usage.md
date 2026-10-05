@@ -60,3 +60,9 @@ sudo /var/lib/framely/current/bin/framely export-logs --output /tmp/framely-logs
 ```
 
 输出路径必须是新文件。本体程序无法运行时，解压发行包中的 `tools/export-diagnostics.py` 也可独立使用：`sudo python3 tools/export-diagnostics.py --output /tmp/framely-logs.zip`。
+
+## VR 页面滚动
+
+激光指向页面后，拨动任意手柄的摇杆即可滚动，无需先点击或聚焦页面。滚动作用于激光下的元素，也支持插件页面的内层滚动区域。键盘打开时暂停页面摇杆滚动；启动台仍使用原有的摇杆分类与翻页操作。
+
+按住主扳机并上下移动激光，可拖动可滚动的页面内容。小幅抖动仍视为普通点击；纵向拖动开始后，松开不会触发原先按下的按钮。文本输入、滑块及明确声明的自定义拖拽区域保留自身交互。启动台保留图标排列和横向拖动翻页操作。

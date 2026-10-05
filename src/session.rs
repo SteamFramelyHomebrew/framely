@@ -798,7 +798,13 @@ impl Agent {
                 if method == "host.manager.open"
                     && matches!(
                         p["page"].as_str(),
-                        Some("catalog" | "updates" | "notification-settings" | "launcher-settings")
+                        Some(
+                            "catalog"
+                                | "settings"
+                                | "updates"
+                                | "notification-settings"
+                                | "launcher-settings"
+                        )
                     )
                 {
                     command["page"] = p["page"].clone();
@@ -1736,6 +1742,7 @@ mod tests {
             json!({"page":"updates"}),
             json!({"page":"notification-settings"}),
             json!({"page":"launcher-settings"}),
+            json!({"page":"settings"}),
             json!({}),
             json!({"page":"https://example.org"}),
         ] {
@@ -1754,8 +1761,12 @@ mod tests {
             commands[3],
             json!({"kind":"manager.open","page":"launcher-settings"})
         );
-        assert_eq!(commands[4], json!({"kind":"manager.open"}));
+        assert_eq!(
+            commands[4],
+            json!({"kind":"manager.open","page":"settings"})
+        );
         assert_eq!(commands[5], json!({"kind":"manager.open"}));
+        assert_eq!(commands[6], json!({"kind":"manager.open"}));
     }
     #[test]
     fn declining_agreement_only_closes_current_view() {

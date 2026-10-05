@@ -179,7 +179,7 @@ pub struct LauncherAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LauncherSettings {
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub primary_trigger: bool,
     #[serde(default = "yes")]
     pub menu_auto_close: bool,
@@ -200,7 +200,7 @@ fn menu_timeout() -> u32 {
 impl Default for LauncherSettings {
     fn default() -> Self {
         Self {
-            primary_trigger: false,
+            primary_trigger: true,
             menu_auto_close: true,
             menu_timeout_seconds: 10,
             all_categories: launcher_categories(),

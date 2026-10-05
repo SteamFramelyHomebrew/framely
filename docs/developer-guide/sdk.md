@@ -150,3 +150,7 @@ Standalone plugin windows display the plugin page without a host title bar. Plug
 ## Launcher actions and host compatibility
 
 [Launcher actions and host compatibility](launcher.md)
+
+### Host page scrolling
+
+The host bootstrap installs vertical trigger-drag scrolling for existing plugin pages as well as newly built SDK pages. It selects the scrollable ancestors under the pointer and chains at their boundaries. Controls such as inputs, textareas, editable content and sliders are excluded. Use `data-framely-no-scroll-drag` on an element (or ancestor) whose vertical dragging is handled by the plugin; native `draggable="true"` elements are also excluded. No new manifest field or plugin rebuild is required.

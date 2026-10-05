@@ -6,6 +6,10 @@ import {runJob,Job,compareVersions} from './store';
 import {Select} from './localized-select';
 type UpdateChannel='stable'|'testing';
 type UpdateSource={url:string};
+export function sameSystemVersion(target:string,current:string){
+ const version=(value:string)=>value.replace(/-[a-f0-9]{12}$/i,'');
+ return compareVersions(version(target),version(current))===0;
+}
 export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<void>}){
  const source:UpdateSource|null=status.database.updateSource??null;
  const channel:UpdateChannel=status.database.updateChannel??'stable';
@@ -29,6 +33,7 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
  useEffect(reset,[source?.url,channel]);
  const progress=job?.kind==='system.download'?job:status.systemUpdate;
  const older=release&&compareVersions(release.targetVersion??release.version,status.version)===-1;
+ const sameVersion=release&&sameSystemVersion(release.version,status.build??status.version);
  async function switchChannel(value:string){
   if(!source||busy||installing||value===channel)return;
   setBusy(true);setError('');reset();
@@ -75,7 +80,7 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
   <Select label={t('更新渠道')} value={channel} disabled={busy||installing||!source} onChange={value=>void switchChannel(value)} options={[{value:'stable',label:t('正式版')},{value:'testing',label:t('测试版')}]}/>
   <p className="sub">{channel==='stable'?t('仅检查正式版。'):t('仅检查测试版（Preview、Beta、RC 等）。')}</p>
   <div className="row">
-   <button className="primary" disabled={busy||installing||!source} onClick={()=>{reset();void run('system.check.start',{},v=>{setRelease(v.release?{...v.release,targetVersion:v.version}:null);setReady(false);setChecked(true);setShowRelease(!!v.release&&v.release.version!==(status.build??status.version));});}}>{busy?t('处理中…'):t('检查更新')}</button>
+   <button className="primary" disabled={busy||installing||!source} onClick={()=>{reset();void run('system.check.start',{},v=>{setRelease(v.release?{...v.release,targetVersion:v.version}:null);setReady(false);setChecked(true);setShowRelease(!!v.release&&!sameSystemVersion(v.release.version,status.build??status.version));});}}>{busy?t('处理中…'):t('检查更新')}</button>
    <button disabled={busy||installing||!status.previousRelease} onClick={()=>setConfirm('rollback')}>{t('回滚上一版本')}</button>
   </div>
   <div className="automatic-update-settings">
@@ -91,17 +96,17 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
   {progress?.phase==='verifying'&&<div className="download-progress"><progress aria-label={t('校验进度')} max={progress.total??1} value={progress.verified??0}/><p>{t('已校验 {0} / {1} MiB',{'0':((progress.verified??0)/1024/1024).toFixed(1),'1':((progress.total??0)/1024/1024).toFixed(1)})}</p></div>}
   {progress?.phase==='failed'&&<p className="error">{t('上次更新失败：')}{progress.error}<small>{t('诊断日志：/var/lib/framely/logs/update.log')}</small></p>}
   {progress?.phase==='done'&&<p className="banner">{t('上次更新操作已完成。')}</p>}
-  {checked&&release&&release.version===(status.build??status.version)&&<p className="banner" role="status">{t('当前已是此发行版本')}</p>}
+  {checked&&sameVersion&&<p className="banner" role="status">{t('当前已是此版本，无需重复更新。')}</p>}
   {showRelease&&release&&<dialog ref={releaseDialog} className="modal update-release-dialog" aria-labelledby={releaseTitle} onCancel={e=>{e.preventDefault();setShowRelease(false);}} onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();setShowRelease(false);}}}>
    <h2 id={releaseTitle}>{t('发现可用发行版本')}</h2>
    <div className="release-card">
    <h3>{release.version}</h3>
-   <p>{release.version===(status.build??status.version)?t('当前已是此发行版本'):t('发行包大小：{0} MiB',{'0':(release.size/1024/1024).toFixed(1)})}</p>
+   <p>{sameVersion?t('当前已是此版本，无需重复更新。'):t('发行包大小：{0} MiB',{'0':(release.size/1024/1024).toFixed(1)})}</p>
    {older&&<p className="banner">{t('所选版本早于当前版本，安装将切换到较旧版本。')}</p>}
    <p className="prose">{release.changelog||t('发布者未提供更新说明。')}</p>
    {error&&<p className="error" role="alert">{error}</p>}
    <div className="row">
-    {release.version!==(status.build??status.version)&&<button className="primary" disabled={busy||installing} onClick={()=>setConfirm('apply')}>{ready?t('安装已校验版本'):t('下载并安装')}</button>}
+    {!sameVersion&&<button className="primary" disabled={busy||installing} onClick={()=>setConfirm('apply')}>{ready?t('安装已校验版本'):t('下载并安装')}</button>}
     <button ref={dismissRelease} disabled={busy||installing} onClick={()=>setShowRelease(false)}>{t('稍后')}</button>
    </div>
   </div></dialog>}

@@ -1,0 +1,29 @@
+import '../ui/src/style.css';
+import {installScrollbars} from '../sdk/src/scrollbars';
+installScrollbars();installScrollbars();
+const wait=(ms=60)=>new Promise(r=>setTimeout(r,ms));const until=async(f:()=>any)=>{for(let i=0;i<100;i++){if(f())return;await wait(30);}throw Error('Timeout');};
+const root=document.getElementById('root')!;root.className='app';root.innerHTML='<div id="outer" style="position:absolute;left:100px;top:70px;width:700px;height:600px;overflow:auto"><div style="height:1800px;background:#1c2a36;color:white"><button id="click" style="margin:50px">Click</button><div id="inner" style="margin:30px;height:240px;overflow:auto;background:#314758"><div style="height:900px"><button id="nested" style="margin:50px">Nested</button></div></div><input id="input" value="Text"><div id="opt" data-framely-no-scroll-drag>Custom gesture</div></div></div>';
+const outer=document.getElementById('outer')!,inner=document.getElementById('inner')!,button=document.getElementById('click')!;let clicks=0;button.addEventListener('click',()=>clicks++);
+const event=(target:Element,type:string,x:number,y:number,buttons=1)=>target.dispatchEvent(new PointerEvent(type,{bubbles:true,cancelable:true,pointerId:1,button:0,buttons,clientX:x,clientY:y}));
+const click=(target:Element)=>target.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));
+(window as any).runInstallReviewChecks=async()=>{try{
+ event(button,'pointerdown',120,160);event(button,'pointermove',123,152);event(button,'pointerup',123,152,0);click(button);if(clicks!==1||outer.scrollTop!==0)throw Error('Jitter lost a normal click');
+ event(button,'pointerdown',120,160);event(button,'pointermove',120,100);event(button,'pointerup',120,80,0);click(button);if(clicks!==1||outer.scrollTop!==80)throw Error('Drag clicked or did not follow hand '+outer.scrollTop);outer.scrollTop=0;
+ const nested=document.getElementById('nested')!;event(nested,'pointerdown',160,340);event(nested,'pointermove',160,240);event(nested,'pointerup',160,240,0);if(inner.scrollTop!==100||outer.scrollTop!==0)throw Error('Inner drag scrolled wrong container');await wait(230);
+ inner.scrollTop=inner.scrollHeight-inner.clientHeight;event(nested,'pointerdown',160,340);event(nested,'pointermove',160,280);event(nested,'pointerup',160,280,0);if(outer.scrollTop!==60)throw Error('Nested boundary did not chain');outer.scrollTop=0;inner.scrollTop=0;
+ for(const id of ['input','opt']){const target=document.getElementById(id)!;event(target,'pointerdown',150,350);event(target,'pointermove',150,250);event(target,'pointerup',150,250,0);if(outer.scrollTop!==0)throw Error('Hijacked '+id);}
+ event(button,'pointerdown',120,160);event(button,'pointermove',200,170);event(button,'pointerup',200,170,0);if(outer.scrollTop!==0)throw Error('Horizontal gesture became vertical scroll');
+ event(button,'pointerdown',120,160);event(button,'pointermove',120,100);event(button,'pointercancel',120,100,0);const cancelled=outer.scrollTop;event(button,'pointermove',120,30);if(outer.scrollTop!==cancelled)throw Error('Cancelled drag remained active');outer.scrollTop=0;
+ // Real CEF mouse/laser input, including a scrollable element away from centre.
+ await wait(200);const r=nested.getBoundingClientRect();console.log(`FRAMELY_PAGE_WHEEL_${Math.round(r.x+15)}_${Math.round(r.y+15)}_0_-120`);await until(()=>inner.scrollTop>0);if(outer.scrollTop!==0)throw Error('Native wheel missed inner container');inner.scrollTop=0;
+ const b=button.getBoundingClientRect();console.log(`FRAMELY_LAUNCHER_PRESS_${Math.round(b.x+20)}_${Math.round(b.y+15)}_0_-90_400`);await until(()=>outer.scrollTop>=80);await wait(500);if(clicks!==1)throw Error('Real drag activated button');outer.scrollTop=0;
+ // An already-installed plugin gets gestures from host bootstrap, independently
+ // of this document's listeners and without rebuilding its plugin bundle.
+ const frame=document.createElement('iframe');frame.style.cssText='position:absolute;left:850px;top:200px;width:300px;height:240px;flex:none';frame.srcdoc='<style>body{margin:0}#scroller{height:180px;overflow:auto}#inside{height:800px}</style><div id="scroller"><div id="inside"><button id="plugin-button" style="margin:40px">Plugin</button></div></div><script src="/bootstrap.js"></script>';root.append(frame);
+ await until(()=>!!frame.contentDocument?.getElementById('framely-scrollbars'));const doc=frame.contentDocument!,scroller=doc.getElementById('scroller')!,pb=doc.getElementById('plugin-button')!;let pluginClicks=0;pb.addEventListener('click',()=>pluginClicks++);
+ event(pb,'pointerdown',60,70);event(pb,'pointermove',60,20);event(pb,'pointerup',60,20,0);click(pb);if(scroller.scrollTop!==50||pluginClicks)throw Error('Old plugin bootstrap did not support drag');scroller.scrollTop=0;await wait(350);
+ const f=frame.getBoundingClientRect(),pr=pb.getBoundingClientRect();console.log(`FRAMELY_PAGE_WHEEL_${Math.round(f.x+pr.x+15)}_${Math.round(f.y+pr.y+15)}_0_-120`);await until(()=>scroller.scrollTop>0);if(outer.scrollTop!==0)throw Error('Iframe wheel scrolled the parent');frame.remove();
+ document.documentElement.classList.add('launcher-view');event(button,'pointerdown',120,160);event(button,'pointermove',120,100);event(button,'pointerup',120,100,0);if(outer.scrollTop!==0)throw Error('Launcher gesture intercepted');
+ console.log('FRAMELY_BRIDGE_PASS');
+}catch(e){console.error('FRAMELY_BRIDGE_FAIL '+e+' '+(e as Error).stack);}};
+console.log('FRAMELY_VIEW_READY');

@@ -56,3 +56,9 @@ sudo /var/lib/framely/current/bin/framely export-logs --output /tmp/framely-logs
 ```
 
 The output must be a new file. If the binary cannot run, an extracted release also includes `tools/export-diagnostics.py`, usable with `sudo python3 tools/export-diagnostics.py --output /tmp/framely-logs.zip`.
+
+## Scrolling in VR
+
+Point the laser at a page and move either controller's stick to scroll, without clicking or focusing the page first. Scrolling follows the element under the laser, including nested plugin panels. Keyboard input pauses page scrolling. Launcher stick navigation keeps its category/page controls.
+
+Hold the primary trigger and move the laser up or down to drag scrollable page content. Small movements remain ordinary clicks; once a vertical drag starts, releasing does not activate the pressed button. Text inputs, sliders and explicit custom drag targets keep their own interactions. The launcher retains its icon arrangement and horizontal page-drag gestures.

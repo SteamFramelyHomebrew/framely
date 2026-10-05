@@ -419,6 +419,14 @@ impl Updater {
             request["version"].as_str() == Some(&release.version),
             "待安装版本已变，请重新确认"
         );
+        let current = fs::read_to_string(root.join("current/VERSION"))
+            .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").into());
+        ensure!(
+            descriptor_version(&release.version)?
+                .cmp_precedence(&descriptor_version(current.trim())?)
+                != std::cmp::Ordering::Equal,
+            "当前已是此版本，无需重复更新。"
+        );
         launch_helper(root, manager, Some(&stage))?;
         *self.prepared.lock().unwrap() = None;
         write_status(
@@ -784,6 +792,37 @@ mod tests {
                 .is_err()
             );
         }
+    }
+    #[test]
+    fn same_version_with_different_build_cannot_launch_update() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("current")).unwrap();
+        fs::write(
+            dir.path().join("current/VERSION"),
+            "0.4.3-preview.2-3640daa86d54\n",
+        )
+        .unwrap();
+        let updater = Updater::default();
+        let (_, bytes) = fixture("0.4.3-preview.2", false);
+        let mut release = verify_descriptor(&bytes).unwrap();
+        release.version = "0.4.3-preview.2-16320a685fb1".into();
+        *updater.prepared.lock().unwrap() = Some((
+            dir.path().into(),
+            release.clone(),
+            (source(), UpdateChannel::Testing),
+        ));
+        let error = updater
+            .apply(
+                dir.path(),
+                1000,
+                &source(),
+                UpdateChannel::Testing,
+                json!({"approve":true,"version":release.version}),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("无需重复更新"));
+        assert!(updater.prepared.lock().unwrap().is_some());
+        assert!(!dir.path().join("update-status.json").exists());
     }
     #[test]
     fn changing_channel_invalidates_a_downloaded_release() {
