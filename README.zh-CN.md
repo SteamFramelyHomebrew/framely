@@ -7,13 +7,25 @@
 
 [English](README.md)
 
+> Framely 目前仍在快速迭代中，Preview 版本可能频繁更新，功能与交互仍在持续完善。
+
 Steam Frame 的 React 插件管理器：Rust 核心服务、独立 CEF/OpenVR 宿主、网络管理面板和电脑端安装器。可管理插件、来源、窗口、通知和更新。
+
+![Framely 空间启动台](docs/images/launcher.png)
 
 ![Framely 插件库](docs/images/plugin-library.png)
 
 ## 安装
 
-目标为 Linux ARM64 Steam Frame。电脑端从 [Releases](https://github.com/SteamFramelyHomebrew/framely/releases) 下载对应平台的 `Framely Installer`，连接设备后安装本体。也可在 Frame 的 SSH 终端安装最新正式版：
+目标设备为 Linux ARM64 Steam Frame。先在 Frame 上启用开发者模式与 SSH，确保电脑和 Frame 在同一网络，并准备好 `steamos` 账户密码。
+
+### 安装器安装
+
+从 [Framely Installer 发行下载页](https://github.com/SteamFramelyHomebrew/framely/releases/tag/installer-v0.4.1-preview.9) 下载适合电脑平台的安装器。Linux 提供 `.tar.gz`，Windows 和 macOS 提供 `.zip`。解压并启动安装器，填写 Frame 的 IP 和 SSH 端口，核对 SSH 指纹后使用 `steamos` 账户连接。选择 Framely 版本，再确认安装。安装 Preview 版本时需启用测试版本；安装器与 Frame 本体的版本号相互独立。
+
+### 命令安装
+
+**在 Frame 的 SSH 终端中**执行以下命令，安装最新正式版：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install
@@ -22,10 +34,12 @@ curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/i
 安装 Preview 时指定实际已发布的标签：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install --version v0.4.2-preview.3
+curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install --version v0.4.3-preview.5
 ```
 
-首次安装使用包含 CEF 的完整离线包，更新使用不含 CEF 的本体包并复用运行库；同时提供独立 CEF 在线下载。设备无需 Node.js 或 Rust。安装会请求 sudo；不会自动解除 SteamOS 只读保护。打开 SteamVR Dashboard 的 Framely Dock 图标进入快捷菜单，从“设置 → 管理插件”打开管理窗口。
+将示例标签替换为需要安装的已发布版本，并在提示时输入 sudo 密码。更新、修复和卸载步骤见[安装指南](docs/zh-CN/user-guide/installation.md)。
+
+首次安装使用包含 CEF 的完整离线包，更新使用不含 CEF 的本体包并复用运行库；同时提供独立 CEF 在线下载。设备无需 Node.js 或 Rust。安装会请求 sudo；不会自动解除 SteamOS 只读保护。在 SteamVR Dashboard 中指向 Framely Dock 图标，按主扳机打开启动台，按上扳机打开快捷面板；点击启动台右侧的设置按钮打开管理面板。可在“启动台”设置中互换扳机行为。
 
 网络面板默认端口 `15915`，手机/电脑访问 `http://设备IP:15915`。未配置密码时首次访问必须设置并确认密码，保存后登录。设备密码与面板密码相互独立。
 
