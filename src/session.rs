@@ -31,6 +31,7 @@ struct Agent {
     commands: Mutex<VecDeque<Value>>,
     events: Mutex<EventLog>,
     jobs: crate::jobs::Jobs,
+    launcher_search: Mutex<crate::launcher_search::SearchCache>,
     catalog_cache: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
 }
 #[derive(Default)]
@@ -617,6 +618,33 @@ impl Agent {
             );
         }
         match method {
+            "launcher.search.index" => {
+                let names: Vec<String> = serde_json::from_value(p["names"].clone())?;
+                ensure!(
+                    names.len() <= 4096
+                        && names.iter().map(String::len).sum::<usize>() <= 262144
+                        && names
+                            .iter()
+                            .all(|n| n.len() <= 1024 && !n.chars().any(char::is_control)),
+                    "Invalid launcher search names"
+                );
+                let parent = self
+                    .assets
+                    .parent()
+                    .context("Missing search asset directory")?;
+                let packaged = parent.join("search/ipadic.dic.zst");
+                let path = if packaged.is_file() {
+                    packaged
+                } else {
+                    // Source checkout: --assets ui/dist, with data in assets/search.
+                    parent
+                        .parent()
+                        .unwrap_or(Path::new("."))
+                        .join("assets/search/ipadic.dic.zst")
+                };
+                // HTTP requests run on workers, so dictionary loading never blocks native input.
+                self.launcher_search.lock().unwrap().batch(&path, &names)
+            }
             "desktop.list" => Ok(json!(crate::desktop::discover(&crate::steam::home()?))),
             "desktop.launch" => {
                 let id = p["app"].as_str().context("Missing desktop app")?;
@@ -770,7 +798,7 @@ impl Agent {
                 if method == "host.manager.open"
                     && matches!(
                         p["page"].as_str(),
-                        Some("catalog" | "updates" | "notification-settings")
+                        Some("catalog" | "updates" | "notification-settings" | "launcher-settings")
                     )
                 {
                     command["page"] = p["page"].clone();
@@ -903,6 +931,7 @@ impl Agent {
             | "plugin.launcher.action"
             | "launcher.settings.save"
             | "launcher.order.save"
+            | "launcher.favorite"
             | "steam.favorite"
             | "window.open"
             | "window.close"
@@ -1212,6 +1241,7 @@ pub fn serve(
         commands: Mutex::default(),
         events: Mutex::default(),
         jobs: crate::jobs::Jobs::default(),
+        launcher_search: Mutex::default(),
         catalog_cache: Arc::default(),
     });
     let network_agent = agent.clone();
@@ -1596,6 +1626,7 @@ mod tests {
             commands: Mutex::default(),
             events: Mutex::default(),
             jobs: crate::jobs::Jobs::default(),
+            launcher_search: Mutex::default(),
             catalog_cache: Arc::default(),
         })
     }
@@ -1613,6 +1644,89 @@ mod tests {
         })
     }
     #[test]
+    fn launcher_favorites_pass_through_real_http_session_and_persist() {
+        let root = tempfile::tempdir().unwrap();
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let agent = agent(&server, root.path());
+        let manager = unsafe { libc::geteuid() };
+        let mut core = crate::tests::accepted_service(&agent.state, manager).unwrap();
+        let package = crate::tests::fixture(root.path(), "favorite.demo", "1.0.0", 1, None);
+        core.handle(
+            "install",
+            json!({"package":STANDARD.encode(package),"approve":true}),
+        )
+        .unwrap();
+        let socket = UnixListener::bind(&agent.socket).unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let core_stop = stop.clone();
+        let core_worker = std::thread::spawn(move || {
+            while !core_stop.load(Ordering::Relaxed) {
+                if let Ok((mut stream, _)) = socket.accept() {
+                    let request = ipc::read(&mut stream).unwrap();
+                    let response = ipc::response(core.handle(
+                        request["method"].as_str().unwrap(),
+                        request["params"].clone(),
+                    ));
+                    ipc::write(&mut stream, &response).unwrap();
+                } else {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        });
+        let http = http_server(server, agent.clone(), stop.clone());
+        let request = |method: &str, params: Value| -> Value {
+            ureq::post(&format!("{}/api", agent.origin))
+                .set("Cookie", &format!("framely={}", agent.web_key))
+                .set("Origin", &agent.origin)
+                .send_json(json!({"method":method,"params":params}))
+                .unwrap()
+                .into_json()
+                .unwrap()
+        };
+        let responses: Vec<_> = [
+            "plugin:favorite.demo",
+            "steam:42",
+            "framely",
+            "desktop:terminal.desktop",
+            "lepton:default/app",
+        ]
+        .into_iter()
+        .map(|key| request("launcher.favorite", json!({"key":key,"favorite":true})))
+        .collect();
+        let status = request("status", json!({}));
+        let removed = request(
+            "launcher.favorite",
+            json!({"key":"framely","favorite":false}),
+        );
+        let denied = request("launcher.favorite.invalid", json!({}));
+        stop.store(true, Ordering::Relaxed);
+        http.join().unwrap();
+        core_worker.join().unwrap();
+        for response in responses {
+            assert_eq!(response["result"], true, "{response}");
+        }
+        assert_eq!(
+            status["result"]["database"]["plugins"]["favorite.demo"]["favorite"],
+            true
+        );
+        assert_eq!(status["result"]["database"]["steamFavorites"], json!([42]));
+        assert_eq!(removed["result"], true);
+        assert!(denied.get("error").is_some());
+        let loaded = crate::service::Service::load(&agent.state, manager).unwrap();
+        assert!(loaded.db.plugins["favorite.demo"].favorite);
+        assert!(loaded.db.steam_favorites.contains(&42));
+        assert_eq!(
+            loaded.db.launcher_favorites,
+            [
+                "desktop:terminal.desktop".to_owned(),
+                "lepton:default/app".to_owned()
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+    #[test]
     fn manager_entry_preserves_catalog_and_update_targets_and_rejects_arbitrary_pages() {
         let root = tempfile::tempdir().unwrap();
         let server = Server::http("127.0.0.1:0").unwrap();
@@ -1621,6 +1735,7 @@ mod tests {
             json!({"page":"catalog"}),
             json!({"page":"updates"}),
             json!({"page":"notification-settings"}),
+            json!({"page":"launcher-settings"}),
             json!({}),
             json!({"page":"https://example.org"}),
         ] {
@@ -1635,8 +1750,12 @@ mod tests {
             commands[2],
             json!({"kind":"manager.open","page":"notification-settings"})
         );
-        assert_eq!(commands[3], json!({"kind":"manager.open"}));
+        assert_eq!(
+            commands[3],
+            json!({"kind":"manager.open","page":"launcher-settings"})
+        );
         assert_eq!(commands[4], json!({"kind":"manager.open"}));
+        assert_eq!(commands[5], json!({"kind":"manager.open"}));
     }
     #[test]
     fn declining_agreement_only_closes_current_view() {

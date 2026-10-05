@@ -1,7 +1,3 @@
 #pragma once
-#include <algorithm>
-#include <cmath>
-inline int browser_frame_rate(float refresh){
- // Preserve smooth UI on an unknown display, with a bounded update budget.
- return std::isfinite(refresh)&&refresh>0?std::clamp(int(std::round(std::clamp(refresh,60.f,144.f))),60,144):90;
-}
+// Cap CEF painting independently of headset refresh to limit pixel readback.
+inline constexpr int browser_frame_rate(float = 0){return 60;}

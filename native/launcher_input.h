@@ -82,3 +82,16 @@ inline bool launcher_stick_axes(const vr::RenderModel_ComponentState_t& rest,con
  float det=aa*bb-ab*ab;if(det<.00001f)return false;
  x=std::clamp((av*bb-bv*ab)/det,-1.f,1.f);y=std::clamp((bv*aa-av*ab)/det,-1.f,1.f);return std::isfinite(x)&&std::isfinite(y);
 }
+
+// Runtime dashboard controls are outside the app surface. Preserve their drag
+// gesture and delayed modal-cancel events without swallowing later empty clicks.
+struct LauncherDockGuard {
+ std::chrono::steady_clock::time_point until{};bool dragging=false;
+ void observe(bool hovered,bool held,std::chrono::steady_clock::time_point now){
+  if(hovered&&held)dragging=true;
+  if(hovered||dragging)until=now+std::chrono::milliseconds(250);
+  if(!held)dragging=false;
+ }
+ bool holds(std::chrono::steady_clock::time_point now)const{return dragging||now<until;}
+ void clear(){until={};dragging=false;}
+};

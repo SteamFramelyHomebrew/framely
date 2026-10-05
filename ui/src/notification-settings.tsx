@@ -1,3 +1,4 @@
+import {Switch as BaseSwitch} from './switch';
 import React,{useState,useEffect} from 'react';
 import {IconBell,IconSettings,IconSearch} from '@tabler/icons-react';
 import {api,viewKey} from './api';
@@ -8,10 +9,8 @@ import type {NotificationEntry} from './notifications';
 export type NotificationPreference={popups:boolean;badge:boolean};
 export type NotificationConfig=NotificationPreference&{plugins:Record<string,NotificationPreference>};
 export const defaultNotificationConfig:NotificationConfig={popups:true,badge:true,plugins:{}};
+const Switch=(props:React.ComponentProps<typeof BaseSwitch>)=><BaseSwitch {...props} className="notification-switch"/>;
 type Installed={manifest:{id:string;name:string;description?:string;icon?:string|null;version:string};enabled:boolean;order:number};
-function Switch({checked,label,disabled,onChange}:{checked:boolean;label:string;disabled:boolean;onChange:()=>void}){
- return <button className={`notification-switch ${checked?'on':''}`} role="switch" aria-checked={checked} aria-label={label} disabled={disabled} onClick={onChange}><span/></button>;
-}
 function useSave(refresh:()=>Promise<void>){
  const[busy,setBusy]=useState(false),[error,setError]=useState('');
  async function run(task:()=>Promise<unknown>){if(busy)return;setBusy(true);setError('');try{await task();await refresh();}catch(e){setError(String(e));}finally{setBusy(false);}}

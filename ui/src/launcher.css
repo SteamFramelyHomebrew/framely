@@ -2,14 +2,14 @@
    Layer order: content 0, categories 2, context menu 3, feedback 4, dialog 5. */
 .launcher-view,.launcher-view body,.launcher-view #root{background:transparent!important}
 .launcher-shell{--launch-ink:#eff4f8;--launch-blue:#b4dbf4;--launch-ease:cubic-bezier(.2,.75,.2,1);height:100dvh;min-height:600px;padding:90px 60px 104px;color:var(--launch-ink);background:transparent;display:flex;flex-direction:column;position:relative;overflow:hidden;font-size:20px}
-.launcher-tools{position:absolute;left:0;top:calc(50% - 7px);transform:translateY(-50%);display:flex;flex-direction:column;gap:5px;padding:7px;border:1px solid #e8f4ff30;border-radius:999px;background:#a7bac72b;box-shadow:inset 0 1px 1px #f0f7ff30,inset 0 -1px 1px #0c172549,0 10px 30px #0b16252b;z-index:2}
+.launcher-tools{position:absolute;left:0;top:calc(50% + 17px);transform:translateY(-50%);display:flex;flex-direction:column;gap:5px;padding:7px;border:1px solid #e8f4ff30;border-radius:999px;background:#a7bac72b;box-shadow:inset 0 1px 1px #f0f7ff30,inset 0 -1px 1px #0c172549,0 10px 30px #0b16252b;z-index:2}
 .launcher-filters button{position:relative;width:56px;height:56px;min-height:56px;padding:15px;border:0;border-radius:50%;background:transparent;color:#d9e3ec;transition:background .2s var(--launch-ease),color .2s var(--launch-ease)}
 .launcher-category-active{position:absolute;left:7px;top:7px;width:56px;height:56px;border-radius:50%;background:#d3e4ef35;box-shadow:inset 0 1px 0 #eef9ff40,inset 0 0 0 1px #e0f2ff19;pointer-events:none;transition:transform 360ms cubic-bezier(.22,.65,.24,1)}
 .launcher-filters button.active{background:transparent;box-shadow:none;color:var(--launch-blue)}
 .launcher-filters button:hover:not(:disabled){background:#e3f1ff26;color:#f3f8fc}
 .launcher-category-label{position:absolute;left:calc(100% + 20px);white-space:nowrap;font-size:15px;font-weight:500;line-height:1.4;padding:7px 13px;border-radius:12px;background:#1d2934eb;color:#eaf4fb;box-shadow:inset 0 0 0 1px #e2f0fa1f;opacity:0;pointer-events:none;transition:opacity .18s}
 .launcher-filters button:hover .launcher-category-label,.launcher-filters button:focus-visible .launcher-category-label{opacity:1}
-.launcher-grid{position:absolute;left:50%;top:calc(50% - 7px);height:570px;width:calc(100% - 90px);transform:translate(-50%,-50%);isolation:isolate}
+.launcher-grid{position:absolute;left:50%;top:calc(50% + 17px);height:570px;width:calc(100% - 90px);transform:translate(-50%,-50%);isolation:isolate}
 .launcher-page,.launcher-adjacent-page{position:absolute;inset:0;display:grid;grid-template-columns:repeat(24,minmax(0,1fr));grid-template-rows:repeat(6,minmax(0,1fr));gap:12px}
 .launch-item{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-width:0;padding:4px}
 .launch-icon{position:relative;width:138px;height:122px;min-height:122px;border:0;background:transparent;padding:13px 21px;border-radius:50%;cursor:pointer;touch-action:none;isolation:isolate}
@@ -24,7 +24,7 @@
 .launch-icon:active:not(:disabled) .launch-disc{transform:scale(.97);box-shadow:inset 0 1px 2px #edf7ff38,0 5px 12px #07172b28}
 .launch-name{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-align:center;font-size:18px;font-weight:450;line-height:1.28;letter-spacing:.005em;width:100%;max-width:164px;height:47px;color:#eff4f8;text-shadow:0 1px 3px #0c172cd9,0 2px 10px #0c172c70;pointer-events:none}
 .launch-favorite{position:absolute;top:10px;right:5px;padding:7px;background:#263440ce;border:1px solid #e2effa2c;border-radius:50%;color:#dbe6f0;opacity:0;min-height:32px;width:32px;height:32px;transition:opacity .16s;z-index:1}
-.launch-item:hover .launch-favorite,.launch-favorite:focus-visible{opacity:1}.launch-favorite.selected{color:var(--launch-blue)}
+.launch-item:hover .launch-favorite,.launch-favorite:focus-visible{opacity:1}.launch-favorite.selected{opacity:1;color:var(--launch-blue);background:#142b3aee;border-color:#a6d4f280;box-shadow:0 2px 8px #07172b40}.launch-favorite.selected:hover:not(:disabled){background:#25465bee;border-color:#bfe4ff}
 .launch-item-expanded{z-index:3}
 .launch-menu{position:absolute;top:calc(100% - 6px);left:50%;transform:translateX(-50%);width:260px;max-height:404px;overflow:auto;padding:7px;background:#24323eef;border:1px solid #e6f3ff30;border-radius:22px;box-shadow:inset 0 1px 0 #ecf6ff25,0 14px 36px #05101f4a;z-index:3;animation:launcher-menu-in .18s var(--launch-ease)}
 .launch-menu.align-right{left:auto;right:0;transform:none}.launch-menu.above{top:auto;bottom:100%}
@@ -60,3 +60,16 @@
 @media(max-width:900px){.launcher-drag-edge.right{right:88px}}
 
 .launcher-panning{overflow:hidden}.launcher-adjacent-page{pointer-events:none}.launcher-adjacent-page .launch-icon{display:block}.launcher-panning .launcher-page{will-change:translate}
+/* Search shares the category capsule material without moving the icon canvas. */
+.launcher-search{position:absolute;top:20px;left:50%;transform:translateX(-50%);width:420px;height:56px;display:flex;align-items:center;gap:12px;padding:0 18px;border:1px solid #e8f4ff30;border-radius:999px;background:#a7bac72b;box-shadow:inset 0 1px 1px #f0f7ff30,inset 0 -1px 1px #0c172549,0 10px 30px #0b16252b;z-index:2;color:#d9e3ec}
+.launcher-search:focus-within{background:#a7bac73b;box-shadow:inset 0 1px 1px #f0f7ff40,inset 0 -1px 1px #0c172549,0 10px 30px #0b16252b}
+.launcher-search input,.launcher-search input:focus,.launcher-search input:focus-visible{flex:1;min-width:0;width:0;height:100%;padding:0;border:0!important;outline:0;background:transparent!important;color:var(--launch-ink);font-size:18px;box-shadow:none!important}
+.launcher-search input::placeholder{color:#d9e3ec9c}
+.launcher-search input::-webkit-search-cancel-button{display:none}
+.launcher-search button{display:flex;align-items:center;justify-content:center;width:32px;height:32px;min-height:32px;padding:0;border:0;border-radius:50%;background:transparent;color:inherit}
+.launcher-search button:hover{background:#e3f1ff26}
+.launcher-editing .launcher-search{visibility:hidden}
+
+.launcher-initializing .launcher-grid,.launcher-initializing .launcher-category-active{visibility:hidden}
+
+.launcher-settings>label{max-width:none}

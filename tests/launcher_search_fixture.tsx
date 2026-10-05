@@ -1,0 +1,69 @@
+import React,{useState} from 'react';import{createRoot}from'react-dom/client';
+import{Launcher,LauncherSettings,type LauncherConfig}from'../ui/src/launcher';import{configureLanguage}from'../ui/src/i18n';import type{Plugin}from'../ui/src/main';import{matchesSearch}from'../ui/src/launcher-search';import'../ui/src/style.css';
+const wait=(ms=80)=>new Promise(r=>setTimeout(r,ms));const until=async(f:()=>any)=>{for(let i=0;i<160;i++){if(f())return;await wait(30);}throw Error('Timed out '+document.body.innerText.slice(0,300));};
+let config:LauncherConfig={primaryTrigger:false,menuAutoClose:true,menuTimeoutSeconds:10};let saved:string[]=[];let order:string[]=[];let steamFavorites:number[]=[42];let settings=false;let redraw:()=>void;let delay=80;const calls:{method:string;params:any}[]=[];
+const plugins:Record<string,Plugin>={
+ 'demo.alpha':{manifest:{id:'demo.alpha',icon:'icon.png',name:'Termix',description:'Terminal',author:'Framely',version:'1.0.0',ui:{quickPage:'page.js',windows:{}}},enabled:true,favorite:true,order:0},
+ 'demo.beta':{manifest:{id:'demo.beta',icon:'icon.png',name:'透视调色',description:'Color',author:'Framely',version:'1.0.0',ui:{quickPage:'page.js',windows:{}}},enabled:true,favorite:false,order:1},
+ 'demo.off':{manifest:{id:'demo.off',name:'Disabled app',description:'',author:'Framely',version:'1.0.0',ui:{windows:{}}},enabled:false,favorite:true,order:2},
+};
+const local=[{id:'terminal.desktop',name:'Desktop terminal',kind:'desktop'},{id:'default/sakura',name:'さくら',kind:'lepton'},{id:'default/tokyo',name:'東京',kind:'lepton'}];
+window.fetch=async(url,init)=>{if(String(url)!=='/api')throw Error('Unexpected fetch');const{method,params}=JSON.parse(String(init?.body));calls.push({method,params});let result:any=true;
+ if(method==='steam.list'){await wait(delay);result=[{id:42,name:'Half-Life: Alyx',icon:'/preview-icons/546560.jpg',iconFit:'cover'}];}
+ else if(method==='desktop.list'){await wait(delay);result=local;}
+ else if(method==='launcher.search.index'){await wait(150);result=Object.fromEntries(params.names.map((name:string)=>[name,{terms:name==='透视调色'?['toushitiaose','tsts']:name==='さくら'?['sakura','skr']:name==='東京'?['toukyou','tuku']:name==='Half-Life: Alyx'?['halflifealyx','hla']:[name.toLowerCase().replace(/\s/g,'')]}]));}
+ else if(method==='launcher.favorite'){const{key,favorite}=params;if(key.startsWith('plugin:'))plugins[key.slice(7)].favorite=favorite;else if(key.startsWith('steam:'))steamFavorites=favorite?[...steamFavorites,+key.slice(6)]:steamFavorites.filter(id=>id!==+key.slice(6));else saved=favorite?[...saved,key]:saved.filter(k=>k!==key);}
+ else if(method==='launcher.settings.save')config=params;
+ return new Response(JSON.stringify({result}));};
+function Fixture(){const[,render]=useState(0);redraw=()=>render(n=>n+1);return settings?<div className="app manager"><main className="content"><div className="list-heading"><div><h1>{document.documentElement.lang==='zh-CN'?'启动台':'Launcher'}</h1><p>{document.documentElement.lang==='zh-CN'?'启动方式、菜单与分类。':'Launch controls, menus and categories.'}</p></div></div><LauncherSettings config={config} refresh={async()=>redraw()}/></main></div>:<Launcher plugins={plugins} safeMode={false} config={config} favorites={steamFavorites} localFavorites={saved} order={order} refresh={async()=>redraw()}/>;}
+const category=(name:string)=>document.querySelector<HTMLButtonElement>(`.launcher-filters button[aria-label="${name}"]`)!;
+const labels=()=>[...document.querySelectorAll('.launch-name')].map(n=>n.textContent);
+const input=()=>document.querySelector<HTMLInputElement>('.launcher-search input')!;
+function query(value:string){Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(input(),value);input().dispatchEvent(new Event('input',{bubbles:true}));}
+const favorite=(name:string)=>document.querySelector<HTMLButtonElement>(`.launch-icon[aria-label="${name}"]`)!.parentElement!.querySelector<HTMLButtonElement>('.launch-favorite')!;
+(window as any).runInstallReviewChecks=async()=>{try{
+ configureLanguage('en-US',[]);redraw();await until(()=>!document.querySelector('.launcher-initializing'));
+ if(category('Favorites').getAttribute('aria-pressed')!=='true'||labels().sort().join('|')!=='Half-Life: Alyx|Termix')throw Error('Default favorites / disabled filtering incorrect '+labels().join('|'));
+ const keys=[...document.querySelectorAll('.launcher-filters button')].map(n=>n.getAttribute('aria-label'));if(keys.join('|')!=='Favorites|All|Plugin|Steam|Lepton|Desktop apps')throw Error('Category order '+keys);
+ category('All').click();await until(()=>labels().length===7);const initialGrid=document.querySelector('.launcher-grid')!.getBoundingClientRect();const initialFilters=document.querySelector('.launcher-filters')!.getBoundingClientRect();
+ const stable=()=>{const g=document.querySelector('.launcher-grid')!.getBoundingClientRect(),f=document.querySelector('.launcher-filters')!.getBoundingClientRect();if(g.x!==initialGrid.x||g.y!==initialGrid.y||g.height!==570||f.y!==initialFilters.y)throw Error('Search / category changed fixed layout');};
+ await wait(400);const searchBottom=document.querySelector('.launcher-search')!.getBoundingClientRect().bottom;const artworkTop=document.querySelector('.launch-disc')!.getBoundingClientRect().top;if(artworkTop-searchBottom<72)throw Error('Search is too close to the icon artwork');
+ // Every app kind keeps its position when favorited or unfavorited.
+ const initialOrder=labels().join('|');
+ for(const name of ['Termix','Half-Life: Alyx','透视调色','Framely','Desktop terminal','さくら','東京']){
+  const was=favorite(name).getAttribute('aria-pressed')==='true';
+  for(const checked of [!was,was]){
+   favorite(name).click();await until(()=>favorite(name).getAttribute('aria-pressed')===String(checked));await until(()=>!favorite(name).disabled);
+   if(labels().join('|')!==initialOrder)throw Error('Favorite reordered '+name);
+   if(checked){await until(()=>getComputedStyle(favorite(name)).opacity==='1');if(!favorite(name).classList.contains('selected')||getComputedStyle(favorite(name)).opacity!=='1'||favorite(name).querySelector('svg')!.getAttribute('fill')!=='currentColor')throw Error('Favorite state is not visible '+name);}
+  }
+ }
+ // Explicit manual ordering survives favorite changes, refresh and reopening.
+ order=[...document.querySelectorAll<HTMLElement>('[data-launch-key]')].map(n=>n.dataset.launchKey!).reverse();redraw();await until(()=>labels().join('|')!==initialOrder);const manualOrder=labels().join('|');
+ favorite('Framely').click();await until(()=>saved.includes('framely'));await until(()=>!favorite('Framely').disabled);if(labels().join('|')!==manualOrder)throw Error('Manual order changed after favorite');
+ window.dispatchEvent(new Event('framely.launcher.open'));await until(()=>category('Favorites').getAttribute('aria-pressed')==='true');category('All').click();await until(()=>labels().length===7);if(labels().join('|')!==manualOrder)throw Error('Reopening lost manual order');
+ favorite('Framely').click();await until(()=>!saved.includes('framely'));await until(()=>!favorite('Framely').disabled);if(labels().join('|')!==manualOrder)throw Error('Manual order changed after removing favorite');order=[];redraw();await until(()=>labels().join('|')===initialOrder);
+ favorite('Framely').click();await until(()=>saved.includes('framely'));await until(()=>!document.querySelector('.launch-favorite:disabled'));favorite('Desktop terminal').click();await until(()=>saved.includes('desktop:terminal.desktop'));await until(()=>!document.querySelector('.launch-favorite:disabled'));favorite('さくら').click();await until(()=>saved.includes('lepton:default/sakura'));await until(()=>!document.querySelector('.launch-favorite:disabled'));
+ category('Favorites').click();await until(()=>labels().length===5);if(!labels().includes('Framely')||!labels().includes('Desktop terminal')||!labels().includes('さくら'))throw Error('New types absent from Favorites');
+ await wait(500);console.log('FRAMELY_PREVIEW_INSTALL_LAUNCHER_FAVORITES_EN');
+ configureLanguage('zh-CN',[]);redraw();await wait(500);console.log('FRAMELY_PREVIEW_INSTALL_LAUNCHER_FAVORITES_ZH');configureLanguage('en-US',[]);redraw();await wait();
+ // Search remains in the selected category, and key strokes reuse an index.
+ category('Plugin').click();await until(()=>labels().length===3);await until(()=>calls.some(c=>c.method==='launcher.search.index'));await wait(250);const indexCount=calls.filter(c=>c.method==='launcher.search.index').length;
+ for(const q of ['toushi','tiaose','tsts','ＴＳＴＳ']){query(q);await until(()=>labels().length===1);if(labels()[0]!=='透视调色')throw Error('Pinyin search '+q);stable();}
+ query('sakura');await until(()=>labels().length===0);if(!document.body.innerText.includes('No matching apps'))throw Error('Missing no results');query('');await until(()=>labels().length===3);
+ category('Lepton').click();for(const q of ['sakura','skr','ＳＫＲ']){query(q);await until(()=>labels().length===1);if(labels()[0]!=='さくら')throw Error('Kana search '+q);}query('toukyou');await until(()=>labels().length===1);if(labels()[0]!=='東京')throw Error('Japanese kanji search');query('');
+ category('Steam').click();query('HLA');await until(()=>labels().length===1);if(labels()[0]!=='Half-Life: Alyx')throw Error('English initials');query('');
+ if(calls.filter(c=>c.method==='launcher.search.index').length!==indexCount)throw Error('Typing rebuilt indexes');
+ input().focus();if(getComputedStyle(input()).outlineStyle!=='none'&&getComputedStyle(input()).outlineWidth!=='0px')throw Error('Search focus still has an outline');await until(()=>calls.some(c=>c.method==='host.keyboard'));window.dispatchEvent(new CustomEvent('framely.keyboard',{detail:true}));(window as any).__framelyCommitKeyboard('HLA');await until(()=>input().value==='HLA');const closeCount=calls.filter(c=>c.method==='host.launcher.close').length;window.dispatchEvent(new CustomEvent('framely.launcher.navigate',{detail:2}));window.dispatchEvent(new Event('framely.back'));document.querySelector('.launcher-shell')!.dispatchEvent(new MouseEvent('click',{bubbles:true}));await wait();if(category('Steam').getAttribute('aria-pressed')!=='true'||calls.filter(c=>c.method==='host.launcher.close').length!==closeCount)throw Error('Keyboard allowed launcher dismissal/navigation');window.dispatchEvent(new CustomEvent('framely.keyboard',{detail:false}));input().blur();query('');
+ category('Plugin').click();query('tsts');await wait(450);console.log('FRAMELY_PREVIEW_INSTALL_LAUNCHER_SEARCH_EN');configureLanguage('zh-CN',[]);redraw();await wait(450);console.log('FRAMELY_PREVIEW_INSTALL_LAUNCHER_SEARCH_ZH');configureLanguage('en-US',[]);redraw();query('');
+ config={...config,allCategories:[]};redraw();category('All').click();await until(()=>labels().length===0);category('Favorites').click();await until(()=>labels().length===5);category('Plugin').click();await until(()=>labels().length===3);
+ config={...config,allCategories:['desktop']};redraw();category('All').click();await until(()=>labels().join('|')==='Desktop terminal');query('termix');await until(()=>labels().length===0);query('');stable();
+ window.dispatchEvent(new Event('framely.launcher.open'));await until(()=>category('Favorites').getAttribute('aria-pressed')==='true');if(input().value!=='')throw Error('Opening did not clear query');
+ // Late refresh must not override an explicit category selection.
+ delay=350;window.dispatchEvent(new Event('framely.launcher.open'));await wait(30);category('Steam').click();await wait(450);if(category('Steam').getAttribute('aria-pressed')!=='true')throw Error('Refresh overwrote category selection');delay=80;
+ saved=[];steamFavorites=[];plugins['demo.alpha'].favorite=false;redraw();window.dispatchEvent(new Event('framely.launcher.open'));await until(()=>category('All').getAttribute('aria-pressed')==='true');await until(()=>!document.querySelector('.launcher-initializing'));if(labels().join('|')!=='Desktop terminal')throw Error('No favorites fallback ignored All membership');
+ favorite('Desktop terminal').click();await until(()=>saved.length===1);window.dispatchEvent(new Event('framely.launcher.open'));await until(()=>category('Favorites').getAttribute('aria-pressed')==='true');favorite('Desktop terminal').click();await until(()=>labels().length===0);if(category('Favorites').getAttribute('aria-pressed')!=='true'||!document.body.innerText.includes('No favorites yet'))throw Error('Removing final favorite navigated away');window.dispatchEvent(new Event('framely.launcher.open'));await until(()=>category('All').getAttribute('aria-pressed')==='true');
+ if(!matchesSearch('Ｔｅｒｍｉｘ','termix')||!matchesSearch('École','ecole')||matchesSearch('Alpha','beta')||matchesSearch('ガ','カ'))throw Error('Search normalization');
+ settings=true;redraw();await until(()=>document.querySelectorAll('[role=switch]').length===6);const switches=document.querySelectorAll<HTMLInputElement>('[role=switch]');switches[0].click();await until(()=>config.primaryTrigger);await until(()=>!document.querySelector('[role=switch]:disabled'));switches[2].click();await until(()=>(config.allCategories??[]).includes('plugin'));await wait(350);console.log('FRAMELY_PREVIEW_INSTALL_LAUNCHER_SETTINGS_EN');configureLanguage('zh-CN',[]);redraw();await wait(350);console.log('FRAMELY_PREVIEW_INSTALL_LAUNCHER_SETTINGS_ZH');console.log('FRAMELY_BRIDGE_PASS');
+}catch(e){console.error('FRAMELY_BRIDGE_FAIL '+e+' '+(e as Error).stack);}};
+createRoot(document.getElementById('root')!).render(<Fixture/>);wait(150).then(()=>console.log('FRAMELY_VIEW_READY'));

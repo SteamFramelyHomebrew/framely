@@ -49,7 +49,7 @@ export function PluginFrame({plugin,entry='quick',actionContext,onActionDone}:{p
    }
    if(live){setSandbox(flags);setSource(url);}
   })().catch(e=>{if(live)setError(String(e));});
-  return()=>{live=false;window.removeEventListener('message',message);window.removeEventListener('framely.event',event);window.removeEventListener('framely.language',language);};
+  return()=>{live=false;window.removeEventListener('message',message);window.removeEventListener('framely.event',event);window.removeEventListener('framely.language',language);window.removeEventListener('framely.launch',launched);};
  },[plugin,entry,attempt]);
  return error?<div><p className="error">{error}</p><button onClick={()=>setAttempt(v=>v+1)}>{t('重试')}</button></div>:source?<iframe title={t('插件页面')} ref={ref} sandbox={sandbox} src={source} allow="clipboard-read; clipboard-write; fullscreen"/>:<p>{t('正在加载…')}</p>;
 }

@@ -1016,6 +1016,48 @@ impl Service {
                 self.runtime.remove(&id);
                 Ok(json!(true))
             }
+            "launcher.favorite" => {
+                let key = p["key"].as_str().context("Missing launcher entry")?;
+                let favorite = p["favorite"].as_bool().context("Missing favorite")?;
+                if let Some(id) = key.strip_prefix("plugin:") {
+                    self.db
+                        .plugins
+                        .get_mut(id)
+                        .context("Unknown plugin")?
+                        .favorite = favorite;
+                } else if let Some(id) = key.strip_prefix("steam:") {
+                    let app: u32 = id.parse().context("Invalid Steam ID")?;
+                    ensure!(app > 0, "Invalid Steam ID");
+                    if favorite {
+                        self.db.steam_favorites.insert(app);
+                    } else {
+                        self.db.steam_favorites.remove(&app);
+                    }
+                } else {
+                    ensure!(
+                        key.len() <= 512
+                            && !key.chars().any(char::is_control)
+                            && (key == "framely"
+                                || ["desktop:", "lepton:"]
+                                    .iter()
+                                    .any(|prefix| key.starts_with(prefix)
+                                        && key.len() > prefix.len())),
+                        "Invalid launcher entry"
+                    );
+                    if favorite {
+                        ensure!(
+                            self.db.launcher_favorites.len() < 4096
+                                || self.db.launcher_favorites.contains(key),
+                            "Too many favorites"
+                        );
+                        self.db.launcher_favorites.insert(key.into());
+                    } else {
+                        self.db.launcher_favorites.remove(key);
+                    }
+                }
+                self.save()?;
+                Ok(json!(true))
+            }
             "launcher.settings.save" => {
                 let settings: LauncherSettings = serde_json::from_value(p)?;
                 settings.validate()?;
@@ -2232,7 +2274,8 @@ impl Service {
             let roots: Vec<_> = impacted
                 .iter()
                 .filter(|id| {
-                    self.db.plugins.get(*id).is_some_and(|p| p.enabled)
+                    !self.db.safe_mode
+                        && self.db.plugins.get(*id).is_some_and(|p| p.enabled)
                         && (running.contains(*id) || plugin_autostart(&self.db, id))
                 })
                 .cloned()

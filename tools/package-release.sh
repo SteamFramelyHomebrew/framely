@@ -11,7 +11,7 @@ npm run build
 bash tools/build-native.sh "$cef"
 binary=${CARGO_TARGET_DIR:-target}/release/framely
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-build_id="$version-$(find "$binary" target/native ui/dist sdk templates/plugin examples/showcase packaging tools docs assets/branding README.md README.zh-CN.md LICENSE -type f ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)"
+build_id="$version-$(find "$binary" target/native ui/dist sdk templates/plugin examples/showcase packaging tools docs assets/branding assets/search README.md README.zh-CN.md LICENSE -type f ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)"
 stage="$base/release/framely-$build_id"
 [[ ! -e $stage ]] || { echo 'Release already exists.' >&2; exit 1; }
 mkdir -p "$stage"/{bin,lib/cef,lib/openvr,share/ui,share/licenses,tools}
@@ -24,6 +24,9 @@ rm -f "$stage/lib/cef/framely-probe" "$stage/lib/cef/framely-browser-probe"
 strip --strip-debug "$stage/lib/cef/libcef.so"
 cp native/vendor/openvr/lib/linuxarm64/libopenvr_api.so "$stage/lib/openvr/"
 cp -a ui/dist/. "$stage/share/ui/"
+cp -a assets/search "$stage/share/"
+cp assets/search/COPYING "$stage/share/licenses/ipadic.txt"
+cp assets/search/NOTICE "$stage/share/licenses/ipadic-notice.txt"
 cp -a native/input "$stage/share/"
 cp "$cef/LICENSE.txt" "$stage/share/licenses/cef.txt"
 cp native/vendor/openvr/LICENSE "$stage/share/licenses/openvr.txt"

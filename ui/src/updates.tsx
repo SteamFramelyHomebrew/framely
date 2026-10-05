@@ -1,3 +1,4 @@
+import {SwitchRow} from './switch';
 import {t} from './i18n';
 import React,{useEffect,useId,useLayoutEffect,useRef,useState} from 'react';
 import {api} from './api';
@@ -9,7 +10,13 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
  const source:UpdateSource|null=status.database.updateSource??null;
  const channel:UpdateChannel=status.database.updateChannel??'stable';
  const automatic=status.database.updateCheck??{enabled:true,intervalHours:6};
- const[error,setError]=useState(''),[busy,setBusy]=useState(false),[job,setJob]=useState<Job|null>(null),[release,setRelease]=useState<any>(null),[ready,setReady]=useState(false),[checked,setChecked]=useState(false),[confirm,setConfirm]=useState<'apply'|'rollback'|null>(null),[installing,setInstalling]=useState(false);
+ const[error,setError]=useState(''),[busy,setBusy]=useState(false),[job,setJob]=useState<Job|null>(null),[release,setRelease]=useState<any>(null),[ready,setReady]=useState(false),[checked,setChecked]=useState(false),[showRelease,setShowRelease]=useState(false),[confirm,setConfirm]=useState<'apply'|'rollback'|null>(null),[installing,setInstalling]=useState(false);
+ const releaseDialog=useRef<HTMLDialogElement>(null),dismissRelease=useRef<HTMLButtonElement>(null),releaseTitle=useId();
+ useLayoutEffect(()=>{
+  const dialog=releaseDialog.current;if(!showRelease||!dialog)return;
+  const previous=document.activeElement as HTMLElement|null;dialog.showModal();dismissRelease.current?.focus();
+  return()=>{dialog.close();if(previous?.isConnected)previous.focus();};
+ },[showRelease]);
  const confirmation=useRef<HTMLDialogElement>(null),cancelConfirmation=useRef<HTMLButtonElement>(null),confirmationTitle=useId(),confirmationDescription=useId();
  useLayoutEffect(()=>{
   const dialog=confirmation.current;if(!confirm||!dialog)return;
@@ -17,7 +24,8 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
   dialog.showModal();cancelConfirmation.current?.focus();
   return()=>{dialog.close();if(previous?.isConnected)previous.focus();};
  },[confirm]);
- function reset(){setRelease(null);setReady(false);setChecked(false);setConfirm(null);}
+ useEffect(()=>{if(!confirm&&!showRelease)return;const back=(e:Event)=>{e.stopImmediatePropagation();if(confirm)setConfirm(null);else setShowRelease(false);};window.addEventListener('framely.back',back,true);return()=>window.removeEventListener('framely.back',back,true);},[confirm,showRelease]);
+ function reset(){setShowRelease(false);setRelease(null);setReady(false);setChecked(false);setConfirm(null);}
  useEffect(reset,[source?.url,channel]);
  const progress=job?.kind==='system.download'?job:status.systemUpdate;
  const older=release&&compareVersions(release.targetVersion??release.version,status.version)===-1;
@@ -43,6 +51,7 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
   if(!confirm||busy||installing)return;
   const action=confirm,version=release?.version;
   setConfirm(null);setBusy(true);setError('');
+  setShowRelease(false);
   let started=false;
   try{
    if(action==='apply'&&!ready){
@@ -52,7 +61,7 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
    setInstalling(true);
    await api(action==='apply'?'system.apply':'system.rollback',{approve:true,version});
    started=true;
-  }catch(e){setError(String(e));setInstalling(false);}
+  }catch(e){setError(String(e));setInstalling(false);if(action==='apply')setShowRelease(true);}
   finally{
    setBusy(false);setJob(null);
    if(!started)await refresh().catch(()=>{});
@@ -66,11 +75,11 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
   <Select label={t('更新渠道')} value={channel} disabled={busy||installing||!source} onChange={value=>void switchChannel(value)} options={[{value:'stable',label:t('正式版')},{value:'testing',label:t('测试版')}]}/>
   <p className="sub">{channel==='stable'?t('仅检查正式版。'):t('仅检查测试版（Preview、Beta、RC 等）。')}</p>
   <div className="row">
-   <button className="primary" disabled={busy||installing||!source} onClick={()=>{reset();void run('system.check.start',{},v=>{setRelease(v.release?{...v.release,targetVersion:v.version}:null);setReady(false);setChecked(true);});}}>{busy?t('处理中…'):t('检查更新')}</button>
+   <button className="primary" disabled={busy||installing||!source} onClick={()=>{reset();void run('system.check.start',{},v=>{setRelease(v.release?{...v.release,targetVersion:v.version}:null);setReady(false);setChecked(true);setShowRelease(!!v.release&&v.release.version!==(status.build??status.version));});}}>{busy?t('处理中…'):t('检查更新')}</button>
    <button disabled={busy||installing||!status.previousRelease} onClick={()=>setConfirm('rollback')}>{t('回滚上一版本')}</button>
   </div>
   <div className="automatic-update-settings">
-   <label><input type="checkbox" role="switch" checked={automatic.enabled} disabled={busy||installing||!source} onChange={e=>void saveAutomatic({...automatic,enabled:e.target.checked})}/><span>{t('自动检查更新')}</span></label>
+   <SwitchRow checked={automatic.enabled} label={t('自动检查更新')} disabled={busy||installing||!source} onChange={enabled=>void saveAutomatic({...automatic,enabled})}/>
    <label>{t('检查间隔')}</label><Select label={t('检查间隔')} value={String(automatic.intervalHours)} disabled={busy||installing||!source||!automatic.enabled} onChange={value=>void saveAutomatic({...automatic,intervalHours:Number(value)})} options={[...new Set([1,6,12,24,automatic.intervalHours])].sort((a,b)=>a-b).map(hours=>({value:String(hours),label:hours===1?t('每小时'):t('每 {0} 小时',{0:hours})}))}/>
    <p className="sub">{t('发现新版本时发送通知，您可以忽略提醒或打开更新页面。')}</p>
    {status.automaticUpdate?.checking&&<p className="sub" role="status">{t('正在自动检查更新…')}</p>}
@@ -82,13 +91,20 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
   {progress?.phase==='verifying'&&<div className="download-progress"><progress aria-label={t('校验进度')} max={progress.total??1} value={progress.verified??0}/><p>{t('已校验 {0} / {1} MiB',{'0':((progress.verified??0)/1024/1024).toFixed(1),'1':((progress.total??0)/1024/1024).toFixed(1)})}</p></div>}
   {progress?.phase==='failed'&&<p className="error">{t('上次更新失败：')}{progress.error}<small>{t('诊断日志：/var/lib/framely/logs/update.log')}</small></p>}
   {progress?.phase==='done'&&<p className="banner">{t('上次更新操作已完成。')}</p>}
-  {release&&<div className="release-card">
+  {checked&&release&&release.version===(status.build??status.version)&&<p className="banner" role="status">{t('当前已是此发行版本')}</p>}
+  {showRelease&&release&&<dialog ref={releaseDialog} className="modal update-release-dialog" aria-labelledby={releaseTitle} onCancel={e=>{e.preventDefault();setShowRelease(false);}} onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();setShowRelease(false);}}}>
+   <h2 id={releaseTitle}>{t('发现可用发行版本')}</h2>
+   <div className="release-card">
    <h3>{release.version}</h3>
    <p>{release.version===(status.build??status.version)?t('当前已是此发行版本'):t('发行包大小：{0} MiB',{'0':(release.size/1024/1024).toFixed(1)})}</p>
    {older&&<p className="banner">{t('所选版本早于当前版本，安装将切换到较旧版本。')}</p>}
    <p className="prose">{release.changelog||t('发布者未提供更新说明。')}</p>
-   {release.version!==(status.build??status.version)&&<button className="primary" disabled={busy||installing} onClick={()=>setConfirm('apply')}>{ready?t('安装已校验版本'):t('下载并安装')}</button>}
-  </div>}
+   {error&&<p className="error" role="alert">{error}</p>}
+   <div className="row">
+    {release.version!==(status.build??status.version)&&<button className="primary" disabled={busy||installing} onClick={()=>setConfirm('apply')}>{ready?t('安装已校验版本'):t('下载并安装')}</button>}
+    <button ref={dismissRelease} disabled={busy||installing} onClick={()=>setShowRelease(false)}>{t('稍后')}</button>
+   </div>
+  </div></dialog>}
   {error&&<p className="error" role="alert">{error}</p>}
   {installing&&<p className="banner">{t('正在切换版本。Framely 入口会在服务恢复后重新出现。')}</p>}
   {confirm&&<dialog ref={confirmation} className="modal update-confirmation" aria-labelledby={confirmationTitle} aria-describedby={confirmationDescription} onCancel={e=>{e.preventDefault();setConfirm(null);}} onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();setConfirm(null);}}}>

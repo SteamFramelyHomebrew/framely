@@ -5,6 +5,7 @@ mod http;
 mod ipc;
 mod jobs;
 mod localization;
+mod launcher_search;
 mod model;
 mod package;
 mod planner;

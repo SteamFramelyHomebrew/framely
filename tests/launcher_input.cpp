@@ -33,4 +33,15 @@ vr::RenderModel_ComponentState_t joystick_rest{},joystick_x{},joystick_y{},joyst
  // Releasing the opening trigger rearms input once, even without mouse events.
  guard.opened(now);guard.observe(true);guard.observe(false);
  assert(guard.allows(now+std::chrono::milliseconds(700),true));
+ // Dock dragging and delayed cancel keep the launcher; later background
+ // clicks become dismissible again, and reopening clears the prior gesture.
+ LauncherDockGuard dock;assert(!dock.holds(now));dock.observe(true,true,now);
+ assert(dock.holds(now+std::chrono::milliseconds(60)));
+ dock.observe(false,true,now+std::chrono::seconds(2));
+ assert(dock.holds(now+std::chrono::seconds(2)));
+ dock.observe(false,false,now+std::chrono::seconds(3));
+ assert(dock.holds(now+std::chrono::milliseconds(3200)));
+ assert(!dock.holds(now+std::chrono::milliseconds(3250)));
+ dock.clear();assert(!dock.holds(now+std::chrono::seconds(3)));
+
 }

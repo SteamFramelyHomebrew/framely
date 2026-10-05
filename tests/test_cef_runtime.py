@@ -31,6 +31,7 @@ class CEFRuntimeTests(unittest.TestCase):
                  'lib/cef/libcef.so': 'browser', 'lib/cef/icudtl.dat': 'icu',
                  'lib/cef/locales/en-US.pak': 'locale', 'share/licenses/cef.txt': 'license',
                  'share/licenses/cef-credits.html': 'credits', 'share/licenses/openvr.txt': 'openvr',
+                 'share/search/ipadic.dic.zst': 'dictionary', 'share/search/COPYING': 'dictionary license',
                  'install.sh': 'install', 'uninstall.sh': 'uninstall'}
         for name, data in files.items():
             p = stage / name
@@ -62,6 +63,12 @@ class CEFRuntimeTests(unittest.TestCase):
                 extracted = bootstrap.extract_archive(archive, folder / archive.name.replace('.tar.gz', ''),
                                                       runtime=archive.name.startswith('framely-cef-'))
                 subprocess.run(['sha256sum', '--quiet', '-c', 'SHA256SUMS'], cwd=extracted, check=True)
+                if not archive.name.startswith('framely-cef-'):
+                    self.assertEqual((extracted / 'share/search/ipadic.dic.zst').read_text(), 'dictionary')
+                    self.assertEqual((extracted / 'share/search/COPYING').read_text(), 'dictionary license')
+                    self.assertIn('share/search/ipadic.dic.zst', (extracted / 'SHA256SUMS').read_text())
+                else:
+                    self.assertFalse((extracted / 'share/search').exists())
                 if archive.name == stage.name + '-linux-arm64.tar.gz':
                     self.assertFalse((extracted / 'lib/cef/libcef.so').exists())
                     self.assertFalse((extracted / 'share/licenses/cef-credits.html').exists())

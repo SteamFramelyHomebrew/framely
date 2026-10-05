@@ -469,6 +469,17 @@
     "日志已保存到：{0}": "Logs saved to: {0}",
     "日志包已生成，请查看浏览器下载。": "Log archive created. Check your browser downloads.",
     "日志包缺少数据": "Log archive data is missing",
-    "导出本体、插件和渲染日志及服务状态，不包含插件配置和访问密码文件。": "Export Framely, plugin and renderer logs with service status. Plugin settings and access password files are excluded."
+    "导出本体、插件和渲染日志及服务状态，不包含插件配置和访问密码文件。": "Export Framely, plugin and renderer logs with service status. Plugin settings and access password files are excluded.",
+    "发现可用发行版本": "Release available",
+    "稍后": "Later",
+    "全部包含的分类": "Categories included in All",
+    "只影响全部分类，其他分类和收藏仍可访问。": "Only affects All. Other categories and Favorites remain available.",
+    "包含 Framely": "Includes Framely",
+    "启动方式、菜单与分类。": "Launch controls, menus and categories.",
+    "没有匹配的应用": "No matching apps",
+    "还没有收藏的应用": "No favorites yet",
+    "收藏分类": "Favorites",
+    "读音搜索暂不可用，仍可使用原文搜索。": "Phonetic search is unavailable. You can still search original names.",
+    "启动方式与菜单": "Launch controls and menus"
   }
 }

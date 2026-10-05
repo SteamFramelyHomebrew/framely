@@ -814,6 +814,36 @@ fn apply_prepared(core: &mut Service, prepared: crate::planner::Prepared) -> any
     core.handle("install.batch",json!({"approve":true,"approveRunAs":true,"plan":prepared.plan,"packages":prepared.packages.iter().map(|(bytes,source)|{let mut request=bytes.request();request["source"]=json!(source);request}).collect::<Vec<_>>()}))
 }
 #[test]
+fn batch_install_in_safe_mode_preserves_packages_without_starting_plugins() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _tools = fake_backend_tools(tmp.path());
+    let mut core = accepted_service(&tmp.path().join("state"), 1000).unwrap();
+    core.handle("safeMode", json!({"enabled":true})).unwrap();
+    for version in ["1.0.0", "1.1.0"] {
+        let bytes = relation_package(
+            tmp.path(),
+            "test.safe",
+            version,
+            json!({"backend":{"entry":"fail.sh","autostart":true}}),
+        );
+        let prepared = crate::planner::prepare(&core.db, bytes, None, Default::default()).unwrap();
+        apply_prepared(&mut core, prepared).unwrap();
+        assert_eq!(core.db.plugins["test.safe"].manifest.version, version);
+        assert!(core.db.plugins["test.safe"].enabled);
+        assert!(core.db.safe_mode);
+        assert!(!core.root.join("install-transaction.json").exists());
+        let status = core.handle("status", json!({})).unwrap();
+        assert_eq!(status["runtime"]["test.safe"]["phase"], "installed");
+        let reloaded = Service::load(&core.root, core.manager).unwrap();
+        assert!(reloaded.db.safe_mode);
+        assert_eq!(reloaded.db.plugins["test.safe"].manifest.version, version);
+    }
+    core.handle("safeMode", json!({"enabled":false})).unwrap();
+    let lifecycle = fs::read_to_string(core.root.join("logs/test.safe.lifecycle.log")).unwrap();
+    assert!(lifecycle.contains("\"phase\":\"starting\""));
+    core.shutdown();
+}
+#[test]
 fn dependency_install_conflicts_reverse_constraints_and_removal() {
     let tmp = tempfile::tempdir().unwrap();
     let mut core = accepted_service(&tmp.path().join("state"), unsafe { libc::geteuid() }).unwrap();
@@ -1970,4 +2000,62 @@ fn launcher_dispatch_preserves_old_open_semantics_and_window_context() {
     }
     let loaded = Service::load(&root.path().join("state"), unsafe { libc::geteuid() }).unwrap();
     assert_eq!(loaded.db.launcher_order, order);
+}
+
+#[test]
+fn launcher_categories_migrate_validate_and_favorites_survive_reload() {
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("state");
+    let mut core = accepted_service(&state, unsafe { libc::geteuid() }).unwrap();
+    assert_eq!(
+        core.db.launcher.all_categories,
+        vec!["plugin", "steam", "lepton", "desktop"]
+    );
+    core.handle("launcher.settings.save",json!({"primaryTrigger":true,"menuAutoClose":true,"menuTimeoutSeconds":10,"allCategories":[]})).unwrap();
+    for key in [
+        "framely",
+        "desktop:terminal.desktop",
+        "lepton:default/app",
+        "steam:42",
+    ] {
+        core.handle("launcher.favorite", json!({"key":key,"favorite":true}))
+            .unwrap();
+    }
+    for invalid in [
+        json!(["all"]),
+        json!(["plugin", "plugin"]),
+        json!(["favorites"]),
+    ] {
+        assert!(core.handle("launcher.settings.save",json!({"primaryTrigger":true,"menuAutoClose":true,"menuTimeoutSeconds":10,"allCategories":invalid})).is_err());
+    }
+    for invalid in [
+        "",
+        "plugin:missing",
+        "steam:0",
+        "steam:-1",
+        "steam:4294967296",
+        "desktop:",
+        "invalid:app",
+        "lepton:\napp",
+    ] {
+        assert!(core
+            .handle("launcher.favorite", json!({"key":invalid,"favorite":true}))
+            .is_err());
+    }
+    let mut loaded = Service::load(&state, unsafe { libc::geteuid() }).unwrap();
+    assert!(loaded.db.launcher.all_categories.is_empty());
+    assert!(loaded.db.launcher.primary_trigger);
+    assert_eq!(loaded.db.launcher_favorites.len(), 3);
+    assert!(loaded.db.steam_favorites.contains(&42));
+    loaded
+        .handle(
+            "launcher.favorite",
+            json!({"key":"framely","favorite":false}),
+        )
+        .unwrap();
+    assert!(!loaded.db.launcher_favorites.contains("framely"));
+    loaded
+        .handle("launcher.settings.save", json!({"menuTimeoutSeconds":25}))
+        .unwrap();
+    assert_eq!(loaded.db.launcher.all_categories.len(), 4);
 }

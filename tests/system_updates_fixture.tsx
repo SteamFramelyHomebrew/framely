@@ -43,8 +43,8 @@ async function choose(label:string){(document.querySelector('.framely-select but
  try{
   configureLanguage('zh-CN',[]);updateStatus({...status});await wait();
   if(!document.querySelector('.framely-select button')?.textContent?.includes('正式版'))throw Error('legacy source did not default to stable');
-  const automaticSwitch=()=>document.querySelector('.automatic-update-settings input[type=checkbox]') as HTMLInputElement;
-  if(!automaticSwitch().checked)throw Error('automatic checks did not default to enabled');
+  const automaticSwitch=()=>document.querySelector('.automatic-update-settings [role=switch]') as HTMLButtonElement;
+  if(automaticSwitch().getAttribute('aria-checked')!=='true')throw Error('automatic checks did not default to enabled');
   automaticSwitch().click();await until(()=>automaticSaves===1);await wait();
   if(status.database.updateCheck.enabled||(document.querySelector('.automatic-update-settings .framely-select button') as HTMLButtonElement).disabled===false)throw Error('disabled automatic check settings not reflected');
   automaticSwitch().click();await until(()=>automaticSaves===2);await wait();
@@ -52,7 +52,12 @@ async function choose(label:string){(document.querySelector('.framely-select but
   ([...document.querySelectorAll('[role=option]')].find(o=>o.textContent==='每 12 小时') as HTMLButtonElement).click();await until(()=>automaticSaves===3);await wait();
   if(status.database.updateCheck.intervalHours!==12)throw Error('automatic interval not saved');
   button('检查更新').click();await until(()=>!!document.querySelector('.release-card'));
+  const releaseDialog=document.querySelector('.update-release-dialog') as HTMLDialogElement;
+  if(!releaseDialog?.open||!releaseDialog.matches(':modal')||document.activeElement!==button('稍后'))throw Error('Available release was not announced in a modal');
+  if(!releaseDialog.contains(document.querySelector('.release-card')))throw Error('Release details remained inline');
   if(!document.querySelector('.release-card')?.textContent?.includes('较旧版本'))throw Error('channel downgrade not identified');
+  window.dispatchEvent(new Event('framely.back'));await wait();if(document.querySelector('.release-card')||downloads!==0||attempts!==0)throw Error('Later left inline release content or started update');
+  button('检查更新').click();await until(()=>!!document.querySelector('.update-release-dialog'));
   button('下载并安装').focus();button('下载并安装').click();await wait();
   const dialog=document.querySelector('.update-confirmation') as HTMLDialogElement|null;
   if(downloads!==0||attempts!==0||!dialog?.open||!dialog.matches(':modal'))throw Error('update bypassed modal confirmation');
@@ -75,11 +80,13 @@ async function choose(label:string){(document.querySelector('.framely-select but
   console.log('FRAMELY_PREVIEW_INSTALL_UPDATE_STABLE');
   button('安装已校验版本').click();await wait();button('确认安装').click();await until(()=>attempts===2);await wait();
   if(downloads!==2)throw Error('installation retry downloaded again');
+  button('稍后').click();await wait();
   await choose('测试版');
   if(status.database.updateChannel!=='testing'||document.querySelector('.release-card'))throw Error('channel not saved or stale release retained');
   button('检查更新').click();await until(()=>!!document.querySelector('.release-card'));
   if(document.querySelector('.release-card')?.textContent?.includes('较旧版本'))throw Error('new preview reported as downgrade');
   if([...document.querySelectorAll('button')].some(b=>b.textContent==='安装已校验版本'))throw Error('download reused across channels');
+  await wait(150);console.log('FRAMELY_PREVIEW_INSTALL_UPDATE_AVAILABLE_ZH');await wait(100);
   hold=true;failApply=false;button('下载并安装').click();await wait();button('确认下载并安装').click();await until(()=>downloads===3);await wait();
   if(!(document.querySelector('.framely-select button') as HTMLButtonElement).disabled||!automaticSwitch().disabled||!button('处理中…').disabled)throw Error('settings mutable during download');
   if(attempts!==2)throw Error('installation started before verification');
@@ -100,13 +107,14 @@ async function choose(label:string){(document.querySelector('.framely-select but
   empty=false;configureLanguage('en-US',[]);updateStatus({...status});await wait();
   if(!document.querySelector('.framely-select button')?.textContent?.includes('Stable'))throw Error('English channel untranslated');
   await choose('Testing');button('Check for updates').click();await until(()=>!!document.querySelector('.release-card'));
+  await wait(150);console.log('FRAMELY_PREVIEW_INSTALL_UPDATE_AVAILABLE_EN');await wait(100);
   button('Download and install').click();await wait();
   if(!document.querySelector('.update-confirmation')?.textContent?.includes('installed automatically'))throw Error('English update flow untranslated');
   hold=true;button('Confirm download and installation').click();
   await until(()=>!!document.querySelector('progress[aria-label="Verification progress"]'));
   if(!document.body.textContent?.includes('Download complete. Verifying')||!document.body.textContent?.includes('Verified 0.5 / 1.0 MiB'))throw Error('English verification progress untranslated');
   hold=false;await until(()=>installs===2);
-  if(checks!==5||downloads!==4||attempts!==4)throw Error(`unexpected workflow counts ${checks}/${downloads}/${attempts}`);
+  if(checks!==6||downloads!==4||attempts!==4)throw Error(`unexpected workflow counts ${checks}/${downloads}/${attempts}`);
   console.log('FRAMELY_PREVIEW_INSTALL_UPDATE_ENGLISH');
   remount();await wait();button('Roll back to previous release').click();await wait();
   if(rollbacks!==0)throw Error('rollback bypassed confirmation');

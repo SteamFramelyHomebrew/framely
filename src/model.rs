@@ -185,6 +185,14 @@ pub struct LauncherSettings {
     pub menu_auto_close: bool,
     #[serde(default = "menu_timeout")]
     pub menu_timeout_seconds: u32,
+    #[serde(default = "launcher_categories")]
+    pub all_categories: Vec<String>,
+}
+fn launcher_categories() -> Vec<String> {
+    ["plugin", "steam", "lepton", "desktop"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
 }
 fn menu_timeout() -> u32 {
     10
@@ -195,11 +203,20 @@ impl Default for LauncherSettings {
             primary_trigger: false,
             menu_auto_close: true,
             menu_timeout_seconds: 10,
+            all_categories: launcher_categories(),
         }
     }
 }
 impl LauncherSettings {
     pub fn validate(&self) -> Result<()> {
+        let unique: std::collections::BTreeSet<_> = self.all_categories.iter().collect();
+        ensure!(
+            unique.len() == self.all_categories.len()
+                && unique
+                    .iter()
+                    .all(|c| ["plugin", "steam", "lepton", "desktop"].contains(&c.as_str())),
+            "Invalid launcher categories"
+        );
         ensure!(
             (1..=300).contains(&self.menu_timeout_seconds),
             "Menu timeout must be between 1 and 300 seconds"
@@ -773,6 +790,8 @@ pub struct Database {
     pub steam_favorites: std::collections::BTreeSet<u32>,
     #[serde(default)]
     pub launcher_order: Vec<String>,
+    #[serde(default)]
+    pub launcher_favorites: std::collections::BTreeSet<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
