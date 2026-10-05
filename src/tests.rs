@@ -1082,17 +1082,21 @@ fn batch_hook_failure_and_interrupted_transaction_restore_state() {
         disable: vec![],
         affected: vec!["test.first".into(), "test.bad".into()],
     };
-    assert!(apply_prepared(
+    let error = apply_prepared(
         &mut core,
         crate::planner::Prepared {
             plan,
             packages: vec![
                 (package::Staged::from_bytes(&first).unwrap(), None),
-                (package::Staged::from_bytes(&bad).unwrap(), None)
-            ]
-        }
+                (package::Staged::from_bytes(&bad).unwrap(), None),
+            ],
+        },
     )
-    .is_err());
+    .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("批量安装失败，已恢复原版本和启用状态"));
+    assert!(message.contains("安装插件 test.bad 失败"));
+    assert!(message.contains("Lifecycle"));
     assert_eq!(
         serde_json::to_value(&core.db).unwrap(),
         serde_json::to_value(&original).unwrap()
@@ -1747,4 +1751,221 @@ for line in sys.stdin:
     assert_eq!(read(&mut core, "test.visible")[2]["known"], false);
     assert_eq!(read(&mut core, "test.legacy"), json!([]));
     core.shutdown();
+}
+
+#[test]
+fn launcher_manifest_validation_and_old_package_compatibility() {
+    let root = tempfile::tempdir().unwrap();
+    let bytes = fixture(root.path(), "launch.test", "1.0.0", 1, None);
+    let old = package::verify(&bytes).unwrap().manifest;
+    assert!(
+        old.engines.is_none() && old.ui.launch.is_empty() && old.ui.launcher_actions.is_empty()
+    );
+    let mut value = serde_json::to_value(&old).unwrap();
+    value["engines"] = json!({"framely":">=0.4.3-preview.2 <0.5.0"});
+    value["ui"]["launch"] = json!({"launcher":{"type":"quickPage"}});
+    let m: Manifest = serde_json::from_value(value.clone()).unwrap();
+    m.validate().unwrap();
+    value["ui"]["launch"]["manager"] = json!({"type":"window","window":"missing"});
+    assert!(serde_json::from_value::<Manifest>(value.clone())
+        .unwrap()
+        .validate()
+        .is_err());
+    value["ui"]["launch"] = json!({"launcher":{"type":"quickPage"}});
+    value["engines"] = json!({"framely":"*"});
+    assert!(serde_json::from_value::<Manifest>(value)
+        .unwrap()
+        .validate()
+        .is_err());
+}
+#[test]
+fn engines_ranges_and_incompatible_install_are_non_mutating() {
+    let e = |r: &str| Engines {
+        framely: Some(r.into()),
+    };
+    assert!(e(">=0.4.3 <0.5.0").matches("0.4.4+build"));
+    assert!(!e(">=0.4.3 <0.5.0").matches("0.4.4-preview.1"));
+    assert!(e(">=0.4.3-preview.2 <0.5.0").matches("0.4.3-preview.3"));
+    assert!(e(">=0.4.3-preview.2 <0.5.0").matches("0.4.3"));
+    assert!(!e(">=0.4.3-preview.2 <0.5.0").matches("0.4.3-preview.1"));
+    assert!(e("=0.4.3").matches("0.4.3+abc"));
+    assert!(e("^0.4.3").matches("0.4.9"));
+    assert!(!e("^0.4.3").matches("0.5.0"));
+    assert!(e("~0.4.3").matches("0.4.4"));
+    assert!(e("0.4.*").matches("0.4.4"));
+    assert!(e("nonsense").validate().is_err());
+    assert!(e("0.4.3 || 0.5.0").validate().is_err());
+    let root = tempfile::tempdir().unwrap();
+    let mut core =
+        accepted_service(&root.path().join("state"), unsafe { libc::geteuid() }).unwrap();
+    install(
+        &mut core,
+        &fixture(root.path(), "launch.compat", "1.0.0", 1, None),
+        json!({}),
+    )
+    .unwrap();
+    let old = serde_json::to_value(&core.db).unwrap();
+    let future = rewrite(
+        &fixture(root.path(), "launch.compat", "2.0.0", 2, None),
+        |name, data| {
+            if name == "manifest.json" {
+                let mut m: Value = serde_json::from_slice(data).unwrap();
+                m["engines"] = json!({"framely":">=999.0.0"});
+                *data = serde_json::to_vec(&m).unwrap();
+            }
+        },
+    );
+    assert!(install(&mut core, &future, json!({}))
+        .unwrap_err()
+        .to_string()
+        .contains("requires Framely"));
+    assert_eq!(serde_json::to_value(&core.db).unwrap(), old);
+    assert!(!root
+        .path()
+        .join("state/plugins/launch.compat/versions/2.0.0")
+        .exists());
+    core.db
+        .plugins
+        .get_mut("launch.compat")
+        .unwrap()
+        .manifest
+        .engines = Some(e(">=999.0.0"));
+    assert!(core
+        .handle("plugin.open", json!({"plugin":"launch.compat"}))
+        .is_err());
+}
+#[test]
+fn launcher_dispatch_preserves_old_open_semantics_and_window_context() {
+    let root = tempfile::tempdir().unwrap();
+    let mut core =
+        accepted_service(&root.path().join("state"), unsafe { libc::geteuid() }).unwrap();
+    install(
+        &mut core,
+        &fixture(root.path(), "launch.routes", "1.0.0", 1, None),
+        json!({}),
+    )
+    .unwrap();
+    core.events.lock().unwrap().clear();
+    core.handle("plugin.open", json!({"plugin":"launch.routes"}))
+        .unwrap();
+    assert!(!core
+        .handle("events", json!({}))
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v["kind"] == "menu.open"));
+    for source in ["launcher", "quickPanel", "manager"] {
+        core.handle(
+            "plugin.launch",
+            json!({"plugin":"launch.routes","source":source}),
+        )
+        .unwrap();
+        let events = core.handle("events", json!({})).unwrap();
+        assert!(events
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["kind"] == "menu.open" && v["context"]["source"] == source));
+        assert_eq!(
+            core.handle(
+                "plugin.launch.context",
+                json!({"plugin":"launch.routes","entry":"quick"})
+            )
+            .unwrap()["source"],
+            source
+        );
+    }
+    assert!(core
+        .handle(
+            "plugin.launch",
+            json!({"plugin":"launch.routes","source":"unknown"})
+        )
+        .is_err());
+    let plugin = core.db.plugins.get_mut("launch.routes").unwrap();
+    plugin.manifest.ui.windows.insert(
+        "main".into(),
+        serde_json::from_value(json!({"entry":"page.js","title":"Main"})).unwrap(),
+    );
+    plugin.manifest.ui.launch.insert(
+        "launcher".into(),
+        LaunchTarget::Window {
+            window: "main".into(),
+        },
+    );
+    plugin.manifest.ui.launcher_actions = serde_json::from_value(json!([
+      {"id":"window","label":"Open","target":{"type":"window","window":"main"}},
+      {"id":"front","label":"Front","target":{"type":"frontend","entry":"page.js"}}
+    ]))
+    .unwrap();
+    core.handle(
+        "plugin.launch",
+        json!({"plugin":"launch.routes","source":"launcher"}),
+    )
+    .unwrap();
+    assert_eq!(
+        core.handle(
+            "plugin.launch.context",
+            json!({"plugin":"launch.routes","entry":"main"})
+        )
+        .unwrap()["source"],
+        "launcher"
+    );
+    core.handle(
+        "plugin.launcher.action",
+        json!({"plugin":"launch.routes","action":"window"}),
+    )
+    .unwrap();
+    assert_eq!(
+        core.handle(
+            "plugin.launch.context",
+            json!({"plugin":"launch.routes","entry":"main"})
+        )
+        .unwrap()["actionId"],
+        "window"
+    );
+    let frontend = core
+        .handle(
+            "plugin.launcher.action",
+            json!({"plugin":"launch.routes","action":"front"}),
+        )
+        .unwrap();
+    assert_eq!(frontend["frontend"], "page.js");
+    assert_eq!(frontend["context"]["actionId"], "front");
+    assert!(core
+        .handle(
+            "plugin.launcher.action",
+            json!({"plugin":"launch.routes","action":"unknown"})
+        )
+        .is_err());
+
+    core.handle(
+        "launcher.settings.save",
+        json!({"primaryTrigger":true,"menuAutoClose":false,"menuTimeoutSeconds":25}),
+    )
+    .unwrap();
+    let loaded = Service::load(&root.path().join("state"), unsafe { libc::geteuid() }).unwrap();
+    assert!(loaded.db.launcher.primary_trigger);
+    assert!(!loaded.db.launcher.menu_auto_close);
+    assert_eq!(loaded.db.launcher.menu_timeout_seconds, 25);
+    let order = vec![
+        "framely",
+        "plugin:launch.routes",
+        "desktop:terminal.desktop",
+        "lepton:test/com.example.app",
+    ];
+    core.handle("launcher.order.save", json!({"order":order}))
+        .unwrap();
+    for invalid in [
+        json!(["framely", "framely"]),
+        json!(["unknown:app"]),
+        json!(["plugin:"]),
+        json!(["desktop:bad\nentry"]),
+    ] {
+        assert!(core
+            .handle("launcher.order.save", json!({"order":invalid}))
+            .is_err());
+    }
+    let loaded = Service::load(&root.path().join("state"), unsafe { libc::geteuid() }).unwrap();
+    assert_eq!(loaded.db.launcher_order, order);
 }

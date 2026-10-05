@@ -40,3 +40,19 @@ The **Allow notifications** switch at the top of Notifications controls all floa
 In the manager, **Notification settings** provides global **Floating notifications** and **Launcher badge** switches, plus independent **Badge** and **Popup** switches for Framely itself (including update reminders) and every installed plugin, including disabled plugins. Global switches take priority and preserve each app’s preferences. The Framely Dock launcher badge counts unread inbox messages from sources allowed to show a badge, displays `99+` for larger counts, and disappears when you view the inbox. Hidden headset panels do not mark messages as read. Reading keeps messages and their actions available; it does not remove them. Settings and read state survive restart.
 
 Log commands are in the [installation guide](installation.md). A working manager does not establish that all plugins work. Enable plugins individually and verify their sources and runtime users.
+
+## Export logs
+
+Open **Settings → Recovery and diagnostics → Export logs**. In the headset, the ZIP is saved in `~/Downloads` on Frame and the panel shows its path. From the network panel, the ZIP downloads to your browser instead. Collection includes recent Framely/plugin logs, CEF renderer logs, GPU evidence, service status and version information. Missing sources or failed commands are recorded in `report.json`; they do not prevent exporting the remaining information. Each source and the total archive input are bounded.
+
+If the panel cannot open, connect to Frame using the installer and choose **Export logs** in its footer. Select where to save the ZIP on your computer. It collects directly over SSH, includes the installer’s current operation log, and works when Framely services are stopped or its state file is damaged. No release package selection is required.
+
+Plugin configuration, inbox contents and password files are excluded. Common credential patterns in logs are masked; review application logs before sharing the archive. Nothing is uploaded automatically.
+
+For terminal recovery without a running daemon:
+
+```bash
+sudo /var/lib/framely/current/bin/framely export-logs --output /tmp/framely-logs.zip
+```
+
+The output must be a new file. If the binary cannot run, an extracted release also includes `tools/export-diagnostics.py`, usable with `sudo python3 tools/export-diagnostics.py --output /tmp/framely-logs.zip`.

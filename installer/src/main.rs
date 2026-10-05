@@ -42,6 +42,7 @@ enum Event {
     Connected(Result<Connection, String>),
     File(FileKind, Option<PathBuf>),
     Log(String),
+    LogsExported(Result<Option<PathBuf>, String>),
     Progress(Progress),
     Done(Result<(), String>),
 }
@@ -320,6 +321,20 @@ impl Installer {
                     self.status = progress.detail.clone();
                     self.progress = Some(progress);
                 }
+                Event::LogsExported(result) => {
+                    self.busy = false;
+                    match result {
+                        Ok(Some(path)) => {
+                            self.status = "日志已导出。".into();
+                            self.notice("日志导出完成", format!("已保存到：{}", path.display()));
+                        }
+                        Ok(None) => self.status = "已取消导出日志。".into(),
+                        Err(error) => {
+                            self.status = "日志导出失败。".into();
+                            self.notice("日志导出失败", error);
+                        }
+                    }
+                }
                 Event::Done(result) => {
                     self.busy = false;
                     self.error = None;
@@ -346,6 +361,39 @@ impl Installer {
             cx.notify();
         }
         self.present_prompt(window, cx);
+    }
+    fn export_logs(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let Some(connection) = self.connection.clone() else {
+            return;
+        };
+        let password = Zeroizing::new(self.password.read(cx).value().to_string());
+        let sender = self.sender.clone();
+        self.busy = true;
+        self.status = "正在导出日志…".into();
+        let logs = self.logs.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> anyhow::Result<Option<PathBuf>> {
+                let Some(path) = rfd::FileDialog::new()
+                    .set_title("保存 Framely 日志包")
+                    .set_file_name("framely-logs.zip")
+                    .add_filter("ZIP 日志包", &["zip"])
+                    .save_file()
+                else {
+                    return Ok(None);
+                };
+                let guard = connection
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("设备连接不可用"))?;
+                remote::export_logs(&guard, &password, &path, &logs)?;
+                Ok(Some(path))
+            })()
+            .map_err(|e| format!("{e:#}"));
+            let _ = sender.send(Event::LogsExported(result));
+        });
+        cx.notify();
     }
     fn scan(&mut self, cx: &mut Context<Self>) {
         self.cancelled.store(true, Ordering::Relaxed);

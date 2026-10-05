@@ -507,3 +507,68 @@ mod tests {
         eprintln!("stages={stages:?}; error={error}");
     }
 }
+
+/// Collect directly over SSH; neither the web panel nor the daemon is required.
+pub fn export_logs(
+    connection: &Connection,
+    password: &str,
+    destination: &Path,
+    logs: &[String],
+) -> Result<()> {
+    use base64::engine::general_purpose::STANDARD;
+    ensure!(
+        !password.is_empty() && !password.contains(['\n', '\r']),
+        "请输入有效的设备登录密码"
+    );
+    connection.session.set_timeout(60_000);
+    let script = include_str!("../../tools/export-diagnostics.py");
+    // Keep archive output private and binary-safe. The ordinary text logger
+    // masks password substrings, which could corrupt a base64 archive.
+    let mut channel = connection.session.channel_session()?;
+    let local_log = logs.join("\n").replace(password, "[密码已隐藏]");
+    let recent: String = local_log
+        .chars()
+        .rev()
+        .take(64 * 1024)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    channel.exec(&format!(
+        "sudo -S -p '' -- python3 -c {} --installer-log-base64 {}",
+        quote(script),
+        quote(&STANDARD.encode(recent))
+    ))?;
+    channel.write_all(password.as_bytes())?;
+    channel.write_all(b"\n")?;
+    channel.flush()?;
+    channel.send_eof()?;
+    let mut output = String::new();
+    Read::by_ref(&mut channel)
+        .take(12 * 1024 * 1024)
+        .read_to_string(&mut output)?;
+    let mut error = String::new();
+    channel.stderr().take(4096).read_to_string(&mut error)?;
+    channel.wait_close()?;
+    ensure!(
+        channel.exit_status()? == 0,
+        "日志收集失败：{}",
+        error.replace(password, "[密码已隐藏]")
+    );
+    let archive: serde_json::Value =
+        serde_json::from_str(output.trim()).context("日志包响应无效")?;
+    let bytes = STANDARD.decode(archive["data"].as_str().context("日志包缺少数据")?)?;
+    ensure!(
+        bytes.len() <= 9 * 1024 * 1024 && bytes.starts_with(b"PK\x03\x04"),
+        "日志包格式无效"
+    );
+    let parent = destination
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut file = tempfile::NamedTempFile::new_in(parent).context("无法创建日志包")?;
+    file.write_all(&bytes).context("无法保存日志包")?;
+    file.as_file().sync_all()?;
+    file.persist(destination).context("无法保存日志包")?;
+    Ok(())
+}

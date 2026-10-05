@@ -1,4 +1,6 @@
 mod auth;
+mod desktop;
+mod diagnostics;
 mod http;
 mod ipc;
 mod jobs;
@@ -11,6 +13,7 @@ mod recovery;
 mod relations;
 mod service;
 mod session;
+mod steam;
 mod subscriptions;
 #[cfg(test)]
 mod tests;
@@ -31,6 +34,13 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Cmd {
+    /// Export logs even when the manager service is unavailable.
+    ExportLogs {
+        #[arg(long, default_value = "/var/lib/framely")]
+        state: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Disable and uninstall every plugin before removing the manager.
     PrepareUninstall {
         #[arg(long)]
@@ -129,6 +139,20 @@ enum Cmd {
 }
 fn run() -> Result<()> {
     match Cli::parse().command {
+        Cmd::ExportLogs { state, output } => {
+            let archive = diagnostics::collect(&state)?;
+            let bytes = STANDARD.decode(archive["data"].as_str().context("Missing archive")?)?;
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&output)?;
+            file.write_all(&bytes)?;
+            println!("{}", output.display());
+            Ok(())
+        }
         Cmd::PrepareUninstall { approve, socket } => {
             anyhow::ensure!(unsafe { libc::geteuid() } == 0, "Uninstall requires root");
             let result = ipc::call_timeout(
@@ -286,6 +310,8 @@ fn run() -> Result<()> {
                     documentation_url: v.manifest.documentation_url,
                     homepage: v.manifest.homepage,
                     api_version: v.manifest.api_version,
+                    engines: v.manifest.engines,
+                    compatible: None,
                     url: v.manifest.download_url.unwrap_or(format!(
                         "{}/{}",
                         base_url.trim_end_matches('/'),

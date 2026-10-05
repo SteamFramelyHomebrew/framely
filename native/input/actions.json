@@ -1,0 +1,47 @@
+{
+  "action_sets": [
+    {
+      "name": "/actions/entry",
+      "usage": "leftright"
+    }
+  ],
+  "actions": [
+    {
+      "name": "/actions/entry/in/primary",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/entry/in/upper",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/entry/in/aim",
+      "type": "pose"
+    },
+    {
+      "name": "/actions/entry/in/close",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/entry/in/navigate",
+      "type": "vector2"
+    }
+  ],
+  "default_bindings": [
+    {
+      "controller_type": "frame_controller",
+      "binding_url": "frame-controller.json"
+    }
+  ],
+  "localization": [
+    {
+      "language_tag": "en_US",
+      "/actions/entry": "Framely launcher",
+      "/actions/entry/in/primary": "Primary trigger",
+      "/actions/entry/in/upper": "Upper trigger",
+      "/actions/entry/in/aim": "Pointer",
+      "/actions/entry/in/close": "Close launcher (B)",
+      "/actions/entry/in/navigate": "Launcher navigation"
+    }
+  ]
+}

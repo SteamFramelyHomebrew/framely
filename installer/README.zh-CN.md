@@ -62,7 +62,7 @@ FRAMELY_INSTALLER_PREVIEW_DIR=installer/dist/previews installer/target/debug/fra
 
 预览依赖可用的 GPU 或软件 Vulkan 渲染器；默认发行构建不包含此预览功能。
 
-安装器版本由本目录的 `Cargo.toml` 和 `Cargo.lock` 独立管理，不跟随 Framely 本体版本。推送 `installer-v<版本>` 标签（当前 `installer-v0.4.1-preview.8`）触发 `.github/workflows/installer-release.yml`，只构建并发布安装器；本体使用 `v<版本>` 标签和独立工作流。也可在 Actions 手动运行安装器工作流，仅生成构建产物。安装器 Release 不占用仓库的 Latest，以免影响 Frame 的默认安装和更新地址。
+安装器版本由本目录的 `Cargo.toml` 和 `Cargo.lock` 独立管理，不跟随 Framely 本体版本。推送 `installer-v<版本>` 标签（当前 `installer-v0.4.1-preview.9`）触发 `.github/workflows/installer-release.yml`，只构建并发布安装器；本体使用 `v<版本>` 标签和独立工作流。也可在 Actions 手动运行安装器工作流，仅生成构建产物。安装器 Release 不占用仓库的 Latest，以免影响 Frame 的默认安装和更新地址。
 
 Actions 构建 Linux x64/ARM64、Windows x64、macOS Intel/Apple Silicon。macOS 输出 `.app` ZIP，Windows 输出 EXE ZIP，Linux 输出 tar.gz。当前未配置 Apple 公证或 Windows 代码签名，发布前应分别验证系统的首次启动体验。
 
@@ -77,3 +77,9 @@ Actions 构建 Linux x64/ARM64、Windows x64、macOS Intel/Apple Silicon。macOS
 ```bash
 cargo run --manifest-path installer/Cargo.toml --locked --no-default-features --example scan -- 192.168.5.0/24
 ```
+
+## 导出诊断日志
+
+连接 Frame 后，点击底部的 **导出日志**，选择电脑上的 ZIP 保存位置，无需选择发行版本或安装包。安装器通过 SSH 和管理员权限独立收集，不依赖网络面板或本体服务；服务停止、状态文件损坏时仍能导出，并包含安装器当前的操作日志。导出不会安装、重启或修改 Framely。
+
+日志包包含有大小限制的近期服务、插件和 CEF 日志、GPU 信息、安装版本及插件状态摘要。缺失来源记录在 `report.json` 中。不包含插件设置、收件箱内容和密码文件，并过滤常见凭据格式；分享前仍应检查日志。取消保存弹窗不会改变安装状态。

@@ -146,3 +146,7 @@ Declare `backend.uiVisibilityEvents: true` to receive the reserved JSON-line RPC
 `framely.ui.close()` closes the current native surface: the quick panel or the current plugin window. It does not stop the backend or recording. Requires a host with this bridge method.
 
 Standalone plugin windows display the plugin page without a host title bar. Plugins provide their own title, navigation and close button using `framely.ui.close()` or `framely.windows.close(id)`. Quick panels retain host navigation.
+
+## Launcher actions and host compatibility
+
+[Launcher actions and host compatibility](launcher.md)

@@ -33,3 +33,6 @@ Framely manages plugins on Steam Frame through device services, a SteamVR interf
 
 - [Framely releases and updates](releases.md)
 - [Desktop installer](../installer/README.md)
+
+- [Space launcher](launcher.md)
+- [Launcher actions and host compatibility](developer-guide/launcher.md)

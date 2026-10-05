@@ -93,3 +93,7 @@ restart 默认为 on-failure；never 只记录失败，不自动重启。restart
 状态包含 starting、running、stopping、stopped、recovering、failed 等阶段，并发管理操作沿核心服务的串行调度执行。管理器正常 SIGTERM/SIGINT 会尝试逐个停止插件；强制终止、断电不能保证任何钩子执行。清理应同时可在下次启动时安全恢复。
 
 日志页面合并展示后端日志与 lifecycle 日志；每种日志保留当前 2 MiB 与上一份。安装失败且插件尚未登记时，可从 `/var/lib/framely/logs/<id>.lifecycle.log` 查看。运行身份的数据目录为 `/var/lib/framely/data/<id>/<身份>/`（自定义核心数据目录时相应变化）。
+
+## 启动上下文
+
+[启动上下文](developer-guide/launcher.md)

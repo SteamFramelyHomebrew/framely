@@ -33,7 +33,10 @@ impl Tracker {
         ensure!(
             views.len() <= 64
                 && views.keys().all(|k| k.len() <= 256
-                    && (k == "menu" || k == "framely.manager" || k.starts_with("framely.window."))),
+                    && (k == "menu"
+                        || k == "launcher"
+                        || k == "framely.manager"
+                        || k.starts_with("framely.window."))),
             "Invalid native visibility views"
         );
         self.seen = Some(now);

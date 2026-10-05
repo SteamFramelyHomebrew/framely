@@ -35,3 +35,6 @@ Framely 是 Steam Frame 的插件管理器，包含设备端服务、SteamVR 界
 
 - [Framely 发行与更新机制](releases.md)
 - [电脑端安装器构建](../../installer/README.zh-CN.md)
+
+- [空间启动台](launcher.md)
+- [启动台操作与本体兼容](developer-guide/launcher.md)

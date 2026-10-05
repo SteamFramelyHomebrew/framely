@@ -361,7 +361,10 @@ impl Agent {
             let badge = self
                 .core("host.notification.badge", json!({}))
                 .unwrap_or(json!(0));
-            return send_json(r, json!({"commands":commands,"notificationBadge":badge}));
+            return send_json(
+                r,
+                json!({"commands":commands,"notificationBadge":badge,"launcher":self.core("status",json!({})).ok().map(|v|v["database"]["launcher"].clone()).unwrap_or(json!({}))}),
+            );
         }
         if let Some(rel) = path.strip_prefix("/plugin-assets/") {
             let (id, file) = rel.split_once('/').context("Invalid asset path")?;
@@ -384,7 +387,10 @@ impl Agent {
                 .join(&m.version);
             return send_file(r, &root.join(file), true);
         }
-        if let Some(rel) = path.strip_prefix("/plugin-frame/") {
+        if let Some(rel) = path
+            .strip_prefix("/plugin-frame/")
+            .or_else(|| path.strip_prefix("/plugin-action-frame/"))
+        {
             let parts: Vec<_> = rel.split('/').collect();
             ensure!(parts.len() == 2, "Invalid plugin frame");
             let id = parts[0];
@@ -400,7 +406,23 @@ impl Agent {
                 "Plugin disabled"
             );
             let m: Manifest = serde_json::from_value(p["manifest"].clone())?;
-            let entry = if parts[1] == "quick" {
+            if let Some(e) = &m.engines {
+                e.check()?;
+            }
+            let entry = if path.starts_with("/plugin-action-frame/") {
+                let action = parts[1];
+                match &m
+                    .ui
+                    .launcher_actions
+                    .iter()
+                    .find(|a| a.id == action)
+                    .context("Unknown action")?
+                    .target
+                {
+                    LauncherActionTarget::Frontend { entry } => entry.clone(),
+                    _ => anyhow::bail!("Not a frontend action"),
+                }
+            } else if parts[1] == "quick" {
                 m.ui.quick_page.clone().context("No quick page")?
             } else {
                 m.ui.windows
@@ -527,6 +549,9 @@ impl Agent {
             let mut bytes = Vec::new();
             r.as_reader().read_to_end(&mut bytes)?;
             let mut request: Value = serde_json::from_slice(&bytes)?;
+            if request["method"] == "diagnostics.export" {
+                request["params"] = json!({"remote":remote});
+            }
             if remote && request["method"] == "ui.visibility.get" {
                 request["params"] = json!({"view":""});
             }
@@ -544,9 +569,21 @@ impl Agent {
         if path == "/"
             || path == "/manager"
             || path == "/notifications"
+            || path == "/launcher"
             || path.starts_with("/window/")
         {
             let data = fs::read(self.assets.join("index.html"))?;
+            let data = if remote {
+                String::from_utf8(data)?
+                    .replacen(
+                        "<head>",
+                        "<head><meta name=\"framely-remote\" content=\"true\">",
+                        1,
+                    )
+                    .into_bytes()
+            } else {
+                data
+            };
             let response=Response::from_data(data).with_header(header("Content-Type","text/html; charset=utf-8")).with_header(header("Content-Security-Policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; frame-src 'self' http://localhost:*; connect-src 'self'; base-uri 'none'; form-action 'none'"));
             r.respond(response)?;
             return Ok(());
@@ -580,10 +617,41 @@ impl Agent {
             );
         }
         match method {
+            "desktop.list" => Ok(json!(crate::desktop::discover(&crate::steam::home()?))),
+            "desktop.launch" => {
+                let id = p["app"].as_str().context("Missing desktop app")?;
+                crate::desktop::launch(&crate::steam::home()?, id)?;
+                push(&self.commands, json!({"kind":"launcher.close"}));
+                Ok(json!(true))
+            }
+            "steam.list" => Ok(json!(crate::steam::discover(&crate::steam::home()?))),
+            "steam.launch" => {
+                let id = p["app"]
+                    .as_u64()
+                    .filter(|v| *v > 0 && *v <= u32::MAX as u64)
+                    .context("Invalid Steam app")? as u32;
+                crate::steam::launch(id)?;
+                push(&self.commands, json!({"kind":"launcher.close"}));
+                Ok(json!(true))
+            }
+            "host.launcher.close" => {
+                push(&self.commands, json!({"kind":"launcher.close"}));
+                Ok(json!(true))
+            }
+            "host.plugin.manage" => {
+                let id = p["plugin"].as_str().context("Missing plugin")?;
+                valid_id(id)?;
+                push(
+                    &self.commands,
+                    json!({"kind":"manager.open","page":format!("plugin:{id}")}),
+                );
+                Ok(json!(true))
+            }
             "agreement.decline" => {
                 let view = p["view"].as_str().context("Missing view")?;
                 ensure!(
                     view == "menu"
+                        || view == "launcher"
                         || view == "framely.manager"
                         || view.starts_with("framely.window."),
                     "Invalid view"
@@ -746,12 +814,50 @@ impl Agent {
                     Ok(json!(true))
                 })
             }
+            "diagnostics.export" => {
+                use base64::Engine;
+                let mut result = self.core("diagnostics.export", json!({}))?;
+                if p["remote"] != true {
+                    let name = result["name"].as_str().context("Missing archive name")?;
+                    ensure!(
+                        name.starts_with("framely-logs-")
+                            && name.ends_with(".zip")
+                            && !name.contains('/')
+                            && !name.contains('\\'),
+                        "Invalid archive name"
+                    );
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(result["data"].as_str().context("Missing archive data")?)?;
+                    let dir =
+                        PathBuf::from(std::env::var_os("HOME").context("Missing home directory")?)
+                            .join("Downloads");
+                    fs::create_dir_all(&dir)?;
+                    let file = dir.join(format!(
+                        "{}-{}.zip",
+                        name.trim_end_matches(".zip"),
+                        random_key()
+                    ));
+                    use std::io::Write;
+                    use std::os::unix::fs::OpenOptionsExt;
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .open(&file)?
+                        .write_all(&bytes)?;
+                    result["path"] = json!(file);
+                    result.as_object_mut().unwrap().remove("data");
+                }
+                Ok(result)
+            }
             "host.haptic" => {
                 let view = p["view"].as_str().context("Missing haptic view")?;
                 ensure!(
                     view.len() <= 160
-                        && (matches!(view, "menu" | "framely.manager" | "notifications")
-                            || view.starts_with("framely.window.")),
+                        && (matches!(
+                            view,
+                            "menu" | "launcher" | "framely.manager" | "notifications"
+                        ) || view.starts_with("framely.window.")),
                     "Invalid haptic view"
                 );
                 let mut commands = self.commands.lock().unwrap();
@@ -792,6 +898,12 @@ impl Agent {
             | "plugin.uninstall"
             | "plugin.open"
             | "plugin.call"
+            | "plugin.launch.context"
+            | "plugin.launch"
+            | "plugin.launcher.action"
+            | "launcher.settings.save"
+            | "launcher.order.save"
+            | "steam.favorite"
             | "window.open"
             | "window.close"
             | "notification.send"
@@ -856,14 +968,20 @@ pub(crate) fn fetch_catalog_proxy_cancel(
     .context("插件源连接失败")?;
     let bytes = crate::http::read_cancel(response, 2 * 1024 * 1024, cancel)?;
     ensure!(bytes.len() <= 2 * 1024 * 1024, "插件目录超过 2 MiB");
-    let catalog: Catalog = serde_json::from_slice(&bytes).context("目录格式无效")?;
+    let mut catalog: Catalog = serde_json::from_slice(&bytes).context("目录格式无效")?;
     ensure!(
         catalog.schema_version == 1 && catalog.plugins.len() <= 1000,
         "不支持的插件目录"
     );
     let mut ids = std::collections::BTreeSet::new();
-    for p in &catalog.plugins {
+    for p in &mut catalog.plugins {
         p.validate(source.allow_http)?;
+        p.compatible = Some(
+            p.api_version == API_VERSION
+                && p.engines
+                    .as_ref()
+                    .is_none_or(|e| e.matches(env!("CARGO_PKG_VERSION"))),
+        );
         ensure!(ids.insert(&p.id), "主目录中有重复插件 ID");
     }
     Ok(catalog)
@@ -886,14 +1004,22 @@ pub(crate) fn fetch_plugin_versions_cancel(
         cancel,
     )?;
     let bytes = crate::http::read_cancel(response, 2 * 1024 * 1024, cancel)?;
-    let document: PluginVersions = serde_json::from_slice(&bytes).context("历史版本格式无效")?;
+    let mut document: PluginVersions =
+        serde_json::from_slice(&bytes).context("历史版本格式无效")?;
     ensure!(
         document.schema_version == 1 && document.id == plugin_id && document.versions.len() <= 1000,
         "不支持的插件历史版本目录"
     );
     let mut versions = std::collections::BTreeSet::new();
-    for entry in &document.versions {
+    for entry in &mut document.versions {
         entry.validate(source.allow_http)?;
+        entry.compatible = Some(
+            entry.api_version == API_VERSION
+                && entry
+                    .engines
+                    .as_ref()
+                    .is_none_or(|e| e.matches(env!("CARGO_PKG_VERSION"))),
+        );
         ensure!(
             entry.id == plugin_id && versions.insert(&entry.version),
             "历史版本 ID 不匹配或版本重复"
@@ -1128,6 +1254,7 @@ pub fn serve(
                         "plugin.disabled",
                         "notification.changed",
                         "manager.open",
+                        "menu.open",
                     ]
                     .contains(&e["kind"].as_str().unwrap_or(""))
                     {
@@ -1894,6 +2021,7 @@ mod tests {
             for expected in [
                 "host.ui.visibility",
                 "host.notification.badge",
+                "status",
                 "agreement.status",
             ] {
                 let (mut stream, _) = listener.accept().unwrap();

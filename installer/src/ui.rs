@@ -1111,6 +1111,12 @@ impl Render for Installer {
                         },
                     )),
             );
+        footer = footer.child(
+            Button::new("export-diagnostic-logs")
+                .label("导出日志")
+                .disabled(self.busy || self.connection.is_none())
+                .on_click(cx.listener(|view, _, _, cx| view.export_logs(cx))),
+        );
         if self.page < 2 {
             let label = if self.page == 0 && self.connection.is_none() {
                 "先连接设备"

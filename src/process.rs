@@ -29,7 +29,7 @@ pub struct ExitInfo {
 }
 #[cfg(test)]
 thread_local! { pub static TEST_TOOLS: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) }; }
-fn tool(name: &str) -> Command {
+pub(crate) fn tool(name: &str) -> Command {
     #[cfg(test)]
     if let Some(root) = TEST_TOOLS.with(|p| p.borrow().clone()) {
         return Command::new(root.join(name));

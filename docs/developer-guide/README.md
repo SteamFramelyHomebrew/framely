@@ -82,3 +82,7 @@ Inspect Framely status and systemd logs. Do not mix debug messages into backend 
 Default GitHub Releases use tag `v<version>` and asset `<id>-<version>.framely`; source may omit `downloadUrl`. Community registration derives it automatically. Prepare a temporary packaged Manifest containing the final URL as shown in [publishing](publishing.md), because current `framely pack` does not read Git remotes. Set an explicit URL for custom downloads. Publish the Release/assets with usage, runtime-user details, changes and actual test coverage, then host a catalog or register a fixed source commit. Database registration also checks expected whole-package hashes and field compatibility.
 
 For updates: bump version → regenerate the release Manifest (update explicit custom URLs if used) → rebuild/verify → device test → new Release → update the source pin. Never replace old assets.
+
+## Launcher actions and host compatibility
+
+[Launcher actions and host compatibility](launcher.md)

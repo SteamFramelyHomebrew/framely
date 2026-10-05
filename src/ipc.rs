@@ -19,6 +19,12 @@ pub fn write(stream: &mut impl Write, v: &Value) -> Result<()> {
     stream.flush()?;
     Ok(())
 }
+pub(crate) fn response(result: Result<Value>) -> Value {
+    match result {
+        Ok(v) => json!({"result":v}),
+        Err(e) => json!({"error":format!("{e:#}")}),
+    }
+}
 pub fn call(path: &Path, method: &str, params: Value) -> Result<Value> {
     call_timeout(path, method, params, Duration::from_secs(90))
 }
@@ -37,6 +43,28 @@ pub fn call_timeout(path: &Path, method: &str, params: Value, timeout: Duration)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_errors_keep_the_cause_across_ipc() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("service.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read(&mut stream).unwrap();
+            assert_eq!(request["method"], "install.batch");
+            let result = Err(anyhow::anyhow!("Permission denied (os error 13)"))
+                .context("安装插件 test.plugin 失败")
+                .context("批量安装失败，已恢复原版本和启用状态");
+            write(&mut stream, &response(result)).unwrap();
+        });
+        let error = call(&socket, "install.batch", json!({})).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("批量安装失败，已恢复原版本和启用状态"));
+        assert!(message.contains("test.plugin"));
+        assert!(message.contains("Permission denied (os error 13)"));
+        worker.join().unwrap();
+    }
 
     #[test]
     fn package_messages_can_exceed_previous_transport_limit() {

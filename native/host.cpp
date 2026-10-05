@@ -8,8 +8,13 @@
 #include "dock_uv_geometry.h"
 #include "menu_geometry.h"
 #include "menu_input.h"
+#include "launcher_input.h"
+#include "launcher_pointer.h"
+#include <filesystem>
 #include "overlay_placement.h"
 #include "render_resolution.h"
+#include "render_timing.h"
+#include "paint_buffer.h"
 #include "notification_geometry.h"
 #include "notification_badge.h"
 #include "keyboard_state.h"
@@ -43,6 +48,20 @@ static Display* xdisplay=nullptr;
 static GLXContext glcontext=nullptr;
 static GLXPbuffer glsurface=0;
 static std::atomic<unsigned> notification_badge_count{0};
+static bool launcher_open=false;
+static LauncherDismissGuard launcher_dismiss;
+static EntryTrigger launcher_close_button;
+static LauncherStick launcher_stick;
+static std::chrono::steady_clock::time_point launcher_outside_at{};
+static bool launcher_selected=false;
+static std::atomic<bool> launcher_primary{false};
+static bool entry_actions_ready=false;
+static vr::VRActionSetHandle_t entry_set=0;
+static vr::VRActionHandle_t primary_action=0,upper_action=0,aim_action=0,close_action=0,navigate_action=0;
+static vr::VRInputValueHandle_t hands[2]{};
+static EntryTrigger entry_buttons[2][2];
+static EntryAnalogTrigger entry_analog[2];
+static EntryPointer entry_pointer;
 static bool menu_open=false,keyboard_open=false,keyboard_close_pending=false;
 static float notification_curve_radius=1.3f;
 static bool keyboard_toolbar=false,keyboard_chars=false,keyboard_done=false;
@@ -63,9 +82,9 @@ template<class T> struct Handler {
 };
 struct View {
  std::string key,plugin,title;int width=600,height=840,render_scale=1;bool dashboard=false,shown=false,dirty=false,closing=false,closed=false;
- OverlayPlacement placement;NotificationClick notification_click;std::chrono::steady_clock::time_point haptic_at{};
+ OverlayPlacement placement;NotificationClick notification_click;LauncherPointer launcher_pointer;std::chrono::steady_clock::time_point haptic_at{};
  bool active_seen=false,notification_content=false;int browser_id=0;cef_browser_t* browser=nullptr;cef_browser_host_t* host=nullptr;
- vr::VROverlayHandle_t overlay=0,thumbnail=0;GLuint textures[2]{};int texture_slot=0;bool texture_ready[2]{};std::vector<uint8_t> pixels;
+ vr::VROverlayHandle_t overlay=0,thumbnail=0;GLuint textures[2]{};int texture_slot=0;bool texture_ready[2]{};PaintDamage texture_damage[2];std::vector<uint8_t> pixels;
 };
 static std::map<std::string,std::unique_ptr<View>> views;
 static View* find_browser(cef_browser_t* b){int id=b->get_identifier(b);for(auto& [key,v]:views)if(v->browser_id==id)return v.get();return nullptr;}
@@ -183,23 +202,24 @@ static void anchor_notification(View& v){
  v.placement.curve(overlays,v.overlay,toast.width,toast.radius);
 }
 static View& create_view(const std::string& key,const std::string& title,const std::string& url,bool dock,int width,int height,const std::string& plugin="",float physical_width=0){
- if(views.count(key)){auto& v=*views.at(key);if(dock)overlays->ShowDashboard(key.c_str());else if(key!="notifications")show(v,true);return v;}
- if(views.size()>=34)throw std::runtime_error("Window limit exceeded");auto v=std::make_unique<View>();v->key=key;v->plugin=plugin;v->title=title;v->dashboard=dock;v->width=width;v->height=height;v->render_scale=key=="framely.manager"?4:(key=="menu"||key=="notifications")?2:1;
+ if(views.count(key)){auto& v=*views.at(key);if(dock&&key!="launcher")overlays->ShowDashboard(key.c_str());else if(key!="notifications"&&key!="launcher")show(v,true);return v;}
+ if(views.size()>=34)throw std::runtime_error("Window limit exceeded");auto v=std::make_unique<View>();v->key=key;v->plugin=plugin;v->title=title;v->dashboard=dock;v->width=width;v->height=height;v->render_scale=(key=="framely.manager"||key=="launcher")?4:(key=="menu"||key=="notifications")?2:1;
  auto error=dock?overlays->CreateDashboardOverlay(key.c_str(),title.c_str(),&v->overlay,&v->thumbnail):overlays->CreateOverlay(key.c_str(),title.c_str(),&v->overlay);if(error)throw std::runtime_error("Overlay creation failed: "+std::to_string(error));
  overlays->SetOverlayInputMethod(v->overlay,key=="notifications"?vr::VROverlayInputMethod_None:vr::VROverlayInputMethod_Mouse);vr::HmdVector2_t scale{{float(width),float(height)}};overlays->SetOverlayMouseScale(v->overlay,&scale);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_HideLaserIntersection,false);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_SendVRSmoothScrollEvents,true);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_VisibleInDashboard,true);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,true);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_SortWithNonSceneOverlays,false);overlays->SetOverlaySortOrder(v->overlay,0);
 
  // Keep the runtime's full dashboard controls, including its keyboard and close buttons.
  if(dock){
-  auto result=overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_MinimalControlBar,false);
+  if(key=="launcher")overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_NoDashboardTab,true);
+  auto result=overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_MinimalControlBar,key=="launcher");
   if(result)std::cerr<<"Dashboard controls unavailable "<<key<<" "<<result<<"\n";
   for(auto flag:{vr::VROverlayFlags_EnableControlBarKeyboard,vr::VROverlayFlags_EnableControlBarClose}){
    result=overlays->SetOverlayFlag(v->overlay,flag,true);
    if(result)std::cerr<<"Dashboard control unavailable "<<key<<" "<<result<<"\n";
   }
  }
- if(dock){auto pixels=icon(false,true);overlays->SetOverlayRaw(v->thumbnail,pixels.data(),128,128,4);overlays->SetOverlayWidthInMeters(v->overlay,physical_width>0?physical_width:(key=="framely.manager"?3.2f:1.2f));}else if(key!="menu"&&key!="notifications"){anchor_to_head(*v,physical_width>0?physical_width:1.0f);}
- cef_window_info_t info{};info.size=sizeof(info);info.windowless_rendering_enabled=1;cef_browser_settings_t bs{};bs.size=sizeof(bs);bs.windowless_frame_rate=30;bs.background_color=0;cef_string_t uri{};str(uri,url);auto* browser=cef_browser_host_create_browser_sync(&info,&client.api,&uri,&bs,nullptr,nullptr);cef_string_utf16_clear(&uri);
- if(!browser){overlays->DestroyOverlay(v->overlay);if(v->thumbnail)overlays->DestroyOverlay(v->thumbnail);throw std::runtime_error("Browser creation failed");}v->browser=browser;v->browser_id=browser->get_identifier(browser);v->host=browser->get_host(browser);glGenTextures(2,v->textures);auto* ptr=v.get();views.emplace(key,std::move(v));ptr->host->notify_screen_info_changed(ptr->host);ptr->host->was_resized(ptr->host);ptr->host->was_hidden(ptr->host,key!="notifications");if(dock)overlays->ShowDashboard(key.c_str());else if(key!="menu"&&key!="notifications")show(*ptr,true);return *ptr;
+ if(dock){auto pixels=icon(false,true);overlays->SetOverlayRaw(v->thumbnail,pixels.data(),128,128,4);overlays->SetOverlayWidthInMeters(v->overlay,physical_width>0?physical_width:(key=="framely.manager"?3.2f:key=="launcher"?3.f:1.2f));}else if(key!="menu"&&key!="notifications"&&key!="launcher"){anchor_to_head(*v,physical_width>0?physical_width:1.0f);}
+ cef_window_info_t info{};info.size=sizeof(info);info.windowless_rendering_enabled=1;cef_browser_settings_t bs{};bs.size=sizeof(bs);bs.windowless_frame_rate=browser_frame_rate(vr_system->GetFloatTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd,vr::Prop_DisplayFrequency_Float));bs.background_color=0;std::cout<<"Browser frame rate "<<key<<" "<<bs.windowless_frame_rate<<"\n";cef_string_t uri{};str(uri,url);auto* browser=cef_browser_host_create_browser_sync(&info,&client.api,&uri,&bs,nullptr,nullptr);cef_string_utf16_clear(&uri);
+ if(!browser){overlays->DestroyOverlay(v->overlay);if(v->thumbnail)overlays->DestroyOverlay(v->thumbnail);throw std::runtime_error("Browser creation failed");}v->browser=browser;v->browser_id=browser->get_identifier(browser);v->host=browser->get_host(browser);glGenTextures(2,v->textures);auto* ptr=v.get();views.emplace(key,std::move(v));ptr->host->notify_screen_info_changed(ptr->host);ptr->host->was_resized(ptr->host);ptr->host->was_hidden(ptr->host,key!="notifications");if(dock&&key!="launcher")overlays->ShowDashboard(key.c_str());else if(key!="menu"&&key!="notifications"&&key!="launcher")show(*ptr,true);return *ptr;
 }
 static void plugin_thumbnail(View& view,const std::string& encoded){
  if(!view.thumbnail||encoded.empty()||encoded.size()>1400000)return;
@@ -215,9 +235,105 @@ static void plugin_thumbnail(View& view,const std::string& encoded){
  for(int y=0;y<h;y++)for(int x=0;x<w;x++){int sx=std::min(width-1,int(x/scale)),sy=std::min(height-1,int(y/scale));std::copy_n(source.data()+(sy*width+sx)*4,4,pixels.data()+((y+(128-h)/2)*128+x+(128-w)/2)*4);}
  overlays->SetOverlayRaw(view.thumbnail,pixels.data(),128,128,4);
 }
-static void commands(){std::deque<json> commands;{std::lock_guard<std::mutex> lock(queue_mutex);commands.swap(queue);}for(const auto& c:commands){try{auto kind=c.value("kind","");if(kind=="haptic"){auto key=c.value("view","");if(views.count(key)&&views.at(key)->shown&&!views.at(key)->closing)hover_haptic(views.at(key)->overlay,views.at(key)->haptic_at);}else if(kind=="manager.open"){if(views.count("framely.manager")&&views.at("framely.manager")->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}auto page=c.value("page",std::string{});auto& manager=create_view("framely.manager","Framely 插件管理",origin+"/manager"+((page=="catalog"||page=="updates"||page=="notification-settings")?"#"+page:""),true,1440,810);if(page=="catalog"||page=="updates"||page=="notification-settings"){auto* frame=manager.browser->get_main_frame(manager.browser);execute(frame,"location.hash="+json(page).dump()+";window.dispatchEvent(new Event(\"hashchange\"))");frame->base.release(&frame->base);}menu_open=false;}else if(kind=="agreement.decline"){auto key=c.value("view","");if(key=="menu"){menu_open=false;if(views.count("menu")){show(*views.at("menu"),false);views.at("menu")->browser->reload(views.at("menu")->browser);}}else if(views.count(key))close_view(*views.at(key));}else if(kind=="manager.close"){if(views.count("framely.manager"))close_view(*views.at("framely.manager"));}else if(kind=="menu.close"){menu_open=false;}else if(kind=="window.open"){std::string plugin=c.at("plugin"),win=c.at("window");auto key="framely.window."+plugin+"."+win;if(views.count(key)&&views.at(key)->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}auto spec=c.at("spec");auto& opened=create_view("framely.window."+plugin+"."+win,spec.at("title"),origin+"/window/"+plugin+"/"+win,spec.value("dockIcon",false),spec.value("width",1600),spec.value("height",900),plugin,spec.value("widthMeters",3.f));plugin_thumbnail(opened,spec.value("iconData",std::string{}));menu_open=false;}else if(kind=="window.close"){auto key="framely.window."+c.at("plugin").get<std::string>()+"."+c.at("window").get<std::string>();if(views.count(key))close_view(*views.at(key));}else if(kind=="plugin.disabled"){for(auto&[key,v]:views)if(v->plugin==c.at("plugin"))close_view(*v);}else if(kind=="notification.changed"){auto& v=create_view("notifications","Framely notifications",origin+"/notifications",false,600,360);anchor_notification(v);v.host->was_hidden(v.host,0);v.host->invalidate(v.host,PET_VIEW);}else if(kind=="keyboard"){auto key=c.value("view","menu");if(!views.count(key))continue;auto& v=*views.at(key);if(v.closing)continue;close_keyboard();v.host->set_focus(v.host,1);keyboard_frame=v.browser->get_focused_frame(v.browser);keyboard_view=key;keyboard_target=v.overlay;++keyboard_token;auto existing=c.value("existing","");if(key=="menu")overlays->SetOverlayFlag(v.overlay,vr::VROverlayFlags_WantsModalBehavior,false);auto e=overlays->ShowKeyboardForOverlay(v.overlay,c.value("password",false)?vr::k_EGamepadTextInputModePassword:vr::k_EGamepadTextInputModeNormal,c.value("multiline",false)?vr::k_EGamepadTextInputLineModeMultipleLines:vr::k_EGamepadTextInputLineModeSingleLine,vr::KeyboardFlag_Modal|vr::KeyboardFlag_Minimal|vr::KeyboardFlag_ShowArrowKeys,"Framely",4096,existing.c_str(),keyboard_token);keyboard_open=e==vr::VROverlayError_None;keyboard_menu.begin(keyboard_open&&key=="menu");if(!keyboard_open)close_keyboard();}else if(kind=="notifications.empty"){if(views.count("notifications")){views.at("notifications")->notification_content=false;show(*views.at("notifications"),false);}}}catch(const std::exception& e){std::cerr<<"Native command error: "<<e.what()<<"\n";}}
+static void navigate(View& view,const std::string& hash){auto* frame=view.browser->get_main_frame(view.browser);execute(frame,"location.hash="+json(hash).dump()+";window.dispatchEvent(new Event('hashchange'))");frame->base.release(&frame->base);}
+static void hide_launcher(){
+ launcher_open=false;launcher_selected=false;
+ if(views.count("launcher")&&overlays->IsActiveDashboardOverlay(views.at("launcher")->overlay))
+  overlays->ShowDashboard("valve.steam.gamepadui.main");
 }
-static void overlay_input(View& v,const vr::VREvent_t& e){if(v.closing||(v.key=="notifications"&&!v.shown))return;if(keyboard_event(e,v.overlay))return;laser_cursor(v.overlay,e);cef_mouse_event_t mouse{};mouse.x=int(e.data.mouse.x);mouse.y=v.height-int(e.data.mouse.y);switch(e.eventType){case vr::VREvent_Modal_Cancel:if(v.key=="menu"&&!keyboard_open&&!keyboard_menu.holds(std::chrono::steady_clock::now())&&menu_button.can_cancel(std::chrono::steady_clock::now())){menu_open=false;std::cout<<"Menu closed: outside click"<<std::endl;}break;case vr::VREvent_OverlayClosed:if(v.key!="menu"&&v.key!="notifications")close_view(v);break;case vr::VREvent_ButtonPress:if(e.data.controller.button==vr::k_EButton_ApplicationMenu){auto* frame=v.browser->get_main_frame(v.browser);execute(frame,"window.dispatchEvent(new Event('framely.back'))");frame->base.release(&frame->base);}break;case vr::VREvent_FocusLeave:if(v.key!="notifications"||!v.notification_click.active)v.host->send_mouse_move_event(v.host,&mouse,1);break;case vr::VREvent_MouseMove:if(v.key!="notifications"||!v.notification_click.hold(mouse.x,mouse.y,std::chrono::steady_clock::now()))v.host->send_mouse_move_event(v.host,&mouse,0);break;case vr::VREvent_MouseButtonDown:case vr::VREvent_MouseButtonUp:{v.host->set_focus(v.host,1);auto button=e.data.mouse.button==vr::VRMouseButton_Right?MBT_RIGHT:MBT_LEFT;if(v.key=="notifications"&&button==MBT_LEFT){auto now=std::chrono::steady_clock::now();if(e.eventType==vr::VREvent_MouseButtonDown)v.notification_click.begin(mouse.x,mouse.y,now);else v.notification_click.release(mouse.x,mouse.y,now);}mouse.modifiers=e.eventType==vr::VREvent_MouseButtonDown?EVENTFLAG_LEFT_MOUSE_BUTTON:0;v.host->send_mouse_click_event(v.host,&mouse,button,e.eventType==vr::VREvent_MouseButtonUp,1);break;}case vr::VREvent_ScrollSmooth:case vr::VREvent_ScrollDiscrete:mouse.x=v.width/2;mouse.y=v.height/2;v.host->send_mouse_wheel_event(v.host,&mouse,int(e.data.scroll.xdelta*120),int(e.data.scroll.ydelta*120));break;case vr::VREvent_OverlayGamepadFocusLost:if(!keyboard_open&&!v.dashboard&&v.key!="menu"&&v.key!="notifications")close_view(v);break;default:break;}}
+static void launcher_back(){
+ if(!launcher_open||!views.count("launcher"))return;
+ auto& view=*views.at("launcher");auto* frame=view.browser->get_main_frame(view.browser);
+ execute(frame,"window.dispatchEvent(new Event('framely.back'))");frame->base.release(&frame->base);
+}
+static bool launcher_accepts(const vr::VREvent_t& e){
+ bool held=false;for(auto& hand:entry_buttons)for(auto& button:hand)held|=button.held;
+ return launcher_dismiss.allows(std::chrono::steady_clock::now(),held,e.eventAgeSeconds);
+}
+static void toggle_entry(bool launcher){
+ if(launcher){
+  menu_open=false;if(views.count("menu"))show(*views.at("menu"),false);
+  if(launcher_open){hide_launcher();return;}
+  auto& view=create_view("launcher","Framely launcher",origin+"/launcher",true,1200,800);
+  vr::VREvent_t stale{};while(overlays->PollNextOverlayEvent(view.overlay,&stale,sizeof(stale))){}
+  launcher_dismiss.opened(std::chrono::steady_clock::now());launcher_open=true;launcher_selected=false;launcher_stick={};launcher_outside_at={};
+  overlays->ShowDashboard("launcher");
+  auto* frame=view.browser->get_main_frame(view.browser);execute(frame,"window.dispatchEvent(new Event('framely.launcher.open'))");frame->base.release(&frame->base);
+ }else{hide_launcher();menu_open=!menu_open;if(menu_open)menu_button.opened(std::chrono::steady_clock::now());}
+}
+static void setup_entry_actions(){
+ char exe[4096]{};auto n=readlink("/proc/self/exe",exe,sizeof(exe)-1);if(n<=0)return;
+ auto base=std::filesystem::path(exe).parent_path();auto manifest=base/"../../share/input/actions.json";
+ if(!std::filesystem::exists(manifest))manifest=base/"../../native/input/actions.json";
+ auto* input=vr::VRInput();if(!input||!std::filesystem::exists(manifest))return;
+ auto error=input->SetActionManifestPath(std::filesystem::absolute(manifest).lexically_normal().c_str());if(error!=vr::VRInputError_None){std::cerr<<"Action manifest failed: "<<error<<std::endl;return;}
+ entry_actions_ready=input->GetActionSetHandle("/actions/entry",&entry_set)==vr::VRInputError_None&&input->GetActionHandle("/actions/entry/in/primary",&primary_action)==vr::VRInputError_None&&input->GetActionHandle("/actions/entry/in/upper",&upper_action)==vr::VRInputError_None&&input->GetActionHandle("/actions/entry/in/aim",&aim_action)==vr::VRInputError_None;
+ input->GetActionHandle("/actions/entry/in/close",&close_action);input->GetActionHandle("/actions/entry/in/navigate",&navigate_action);
+ input->GetInputSourceHandle("/user/hand/left",&hands[0]);input->GetInputSourceHandle("/user/hand/right",&hands[1]);
+ std::cout<<"Framely independent trigger bindings "<<(entry_actions_ready?"ready":"unavailable")<<std::endl;
+}
+static void entry_actions(vr::VROverlayHandle_t button,bool available){
+ if(!entry_actions_ready)return;auto* input=vr::VRInput();vr::VRActiveActionSet_t set{};set.ulActionSet=entry_set;
+ if(input->UpdateActionState(&set,sizeof(set),1)!=vr::VRInputError_None)return;
+ auto now=std::chrono::steady_clock::now();
+ float stick_x=0,stick_y=0;bool stick_active=false;
+ for(int hand=0;hand<2;hand++){
+  vr::InputPoseActionData_t pose{};auto device=vr_system->GetTrackedDeviceIndexForControllerRole(hand?vr::TrackedControllerRole_RightHand:vr::TrackedControllerRole_LeftHand);bool hit=available&&entry_pointer.hit(device);
+  bool pose_ok=available&&input->GetPoseActionDataRelativeToNow(aim_action,vr::TrackingUniverseStanding,0,&pose,sizeof(pose),hands[hand])==vr::VRInputError_None&&pose.bActive&&pose.pose.bPoseIsValid;
+  if(available&&!pose_ok&&device!=vr::k_unTrackedDeviceIndexInvalid){
+   vr::TrackedDevicePose_t tracked[vr::k_unMaxTrackedDeviceCount]{};vr_system->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding,0,tracked,vr::k_unMaxTrackedDeviceCount);
+   char model[256]{};vr_system->GetStringTrackedDeviceProperty(device,vr::Prop_RenderModelName_String,model,sizeof(model));
+   vr::RenderModel_ControllerMode_State_t mode{};vr::RenderModel_ComponentState_t tip{};
+   if(tracked[device].bDeviceIsConnected&&tracked[device].bPoseIsValid&&vr::VRRenderModels()->GetComponentStateForDevicePath(model,"tip",hands[hand],&mode,&tip)){
+    pose.pose.mDeviceToAbsoluteTracking=entry_tip_pose(tracked[device].mDeviceToAbsoluteTracking,tip.mTrackingToComponentLocal);pose_ok=true;
+   }
+  }
+  if(pose_ok){auto& m=pose.pose.mDeviceToAbsoluteTracking;vr::VROverlayIntersectionParams_t params{};params.eOrigin=vr::TrackingUniverseStanding;for(int r=0;r<3;r++){params.vSource.v[r]=m.m[r][3];params.vDirection.v[r]=-m.m[r][2];}vr::VROverlayIntersectionResults_t result{};hit=hit||(overlays->IsHoverTargetOverlay(button)&&overlays->ComputeOverlayIntersection(button,&params,&result)&&result.vUVs.v[0]>=float(dock_icon_left)/dock_canvas_width&&result.vUVs.v[0]<=float(dock_icon_left+128)/dock_canvas_width);}
+
+  for(int kind=0;kind<2;kind++){vr::InputDigitalActionData_t data{};bool active=input->GetDigitalActionData(kind?upper_action:primary_action,&data,sizeof(data),hands[hand])==vr::VRInputError_None&&data.bActive;
+   bool down=data.bState;if(kind==0&&active)entry_analog[hand].held=down;
+   // Dashboard focus suppresses action data. Frame's render-model components
+   // read the separate physical input paths, without changing Steam bindings
+   // or the user's global input-override setting.
+   if(!active&&device!=vr::k_unTrackedDeviceIndexInvalid&&vr_system->IsTrackedDeviceConnected(device)){
+    char type[256]{},model[256]{};vr_system->GetStringTrackedDeviceProperty(device,vr::Prop_ControllerType_String,type,sizeof(type));
+    if(std::string(type)=="frame_controller"){
+     vr_system->GetStringTrackedDeviceProperty(device,vr::Prop_RenderModelName_String,model,sizeof(model));
+     vr::RenderModel_ControllerMode_State_t mode{};vr::RenderModel_ComponentState_t state{};
+     active=vr::VRRenderModels()->GetComponentStateForDevicePath(model,kind?"bumper":"trigger",hands[hand],&mode,&state);
+     down=active&&(state.uProperties&vr::VRComponentProperty_IsPressed);
+     if(active&&kind==0){
+      // Frame's primary trigger is analog: its animated component has no
+      // IsPressed flag. Calibrate its travel from the model's legacy axis 1,
+      // then match Steam's 50% press / 45% release thresholds.
+      vr::VRControllerState_t rest_input{},full_input{};full_input.rAxis[1].x=1;
+      vr::RenderModel_ComponentState_t rest{},full{};float pull=0;
+      if(vr::VRRenderModels()->GetComponentState(model,"trigger",&rest_input,&mode,&rest)&&vr::VRRenderModels()->GetComponentState(model,"trigger",&full_input,&mode,&full)&&entry_trigger_pull(rest,full,state,pull))down=entry_analog[hand].update(pull)||down;
+     }
+    }
+   }
+   if(kind==0&&!active)entry_analog[hand].held=false;
+   bool was_held=entry_buttons[hand][kind].held;
+   if(entry_buttons[hand][kind].update(active,down,hit,now))toggle_entry(kind==0?launcher_primary.load():!launcher_primary.load());
+   else if(kind==0&&active&&down&&!was_held&&launcher_open&&!hit&&launcher_dismiss.allows(now,true)&&views.count("launcher")&&!overlays->IsHoverTargetOverlay(views.at("launcher")->overlay))launcher_outside_at=now+std::chrono::milliseconds(60);
+  }
+  if(!launcher_open)continue;
+  if(hand==1){vr::InputDigitalActionData_t close{};bool active=input->GetDigitalActionData(close_action,&close,sizeof(close),hands[hand])==vr::VRInputError_None&&close.bActive;bool down=close.bState;
+   if(!active&&device!=vr::k_unTrackedDeviceIndexInvalid&&vr_system->IsTrackedDeviceConnected(device)){char model[256]{};vr_system->GetStringTrackedDeviceProperty(device,vr::Prop_RenderModelName_String,model,sizeof(model));vr::RenderModel_ControllerMode_State_t mode{};vr::RenderModel_ComponentState_t state{};active=vr::VRRenderModels()->GetComponentStateForDevicePath(model,"button_b",hands[hand],&mode,&state);down=active&&(state.uProperties&vr::VRComponentProperty_IsPressed);}
+   if(launcher_close_button.update(active,down,true,now))launcher_back();
+  }
+  vr::InputAnalogActionData_t axis{};bool active=input->GetAnalogActionData(navigate_action,&axis,sizeof(axis),hands[hand])==vr::VRInputError_None&&axis.bActive;float x=axis.x,y=axis.y;
+  if(!active&&device!=vr::k_unTrackedDeviceIndexInvalid&&vr_system->IsTrackedDeviceConnected(device)){char model[256]{};vr_system->GetStringTrackedDeviceProperty(device,vr::Prop_RenderModelName_String,model,sizeof(model));vr::RenderModel_ControllerMode_State_t mode{};vr::RenderModel_ComponentState_t rest{},full_x{},full_y{},current{};vr::VRControllerState_t neutral{},sx{},sy{};sx.rAxis[0].x=1;sy.rAxis[0].y=1;auto* models=vr::VRRenderModels();active=models->GetComponentStateForDevicePath(model,"thumbstick",hands[hand],&mode,&current)&&models->GetComponentState(model,"thumbstick",&neutral,&mode,&rest)&&models->GetComponentState(model,"thumbstick",&sx,&mode,&full_x)&&models->GetComponentState(model,"thumbstick",&sy,&mode,&full_y)&&launcher_stick_axes(rest,full_x,full_y,current,x,y);}
+  // Pick a single controller and a single axis; never emit two directions.
+  if(active&&(!stick_active||std::max(std::abs(x),std::abs(y))>std::max(std::abs(stick_x),std::abs(stick_y)))){stick_active=true;stick_x=x;stick_y=y;}
+ }
+ if(launcher_open){int direction=launcher_stick.update(stick_x,stick_y,stick_active);if(direction&&views.count("launcher")){auto* frame=views.at("launcher")->browser->get_main_frame(views.at("launcher")->browser);execute(frame,"window.dispatchEvent(new CustomEvent('framely.launcher.navigate',{detail:"+std::to_string(direction)+"}))");frame->base.release(&frame->base);}}
+ else{launcher_stick={};launcher_close_button={};}
+ if(launcher_open&&launcher_outside_at.time_since_epoch().count()&&now>=launcher_outside_at){launcher_outside_at={};launcher_back();}
+}
+static void commands(){std::deque<json> commands;{std::lock_guard<std::mutex> lock(queue_mutex);commands.swap(queue);}for(const auto& c:commands){try{auto kind=c.value("kind","");if(kind=="launcher.close"){hide_launcher();}else if(kind=="menu.open"){hide_launcher();auto& menu=create_view("menu","Framely",origin+"/",false,600,840);navigate(menu,"#plugin:"+c.at("plugin").get<std::string>());menu_open=true;launcher_open=false;menu_button.opened(std::chrono::steady_clock::now());}else if(kind=="haptic"){auto key=c.value("view","");if(views.count(key)&&views.at(key)->shown&&!views.at(key)->closing)hover_haptic(views.at(key)->overlay,views.at(key)->haptic_at);}else if(kind=="manager.open"){hide_launcher();if(views.count("framely.manager")&&views.at("framely.manager")->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}auto page=c.value("page",std::string{});auto& manager=create_view("framely.manager","Framely 插件管理",origin+"/manager"+((page=="catalog"||page=="updates"||page=="notification-settings"||page.rfind("plugin:",0)==0)?"#"+page:""),true,1440,810);if(page.rfind("plugin:",0)==0)navigate(manager,"#"+page);if(page=="catalog"||page=="updates"||page=="notification-settings"){auto* frame=manager.browser->get_main_frame(manager.browser);execute(frame,"location.hash="+json(page).dump()+";window.dispatchEvent(new Event(\"hashchange\"))");frame->base.release(&frame->base);}menu_open=false;launcher_open=false;}else if(kind=="agreement.decline"){auto key=c.value("view","");if(key=="menu"){menu_open=false;if(views.count("menu")){show(*views.at("menu"),false);views.at("menu")->browser->reload(views.at("menu")->browser);}}else if(views.count(key))close_view(*views.at(key));}else if(kind=="manager.close"){if(views.count("framely.manager"))close_view(*views.at("framely.manager"));}else if(kind=="menu.close"){menu_open=false;}else if(kind=="window.open"){hide_launcher();std::string plugin=c.at("plugin"),win=c.at("window");auto key="framely.window."+plugin+"."+win;if(views.count(key)&&views.at(key)->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}auto spec=c.at("spec");auto& opened=create_view("framely.window."+plugin+"."+win,spec.at("title"),origin+"/window/"+plugin+"/"+win,spec.value("dockIcon",false),spec.value("width",1600),spec.value("height",900),plugin,spec.value("widthMeters",3.f));plugin_thumbnail(opened,spec.value("iconData",std::string{}));menu_open=false;launcher_open=false;}else if(kind=="window.close"){auto key="framely.window."+c.at("plugin").get<std::string>()+"."+c.at("window").get<std::string>();if(views.count(key))close_view(*views.at(key));}else if(kind=="plugin.disabled"){for(auto&[key,v]:views)if(v->plugin==c.at("plugin"))close_view(*v);}else if(kind=="notification.changed"){auto& v=create_view("notifications","Framely notifications",origin+"/notifications",false,600,360);anchor_notification(v);v.host->was_hidden(v.host,0);v.host->invalidate(v.host,PET_VIEW);}else if(kind=="keyboard"){auto key=c.value("view","menu");if(!views.count(key))continue;auto& v=*views.at(key);if(v.closing)continue;close_keyboard();v.host->set_focus(v.host,1);keyboard_frame=v.browser->get_focused_frame(v.browser);keyboard_view=key;keyboard_target=v.overlay;++keyboard_token;auto existing=c.value("existing","");if(key=="menu")overlays->SetOverlayFlag(v.overlay,vr::VROverlayFlags_WantsModalBehavior,false);auto e=overlays->ShowKeyboardForOverlay(v.overlay,c.value("password",false)?vr::k_EGamepadTextInputModePassword:vr::k_EGamepadTextInputModeNormal,c.value("multiline",false)?vr::k_EGamepadTextInputLineModeMultipleLines:vr::k_EGamepadTextInputLineModeSingleLine,vr::KeyboardFlag_Modal|vr::KeyboardFlag_Minimal|vr::KeyboardFlag_ShowArrowKeys,"Framely",4096,existing.c_str(),keyboard_token);keyboard_open=e==vr::VROverlayError_None;keyboard_menu.begin(keyboard_open&&key=="menu");if(!keyboard_open)close_keyboard();}else if(kind=="notifications.empty"){if(views.count("notifications")){views.at("notifications")->notification_content=false;show(*views.at("notifications"),false);}}}catch(const std::exception& e){std::cerr<<"Native command error: "<<e.what()<<"\n";}}
+}
+static void overlay_input(View& v,const vr::VREvent_t& e){if(v.closing)return;if((v.key=="notifications"||v.key=="launcher"||v.key=="menu")&&!v.shown&&e.eventType!=vr::VREvent_OverlayClosed)return;if(v.key=="launcher"&&!launcher_accepts(e)&&(e.eventType==vr::VREvent_Modal_Cancel||e.eventType==vr::VREvent_ButtonPress||e.eventType==vr::VREvent_MouseButtonDown||e.eventType==vr::VREvent_MouseButtonUp))return;if(keyboard_event(e,v.overlay))return;laser_cursor(v.overlay,e);cef_mouse_event_t mouse{};mouse.x=int(e.data.mouse.x);mouse.y=v.height-int(e.data.mouse.y);switch(e.eventType){case vr::VREvent_Modal_Cancel:if(v.key=="launcher"&&!keyboard_open)launcher_back();else if(v.key=="menu"&&!keyboard_open&&!keyboard_menu.holds(std::chrono::steady_clock::now())&&menu_button.can_cancel(std::chrono::steady_clock::now())){menu_open=false;std::cout<<"Menu closed: outside click"<<std::endl;}break;case vr::VREvent_OverlayClosed:if(v.key=="launcher")hide_launcher();else if(v.key!="menu"&&v.key!="notifications")close_view(v);break;case vr::VREvent_ButtonPress:if(e.data.controller.button==vr::k_EButton_ApplicationMenu){auto* frame=v.browser->get_main_frame(v.browser);execute(frame,"window.dispatchEvent(new Event('framely.back'))");frame->base.release(&frame->base);}break;case vr::VREvent_FocusLeave:if(v.key=="launcher"&&v.launcher_pointer.holding(std::chrono::steady_clock::now()))break;if(v.key!="notifications"||!v.notification_click.active)v.host->send_mouse_move_event(v.host,&mouse,1);break;case vr::VREvent_MouseMove:if(v.key=="launcher")v.launcher_pointer.constrain(mouse.x,mouse.y,std::chrono::steady_clock::now());if(v.key!="notifications"||!v.notification_click.hold(mouse.x,mouse.y,std::chrono::steady_clock::now()))v.host->send_mouse_move_event(v.host,&mouse,0);break;case vr::VREvent_MouseButtonDown:case vr::VREvent_MouseButtonUp:{v.host->set_focus(v.host,1);auto button=e.data.mouse.button==vr::VRMouseButton_Right?MBT_RIGHT:MBT_LEFT;if(v.key=="launcher"&&button==MBT_LEFT){auto now=std::chrono::steady_clock::now();if(e.eventType==vr::VREvent_MouseButtonDown)v.launcher_pointer.begin(mouse.x,mouse.y,now);else{v.launcher_pointer.constrain(mouse.x,mouse.y,now);v.launcher_pointer.clear();}}if(v.key=="notifications"&&button==MBT_LEFT){auto now=std::chrono::steady_clock::now();if(e.eventType==vr::VREvent_MouseButtonDown)v.notification_click.begin(mouse.x,mouse.y,now);else v.notification_click.release(mouse.x,mouse.y,now);}mouse.modifiers=e.eventType==vr::VREvent_MouseButtonDown?EVENTFLAG_LEFT_MOUSE_BUTTON:0;v.host->send_mouse_click_event(v.host,&mouse,button,e.eventType==vr::VREvent_MouseButtonUp,1);break;}case vr::VREvent_ScrollSmooth:case vr::VREvent_ScrollDiscrete:mouse.x=v.width/2;mouse.y=v.height/2;v.host->send_mouse_wheel_event(v.host,&mouse,int(e.data.scroll.xdelta*120),int(e.data.scroll.ydelta*120));break;case vr::VREvent_OverlayGamepadFocusLost:if(!keyboard_open&&!v.dashboard&&v.key!="menu"&&v.key!="notifications"&&v.key!="launcher")close_view(v);break;default:break;}}
 
 int main(int argc,char** argv){
  std::cout.setf(std::ios::unitbuf);std::string initial;int port=0;for(int i=1;i+1<argc;i++){std::string s=argv[i];if(s=="--url")initial=argv[++i];else if(s=="--port")port=std::stoi(argv[++i]);else if(s=="--runtime")runtime=argv[++i];}
@@ -231,21 +347,21 @@ int main(int argc,char** argv){
  vr::VR_Shutdown();
  // Frame's compositor requires the Overlay application type for visible UI.
  // The session agent and service gate this renderer on all native services.
- vr_system=vr::VR_Init(&vr_error,vr::VRApplication_Overlay);if(vr_error){std::cerr<<"SteamVR renderer unavailable "<<vr_error<<"\n";return 3;}overlays=vr::VROverlay();
+ vr_system=vr::VR_Init(&vr_error,vr::VRApplication_Overlay);if(vr_error){std::cerr<<"SteamVR renderer unavailable "<<vr_error<<"\n";return 3;}overlays=vr::VROverlay();setup_entry_actions();
  xdisplay=XOpenDisplay(nullptr);if(!xdisplay){vr::VR_Shutdown();return 4;}int n=0;int attrs[]={GLX_DRAWABLE_TYPE,GLX_PBUFFER_BIT,GLX_RENDER_TYPE,GLX_RGBA_BIT,None};auto* configs=glXChooseFBConfig(xdisplay,DefaultScreen(xdisplay),attrs,&n);if(!configs||!n){vr::VR_Shutdown();return 4;}int pba[]={GLX_PBUFFER_WIDTH,16,GLX_PBUFFER_HEIGHT,16,None};glsurface=glXCreatePbuffer(xdisplay,configs[0],pba);glcontext=glXCreateNewContext(xdisplay,configs[0],GLX_RGBA_TYPE,nullptr,True);XFree(configs);if(!glcontext||!glXMakeContextCurrent(xdisplay,glsurface,glsurface,glcontext)){vr::VR_Shutdown();return 4;}
  cef_settings_t settings{};settings.size=sizeof(settings);settings.windowless_rendering_enabled=1;std::string locale;for(const char* key:{"LC_ALL","LC_MESSAGES","LANG"}){const char* value=std::getenv(key);if(value&&*value){locale=value;break;}}auto suffix=locale.find_first_of(".@");if(suffix!=std::string::npos)locale.erase(suffix);std::replace(locale.begin(),locale.end(),'_','-');if(locale=="C"||locale=="POSIX"||locale.empty())locale="en-US";str(settings.accept_language_list,locale+",en-US,en");str(settings.root_cache_path,runtime+"/cef-cache");str(settings.log_file,runtime+"/cef.log");if(!cef_initialize(&args,&settings,nullptr,nullptr)){vr::VR_Shutdown();return 5;}
  render_handler.api.get_view_rect=[](cef_render_handler_t*,cef_browser_t* b,cef_rect_t* r){auto* v=find_browser(b);*r={0,0,v?v->width:600,v?v->height:840};};
  render_handler.api.get_screen_info=[](cef_render_handler_t*,cef_browser_t* b,cef_screen_info_t* info){auto* v=find_browser(b);return render_screen_info(info,v?v->width:600,v?v->height:840,v?v->render_scale:1);};
- render_handler.api.on_paint=[](cef_render_handler_t*,cef_browser_t* b,cef_paint_element_type_t type,size_t,const cef_rect_t*,const void* data,int w,int h){auto* v=find_browser(b);if(!v||v->closing||type!=PET_VIEW||w!=v->width*v->render_scale||h!=v->height*v->render_scale)return;v->pixels.resize(w*h*4);auto* source=static_cast<const uint8_t*>(data);for(int y=0;y<h;y++)std::copy_n(source+y*w*4,w*4,v->pixels.data()+(h-1-y)*w*4);v->dirty=true;};
+ render_handler.api.on_paint=[](cef_render_handler_t*,cef_browser_t* b,cef_paint_element_type_t type,size_t dirty_count,const cef_rect_t* dirty,const void* data,int w,int h){auto* v=find_browser(b);if(!v||v->closing||type!=PET_VIEW||w!=v->width*v->render_scale||h!=v->height*v->render_scale)return;merge_paint(v->pixels,data,w,h,dirty_count,dirty,true);for(auto& damage:v->texture_damage)damage.add(w,h,dirty_count,dirty);v->dirty=true;};
  life_handler.api.on_before_popup=[](cef_life_span_handler_t*,cef_browser_t*,cef_frame_t*,int,const cef_string_t*,const cef_string_t*,cef_window_open_disposition_t,int,const cef_popup_features_t*,cef_window_info_t*,cef_client_t**,cef_browser_settings_t*,cef_dictionary_value_t**,int*){return 1;};
  life_handler.api.on_before_close=[](cef_life_span_handler_t*,cef_browser_t* b){auto* v=find_browser(b);if(v){v->closed=true;v->host->base.release(&v->host->base);v->host=nullptr;v->browser->base.release(&v->browser->base);v->browser=nullptr;}};
  display_handler.api.on_console_message=[](cef_display_handler_t*,cef_browser_t* b,cef_log_severity_t,const cef_string_t* message,const cef_string_t*,int){auto* v=find_browser(b);std::cout<<"UI ["<<(v?v->key:"loading")<<"] "<<text(message)<<std::endl;return 1;};
  request_handler.api.on_before_browse=[](cef_request_handler_t*,cef_browser_t* b,cef_frame_t* f,cef_request_t* r,int,int){auto* uri=r->get_url(r);auto s=text(uri);cef_string_userfree_utf16_free(uri);auto* v=find_browser(b);return int(!allow_plugin_navigation(s,origin,!f||f->is_main(f),v&&!v->plugin.empty()));};
- request_handler.api.on_render_process_terminated=[](cef_request_handler_t*,cef_browser_t* b,cef_termination_status_t,int,const cef_string_t*){auto* v=find_browser(b);if(v){std::cerr<<"Renderer crashed: "<<v->key<<"\n";close_view(*v);if(v->key=="menu")running=0;}};
+ request_handler.api.on_render_process_terminated=[](cef_request_handler_t*,cef_browser_t* b,cef_termination_status_t,int,const cef_string_t*){auto* v=find_browser(b);if(v){std::cerr<<"Renderer crashed: "<<v->key<<"\n";close_view(*v);if(v->key=="menu")running=0;if(v->key=="launcher")launcher_open=false;}};
  client.api.get_render_handler=[](cef_client_t*){return render_handler.acquire();};client.api.get_life_span_handler=[](cef_client_t*){return life_handler.acquire();};client.api.get_display_handler=[](cef_client_t*){return display_handler.acquire();};client.api.get_request_handler=[](cef_client_t*){return request_handler.acquire();};
  vr::VROverlayHandle_t button=0;auto err=overlays->CreateOverlay("framely.dock.button","Framely",&button);if(err){cef_shutdown();vr::VR_Shutdown();return 6;}auto pixels=dock_icon(false,false);overlays->SetOverlayRaw(button,pixels.data(),dock_canvas_width,dock_canvas_height,4);overlays->SetOverlayInputMethod(button,vr::VROverlayInputMethod_Mouse);vr::HmdVector2_t scale{{dock_canvas_width,dock_canvas_height}};overlays->SetOverlayMouseScale(button,&scale);vr::VROverlayIntersectionMaskPrimitive_t mask{};mask.m_nPrimitiveType=vr::OverlayIntersectionPrimitiveType_Rectangle;mask.m_Primitive.m_Rectangle={dock_icon_left,0,128,128};if(overlays->SetOverlayIntersectionMask(button,&mask,1)){std::cerr<<"Dock input mask unavailable\n";overlays->DestroyOverlay(button);cef_shutdown();vr::VR_Shutdown();return 6;}overlays->SetOverlayFlag(button,vr::VROverlayFlags_VisibleInDashboard,true);overlays->SetOverlayFlag(button,vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,true);overlays->SetOverlayFlag(button,vr::VROverlayFlags_SortWithNonSceneOverlays,false);overlays->SetOverlaySortOrder(button,0);overlays->SetOverlayFlag(button,vr::VROverlayFlags_HideLaserIntersection,false);
  try{create_view("menu","Framely",initial,false,600,840);}catch(const std::exception& e){std::cerr<<e.what()<<"\n";running=0;}
- std::thread poller([port]{int failures=0;while(running){try{auto data=poll_http(port);notification_badge_count.store(data.value("notificationBadge",0u));std::lock_guard<std::mutex> lock(queue_mutex);for(const auto& c:data.at("commands")){if(queue.size()<256)queue.push_back(c);}failures=0;}catch(const std::exception& e){if(++failures>=10){std::cerr<<"Agent connection lost: "<<e.what()<<"\n";running=0;}}std::this_thread::sleep_for(std::chrono::milliseconds(100));}});
+ std::thread poller([port]{int failures=0;while(running){try{auto data=poll_http(port);notification_badge_count.store(data.value("notificationBadge",0u));launcher_primary.store(data.value("launcher",json::object()).value("primaryTrigger",false));std::lock_guard<std::mutex> lock(queue_mutex);for(const auto& c:data.at("commands")){if(queue.size()<256)queue.push_back(c);}failures=0;}catch(const std::exception& e){if(++failures>=10){std::cerr<<"Agent connection lost: "<<e.what()<<"\n";running=0;}}std::this_thread::sleep_for(std::chrono::milliseconds(100));}});
  DockUVState uv{};OverlayPlacement button_placement;bool icon_active=false,icon_hover=false;unsigned icon_badge=0;vr::VROverlayHandle_t last_dock=0;bool was_visible=false;vr::HmdMatrix34_t saved_anchor{},saved_frame{};float saved_size=0;DockCurveEvidence saved_evidence{};auto button_haptic_at=std::chrono::steady_clock::time_point{};auto anchored_at=std::chrono::steady_clock::time_point{};auto sampled_at=std::chrono::steady_clock::time_point{};
  while(running){auto frame_start=std::chrono::steady_clock::now();cef_do_message_loop_work();commands();vr::VREvent_t global{};while(vr_system->PollNextEvent(&global,sizeof(global))){if(global.eventType==vr::VREvent_Quit){vr_system->AcknowledgeQuit_Exiting();running=0;}keyboard_event(global);}vr::VROverlayHandle_t dock=0;vr::HmdVector2_t mouse_scale{};bool visible=!overlays->FindOverlay("valve.steam.gamepadui.bar",&dock)&&overlays->IsDashboardVisible()&&overlays->IsOverlayVisible(dock)&&!overlays->GetOverlayMouseScale(dock,&mouse_scale);
   if(visible&&(!was_visible||dock!=last_dock)){uv={};anchored_at={};sampled_at={};}last_dock=dock;
@@ -263,33 +379,54 @@ int main(int argc,char** argv){
    if(!main_overlay)main_overlay=active_main_window();
    if(main_overlay&&!overlays->GetOverlayMouseScale(main_overlay,&main_scale)&&!overlays->GetTransformForOverlayCoordinates(main_overlay,vr::TrackingUniverseStanding,{{main_scale.v[0]*.5f,main_scale.v[1]*.5f}},&main_pose))main=&main_pose;
    if(evidence.radius>0?dock_menu_placement(anchor,size,evidence.radius,evidence.pre_curve_pitch,popup):menu_placement(anchor,size,popup,0,main)){v.placement.apply(overlays,v.overlay,popup.transform,popup.width);v.placement.curve(overlays,v.overlay,popup.width,popup.radius);show(v,menu_open);}else show(v,false);}}else if(!keyboard_menu.holds(now)){if(overlays->IsOverlayVisible(button))overlays->ClearOverlayCursorPositionOverride(button);overlays->HideOverlay(button);if(views.count("menu"))show(*views.at("menu"),false);}
-  if(was_visible&&!visible&&!keyboard_open&&!keyboard_menu.holds(now)){menu_button.pressed=false;menu_open=false;for(auto&[key,v]:views)if(!v->dashboard&&key!="menu"&&key!="notifications")close_view(*v);}was_visible=visible;
+  if(was_visible&&!visible&&!keyboard_open&&!keyboard_menu.holds(now)){menu_button.pressed=false;menu_open=false;launcher_open=false;for(auto&[key,v]:views)if(!v->dashboard&&key!="menu"&&key!="notifications"&&key!="launcher")close_view(*v);}was_visible=visible;
+  // The runtime owns dashboard placement, curvature, visibility and switching.
+  // Never move the launcher into standing space or hide another app's overlay.
+  if(views.count("launcher")){
+   bool selected=overlays->IsActiveDashboardOverlay(views.at("launcher")->overlay);
+   if(launcher_open&&selected)launcher_selected=true;
+   if(launcher_open&&!selected&&(launcher_selected||now-launcher_dismiss.opened_at>std::chrono::seconds(1)))launcher_open=false;
+  }
   // Toggle once for a matched left click; never activate on a stale release.
   vr::VREvent_t event{};while(overlays->PollNextOverlayEvent(button,&event,sizeof(event))){
    laser_cursor(button,event);
+   if(event.eventType==vr::VREvent_MouseMove||event.eventType==vr::VREvent_MouseButtonDown||event.eventType==vr::VREvent_MouseButtonUp)entry_pointer.move(event.trackedDeviceIndex,event.data.mouse.x,event.data.mouse.y);
+   if(event.eventType==vr::VREvent_FocusLeave)entry_pointer.leave();
    if(event.eventType==vr::VREvent_MouseButtonDown||event.eventType==vr::VREvent_MouseButtonUp){
-    if(menu_button.event(event.eventType==vr::VREvent_MouseButtonDown,event.data.mouse.button==vr::VRMouseButton_Left,anchor_ok,now)){
-     menu_open=!menu_open;if(menu_open){menu_button.opened(now);if(views.count("menu"))views.at("menu")->host->set_focus(views.at("menu")->host,1);}
+    if(!entry_actions_ready&&menu_button.event(event.eventType==vr::VREvent_MouseButtonDown,event.data.mouse.button==vr::VRMouseButton_Left,anchor_ok,now)){
+     toggle_entry(launcher_primary.load());if(menu_open){menu_button.opened(now);if(views.count("menu"))views.at("menu")->host->set_focus(views.at("menu")->host,1);}
      std::cout<<"Menu "<<(menu_open?"opened":"closed")<<std::endl;
     }
    }
   }
-  for(auto&[key,v]:views){if(v->closing)continue;if(v->dashboard){bool active=overlays->IsDashboardVisible()&&overlays->IsActiveDashboardOverlay(v->overlay)&&overlays->IsOverlayVisible(v->overlay);if(active!=v->shown){v->host->was_hidden(v->host,!active);v->shown=active;}if(!active)v->active_seen=false;if(active&&!v->active_seen){v->active_seen=true;for(auto&[other,t]:views)if(!t->dashboard&&other!="menu"&&other!="notifications"&&!keyboard_open)close_view(*t);}}
+  if(!anchor_ok)entry_pointer.leave();
+  entry_actions(button,anchor_ok);
+  if(launcher_open){bool held=false;for(auto& hand:entry_buttons)for(auto& trigger:hand)held|=trigger.held;launcher_dismiss.observe(held);}
+  for(auto&[key,v]:views){if(v->closing)continue;if(v->dashboard){bool active=overlays->IsDashboardVisible()&&overlays->IsActiveDashboardOverlay(v->overlay)&&overlays->IsOverlayVisible(v->overlay);if(active!=v->shown){if(!active&&key=="launcher"){if(v->launcher_pointer.active){cef_mouse_event_t outside{};outside.modifiers=EVENTFLAG_LEFT_MOUSE_BUTTON;v->host->send_mouse_move_event(v->host,&outside,0);outside.modifiers=0;v->host->send_mouse_click_event(v->host,&outside,MBT_LEFT,1,1);}v->launcher_pointer.clear();auto* frame=v->browser->get_main_frame(v->browser);execute(frame,"window.dispatchEvent(new Event('framely.launcher.cancelInput'))");frame->base.release(&frame->base);}v->host->was_hidden(v->host,!active);v->shown=active;}if(!active)v->active_seen=false;if(active&&!v->active_seen){v->active_seen=true;if(key!="launcher")for(auto&[other,t]:views)if(!t->dashboard&&other!="menu"&&other!="notifications"&&other!="launcher"&&!keyboard_open)close_view(*t);}}
    while(overlays->PollNextOverlayEvent(v->overlay,&event,sizeof(event)))overlay_input(*v,event);
    if(v->dirty&&!v->closing){
     glXMakeContextCurrent(xdisplay,glsurface,glsurface,glcontext);
     // Upload to the other texture; never redefine storage submitted this frame.
     const int slot=1-v->texture_slot;const GLuint id=v->textures[slot];
+    auto& damage=v->texture_damage[slot];const int pixel_width=v->width*v->render_scale,pixel_height=v->height*v->render_scale;
+    static auto generate_mipmap=reinterpret_cast<PFNGLGENERATEMIPMAPPROC>(glXGetProcAddressARB(reinterpret_cast<const GLubyte*>("glGenerateMipmap")));
+    bool mipmapped=v->key=="launcher"&&generate_mipmap;
     glBindTexture(GL_TEXTURE_2D,id);
     glPixelStorei(GL_UNPACK_ALIGNMENT,4);glPixelStorei(GL_UNPACK_ROW_LENGTH,0);
     glPixelStorei(GL_UNPACK_SKIP_PIXELS,0);glPixelStorei(GL_UNPACK_SKIP_ROWS,0);
     if(!v->texture_ready[slot]){
-     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,mipmapped?GL_LINEAR_MIPMAP_LINEAR:GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
      glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
      glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,v->width*v->render_scale,v->height*v->render_scale,0,GL_BGRA,GL_UNSIGNED_BYTE,nullptr);
      v->texture_ready[slot]=true;
+     damage.include(0,0,pixel_width,pixel_height);
     }
-    glTexSubImage2D(GL_TEXTURE_2D,0,0,0,v->width*v->render_scale,v->height*v->render_scale,GL_BGRA,GL_UNSIGNED_BYTE,v->pixels.data());
+    if(!damage.empty()){
+     glPixelStorei(GL_UNPACK_ROW_LENGTH,pixel_width);
+     glTexSubImage2D(GL_TEXTURE_2D,0,damage.x,damage.y,damage.width,damage.height,GL_BGRA,GL_UNSIGNED_BYTE,v->pixels.data()+(size_t(damage.y)*pixel_width+damage.x)*4);
+     glPixelStorei(GL_UNPACK_ROW_LENGTH,0);damage.clear();
+     if(mipmapped)generate_mipmap(GL_TEXTURE_2D);
+    }
     // glFlush queues the upload; glFinish makes the full image ready for sharing.
     glFinish();vr::Texture_t texture{reinterpret_cast<void*>(uintptr_t(id)),vr::TextureType_OpenGL,vr::ColorSpace_Auto};
     auto e=overlays->SetOverlayTexture(v->overlay,&texture);glFlush();
@@ -322,7 +459,7 @@ int main(int argc,char** argv){
     show(*v,v->notification_content&&v->placement.valid);
    }
   }
-  {json snapshot=json::object();for(auto&[key,v]:views){if(key=="menu"||key=="framely.manager"||key.rfind("framely.window.",0)==0)snapshot[key]=capture_view_visible(v->closing,overlays->IsOverlayVisible(v->overlay),v->dashboard,overlays->IsDashboardVisible(),overlays->IsActiveDashboardOverlay(v->overlay));}std::lock_guard<std::mutex> lock(visibility_mutex);visible_views=std::move(snapshot);}
+  {json snapshot=json::object();for(auto&[key,v]:views){if(key=="menu"||key=="launcher"||key=="framely.manager"||key.rfind("framely.window.",0)==0)snapshot[key]=capture_view_visible(v->closing,overlays->IsOverlayVisible(v->overlay),v->dashboard,overlays->IsDashboardVisible(),overlays->IsActiveDashboardOverlay(v->overlay));}std::lock_guard<std::mutex> lock(visibility_mutex);visible_views=std::move(snapshot);}
   if(keyboard_close_pending){
    // A non-minimal runtime keyboard may buffer text until Done. Drain overlay
    // character events first so the global Done event cannot duplicate input.
@@ -330,7 +467,7 @@ int main(int argc,char** argv){
    close_keyboard(false);
   }
   for(auto i=views.begin();i!=views.end();){auto& v=*i->second;if(v.closed){overlays->ClearOverlayTexture(v.overlay);overlays->DestroyOverlay(v.overlay);if(v.thumbnail)overlays->DestroyOverlay(v.thumbnail);glDeleteTextures(2,v.textures);i=views.erase(i);}else ++i;}
-  bool hovered=anchor_ok&&overlays->IsHoverTargetOverlay(button);if(hovered&&!icon_hover)hover_haptic(button,button_haptic_at);const auto badge=notification_badge_count.load();if(icon_active!=menu_open||icon_hover!=hovered||icon_badge!=badge){icon_badge=badge;icon_active=menu_open;pixels=dock_icon(hovered,menu_open);overlays->SetOverlayRaw(button,pixels.data(),dock_canvas_width,dock_canvas_height,4);}icon_hover=hovered;
+  bool hovered=anchor_ok&&overlays->IsHoverTargetOverlay(button);if(hovered&&!icon_hover)hover_haptic(button,button_haptic_at);const auto badge=notification_badge_count.load();if(icon_active!=(menu_open||launcher_open)||icon_hover!=hovered||icon_badge!=badge){icon_badge=badge;icon_active=menu_open||launcher_open;pixels=dock_icon(hovered,icon_active);overlays->SetOverlayRaw(button,pixels.data(),dock_canvas_width,dock_canvas_height,4);}icon_hover=hovered;
   auto sync=overlays->WaitFrameSync(8);
   // A timeout already waited: never append another sleep to it. Bound retries
   // only for immediate API failures, so a broken sync call cannot busy-spin.

@@ -1,0 +1,1 @@
+import{registerLauncherActions,framely}from'../sdk/src/index';registerLauncherActions({connect:async context=>{if(context.source!=='launcher')throw Error('Missing launch context');await framely.call('connect',{from:context.source});}});

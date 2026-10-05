@@ -66,10 +66,13 @@ impl Resolver<'_> {
     fn matching_catalog(&mut self, source: &Source, id: &str, dep: &Dependency) -> Result<Catalog> {
         let mut catalog = self.catalog(source)?;
         if catalog.plugins.iter().any(|p| p.id == id)
-            && !catalog
-                .plugins
-                .iter()
-                .any(|p| p.id == id && dep.matches(&p.version).unwrap_or(false))
+            && !catalog.plugins.iter().any(|p| {
+                p.id == id
+                    && p.engines
+                        .as_ref()
+                        .is_none_or(|e| e.matches(env!("CARGO_PKG_VERSION")))
+                    && dep.matches(&p.version).unwrap_or(false)
+            })
             && !self.histories.contains(&(source.id.clone(), id.to_owned()))
         {
             let history = crate::session::fetch_plugin_versions_cancel(
@@ -141,10 +144,13 @@ impl Resolver<'_> {
             for source in sources.into_iter().filter(|s| s.enabled) {
                 match self.matching_catalog(&source, id, dep) {
                     Ok(c) => {
-                        if c.plugins
-                            .iter()
-                            .any(|p| p.id == id && dep.matches(&p.version).unwrap_or(false))
-                        {
+                        if c.plugins.iter().any(|p| {
+                            p.id == id
+                                && p.engines
+                                    .as_ref()
+                                    .is_none_or(|e| e.matches(env!("CARGO_PKG_VERSION")))
+                                && dep.matches(&p.version).unwrap_or(false)
+                        }) {
                             let preferred =
                                 selected.is_none() && Some(source.id.as_str()) == origin;
                             candidates.push(source);
@@ -184,7 +190,13 @@ impl Resolver<'_> {
         let entry = catalog
             .plugins
             .iter()
-            .find(|p| p.id == id && dep.matches(&p.version).unwrap_or(false))
+            .find(|p| {
+                p.id == id
+                    && p.engines
+                        .as_ref()
+                        .is_none_or(|e| e.matches(env!("CARGO_PKG_VERSION")))
+                    && dep.matches(&p.version).unwrap_or(false)
+            })
             .context("指定源中不存在依赖")?;
         ensure!(
             dep.matches(&entry.version)?,
@@ -197,6 +209,9 @@ impl Resolver<'_> {
             |_, _| self.cancel.check(),
         )?;
         let manifest = bytes.manifest()?;
+        if let Some(e) = &manifest.engines {
+            e.check()?;
+        }
         ensure!(
             manifest.id == entry.id && manifest.version == entry.version,
             "依赖包 ID 或版本与目录不一致"
@@ -299,6 +314,9 @@ pub fn prepare_staged(
 ) -> Result<Prepared> {
     cancel.check()?;
     let manifest = bytes.manifest()?;
+    if let Some(e) = &manifest.engines {
+        e.check()?;
+    }
     let root = manifest.id.clone();
     if let Some(source) = &source {
         ensure!(db.sources.iter().any(|s| &s.id == source), "未知安装来源");

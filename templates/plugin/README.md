@@ -33,3 +33,7 @@ To edit this template inside the Framely repository, run `npm install`, `npm run
 The template and bundled SDK use `AGPL-3.0-only`. See Framely's `docs/developer-guide/README.md` for the full development and publishing workflow. The template lifecycle callbacks preserve user data.
 
 For community GitHub registration, source may omit `downloadUrl`; default assets use `<id>-<version>.framely`. Release packages need a temporary Manifest with the derived URL. See Framely's `docs/developer-guide/publishing.md` for commands, Release digests, custom URLs and database window-dimension validation. The direct packaging command above is for core testing and does not establish community registration acceptance.
+
+Launcher support requires Framely 0.4.3-preview.2+. `actions.ts` is built separately; edit `engines.framely`, `ui.launch` and `ui.launcherActions` in the manifest. See the bilingual launcher developer guide.
+
+启动台功能要求 Framely 0.4.3-preview.2 或更新版本。`actions.ts` 单独构建；在清单中调整 `engines.framely`、`ui.launch` 和 `ui.launcherActions`，详见中英双语启动台开发文档。

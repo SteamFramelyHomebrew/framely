@@ -1,0 +1,99 @@
+{
+  "controller_type": "frame_controller",
+  "name": "Framely entry controls",
+  "bindings": {
+    "/actions/entry": {
+      "poses": [
+        {
+          "path": "/user/hand/left/pose/tip",
+          "output": "/actions/entry/in/aim"
+        },
+        {
+          "path": "/user/hand/right/pose/tip",
+          "output": "/actions/entry/in/aim"
+        }
+      ],
+      "sources": [
+        {
+          "path": "/user/hand/left/input/trigger",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/entry/in/primary"
+            }
+          },
+          "parameters": {
+            "haptic_amplitude": "0",
+            "click_activate_threshold": "0.5",
+            "click_deactivate_threshold": "0.45"
+          }
+        },
+        {
+          "path": "/user/hand/left/input/bumper",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/entry/in/upper"
+            }
+          },
+          "parameters": {
+            "haptic_amplitude": "0"
+          }
+        },
+        {
+          "path": "/user/hand/right/input/trigger",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/entry/in/primary"
+            }
+          },
+          "parameters": {
+            "haptic_amplitude": "0",
+            "click_activate_threshold": "0.5",
+            "click_deactivate_threshold": "0.45"
+          }
+        },
+        {
+          "path": "/user/hand/right/input/bumper",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/entry/in/upper"
+            }
+          },
+          "parameters": {
+            "haptic_amplitude": "0"
+          }
+        },
+        {
+          "path": "/user/hand/right/input/b",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/entry/in/close"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/left/input/thumbstick",
+          "mode": "joystick",
+          "inputs": {
+            "position": {
+              "output": "/actions/entry/in/navigate"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/thumbstick",
+          "mode": "joystick",
+          "inputs": {
+            "position": {
+              "output": "/actions/entry/in/navigate"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

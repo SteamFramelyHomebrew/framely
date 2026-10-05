@@ -96,3 +96,7 @@ Dependencies use ranges or `{version, source}`, with source pointing to an HTTPS
 Manifest JSON is limited to 256 KiB and payload paths to 512 bytes. Payload paths allow ASCII letters/digits and `/._-+` only. Absolute paths, empty segments, `.`/`..`, symlinks and undeclared archive files are forbidden. Successful validation is not a safety review; users still assess runtime privileges.
 
 `backend.uiVisibilityEvents` (boolean, default false) subscribes to manager-only `framely.ui.visibility` RPCs. Reply promptly. Delivery does not depend on mounted pages and requires a host supporting visibility events.
+
+## Launcher actions and host compatibility
+
+[Launcher actions and host compatibility](launcher.md)

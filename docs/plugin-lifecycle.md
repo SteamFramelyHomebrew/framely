@@ -84,3 +84,7 @@ Restart defaults to `on-failure`; `never` reports failure without retrying. Limi
 States include starting/running/stopping/stopped/recovering/failed. Core management is serialized. Normal SIGTERM/SIGINT attempts to stop plugins; forced termination or power loss cannot guarantee hooks. Support safe recovery on next startup.
 
 The log view includes backend and lifecycle logs; each retains a current 2 MiB file and a preceding copy. Failed pre-registration installs log to `/var/lib/framely/logs/<id>.lifecycle.log`. User data is under `/var/lib/framely/data/<id>/<identity>/`, relative to any custom core state root.
+
+## Launch context
+
+[Launch context](developer-guide/launcher.md)

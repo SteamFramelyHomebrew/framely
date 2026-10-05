@@ -45,6 +45,7 @@ pub struct Service {
     batching: bool,
     visibility: crate::visibility::Tracker,
     visibility_pending: BTreeSet<String>,
+    launch_contexts: BTreeMap<String, Value>,
 }
 impl Service {
     pub fn prepare_uninstall(&mut self) -> Result<Value> {
@@ -95,6 +96,20 @@ impl Service {
             Database::default()
         };
         db.update_check.validate()?;
+        db.launcher.validate()?;
+        for p in db.plugins.values_mut() {
+            if let Some(e) = &p.manifest.engines {
+                if let Err(error) = e.check() {
+                    p.error = Some(error.to_string());
+                } else if p
+                    .error
+                    .as_deref()
+                    .is_some_and(|v| v.starts_with("Plugin requires Framely "))
+                {
+                    p.error = None;
+                }
+            }
+        }
         if db.update_source.is_none() {
             db.update_source = fs::read(root.join("update-source.json"))
                 .ok()
@@ -185,6 +200,7 @@ impl Service {
             batching: false,
             visibility: Default::default(),
             visibility_pending: BTreeSet::new(),
+            launch_contexts: BTreeMap::new(),
         };
         if initialized_defaults {
             service.save()?;
@@ -207,6 +223,9 @@ impl Service {
     fn active(&self, id: &str) -> Result<&Installed> {
         ensure!(self.agreement_accepted(), "请先同意用户协议和隐私声明");
         let p = self.plugin(id)?;
+        if let Some(e) = &p.manifest.engines {
+            e.check()?;
+        }
         ensure!(
             p.enabled && !self.db.safe_mode,
             "Plugin disabled or safe mode enabled"
@@ -264,7 +283,7 @@ impl Service {
         previous: Option<&str>,
         extra: Value,
     ) -> Value {
-        json!({"pluginId":m.id,"phase":phase,"reason":reason,"version":m.version,"previousVersion":previous,"dataDir":self.root.join("data").join(&m.id).join(match m.run_as(){RunAs::Steamos=>"steamos",RunAs::Root=>"root"}),"exit":extra})
+        json!({"pluginId":m.id,"phase":phase,"reason":reason,"version":m.version,"previousVersion":previous,"dataDir":self.root.join("data").join(&m.id).join(match m.run_as(){RunAs::Steamos=>"steamos",RunAs::Root=>"root"}),"exit":extra,"launchContext":self.launch_contexts.get(&format!("{}/quick",m.id))})
     }
     fn command_hook(
         &mut self,
@@ -852,8 +871,17 @@ impl Service {
                     )
                 } else {
                     let staged = package::stage_request_proxy(&p, &self.db.proxy, |_, _| Ok(()))?;
-                    (staged.manifest()?, staged.hash.clone())
+                    {
+                        let m = staged.manifest()?;
+                        if let Some(e) = &m.engines {
+                            e.check()?;
+                        }
+                        (m, staged.hash.clone())
+                    }
                 };
+                if let Some(e) = &manifest.engines {
+                    e.check()?;
+                }
                 let old = self.db.plugins.get(&manifest.id);
                 let changed = old.is_some_and(|o| o.manifest.run_as() != manifest.run_as());
                 Ok(
@@ -884,6 +912,11 @@ impl Service {
                                 && p["fingerprint"].as_str() == Some(plan.fingerprint.as_str())),
                         "请先确认依赖启用与冲突停用计划"
                     );
+                    for target in &plan.enable {
+                        if let Some(e) = &self.plugin(target)?.manifest.engines {
+                            e.check()?;
+                        }
+                    }
                     for target in &plan.disable {
                         self.stop_reason(target, "conflict");
                         self.db.plugins.get_mut(target).unwrap().enabled = false;
@@ -979,6 +1012,144 @@ impl Service {
                 self.runtime.remove(&id);
                 Ok(json!(true))
             }
+            "launcher.settings.save" => {
+                let settings: LauncherSettings = serde_json::from_value(p)?;
+                settings.validate()?;
+                self.db.launcher = settings;
+                self.save()?;
+                Ok(json!(true))
+            }
+            "launcher.order.save" => {
+                let order: Vec<String> = serde_json::from_value(p["order"].clone())?;
+                ensure!(order.len() <= 4096, "Too many launcher entries");
+                let mut seen = std::collections::BTreeSet::new();
+                for key in &order {
+                    ensure!(
+                        key.len() <= 512
+                            && !key.chars().any(char::is_control)
+                            && (key == "framely"
+                                || ["plugin:", "steam:", "desktop:", "lepton:"]
+                                    .iter()
+                                    .any(|prefix| key.starts_with(prefix)
+                                        && key.len() > prefix.len()))
+                            && seen.insert(key),
+                        "Invalid or duplicate launcher entry"
+                    );
+                }
+                self.db.launcher_order = order;
+                self.save()?;
+                Ok(json!(true))
+            }
+            "steam.favorite" => {
+                let app = p["app"]
+                    .as_u64()
+                    .filter(|n| *n > 0 && *n <= u32::MAX as u64)
+                    .context("Invalid Steam ID")? as u32;
+                if p["favorite"].as_bool().context("Missing favorite")? {
+                    self.db.steam_favorites.insert(app);
+                } else {
+                    self.db.steam_favorites.remove(&app);
+                }
+                self.save()?;
+                Ok(json!(true))
+            }
+            "plugin.launch.context" => {
+                self.active(&id)?;
+                let entry = p["entry"].as_str().unwrap_or("quick");
+                Ok(self
+                    .launch_contexts
+                    .get(&format!("{id}/{entry}"))
+                    .cloned()
+                    .unwrap_or(json!({"source":"quickPanel","trigger":"shortPress"})))
+            }
+            "plugin.launch" => {
+                let source = p["source"].as_str().context("Missing launch source")?;
+                ensure!(
+                    ["launcher", "quickPanel", "manager"].contains(&source),
+                    "Invalid launch source"
+                );
+                let m = self.active(&id)?.manifest.clone();
+                let target = if p["quickPage"] == true {
+                    LaunchTarget::QuickPage
+                } else {
+                    m.ui.launch
+                        .get(source)
+                        .cloned()
+                        .unwrap_or(LaunchTarget::QuickPage)
+                };
+                match &target {
+                    LaunchTarget::QuickPage => {
+                        ensure!(m.ui.quick_page.is_some(), "Plugin has no quick page")
+                    }
+                    LaunchTarget::Window { window } => {
+                        ensure!(m.ui.windows.contains_key(window), "Window not declared")
+                    }
+                }
+                let context = json!({"source":source,"trigger":if p["quickPage"]==true {"menuAction"} else {"shortPress"}});
+                self.launch_contexts
+                    .insert(format!("{id}/quick"), context.clone());
+                self.start(&id)?;
+                let entry = match &target {
+                    LaunchTarget::QuickPage => "quick",
+                    LaunchTarget::Window { window } => window.as_str(),
+                };
+                self.launch_contexts
+                    .insert(format!("{id}/{entry}"), context.clone());
+                process::event(
+                    &self.events,
+                    json!({"kind":"plugin.launch.context","plugin":id,"entry":entry,"context":context}),
+                );
+                let response = json!({"target":target,"context":context});
+                if p["navigate"] != false {
+                    match target {
+                        LaunchTarget::QuickPage => process::event(
+                            &self.events,
+                            json!({"kind":"menu.open","plugin":id,"context":context}),
+                        ),
+                        LaunchTarget::Window { window } => process::event(
+                            &self.events,
+                            json!({"kind":"window.open","plugin":id,"window":window,"spec":m.ui.windows[&window],"context":context}),
+                        ),
+                    }
+                }
+                Ok(response)
+            }
+            "plugin.launcher.action" => {
+                let m = self.active(&id)?.manifest.clone();
+                let action =
+                    m.ui.launcher_actions
+                        .iter()
+                        .find(|a| Some(a.id.as_str()) == p["action"].as_str())
+                        .context("Unknown launcher action")?
+                        .clone();
+                let context =
+                    json!({"source":"launcher","trigger":"menuAction","actionId":action.id});
+                self.launch_contexts
+                    .insert(format!("{id}/quick"), context.clone());
+                self.start(&id)?;
+                match action.target {
+                    LauncherActionTarget::Window { window } => {
+                        self.launch_contexts
+                            .insert(format!("{id}/{window}"), context.clone());
+                        process::event(
+                            &self.events,
+                            json!({"kind":"window.open","plugin":id,"window":window,"spec":m.ui.windows[&window],"context":context}),
+                        );
+                        Ok(json!({"opened":true}))
+                    }
+                    LauncherActionTarget::Backend { method, params } => {
+                        let value = self
+                            .running
+                            .get_mut(&id)
+                            .context("No backend")?
+                            .call(&method, json!({"params":params,"context":context}))?;
+                        Ok(json!({"result":value}))
+                    }
+                    LauncherActionTarget::Frontend { entry } => {
+                        Ok(json!({"frontend":entry,"context":context}))
+                    }
+                }
+            }
             "plugin.open" => {
                 self.start(&id)?;
                 Ok(json!(true))
@@ -1004,7 +1175,7 @@ impl Service {
                 r
             }
             "window.open" => {
-                let plugin = self.active(&id)?;
+                let plugin = self.active(&id)?.clone();
                 let key = p["window"].as_str().context("Missing window")?;
                 let window = plugin
                     .manifest
@@ -1013,6 +1184,15 @@ impl Service {
                     .get(key)
                     .context("Window not declared")?;
                 let mut v = json!({"kind":"window.open","plugin":id,"window":key,"spec":window});
+                if let Some(context) = p.get("launchContext") {
+                    if ["launcher", "quickPanel", "manager"]
+                        .contains(&context["source"].as_str().unwrap_or(""))
+                    {
+                        self.launch_contexts
+                            .insert(format!("{id}/{key}"), context.clone());
+                        v["context"] = context.clone();
+                    }
+                }
                 if let Some(icon) = &plugin.manifest.icon {
                     v["spec"]["iconPath"] = json!(self.payload(&id)?.join(icon));
                 }
@@ -1372,6 +1552,7 @@ impl Service {
                 }
                 Ok(json!(true))
             }
+            "diagnostics.export" => crate::diagnostics::collect(&self.root),
             "logs" => {
                 if !id.is_empty() {
                     self.plugin(&id)?;
@@ -1682,6 +1863,9 @@ impl Service {
         );
         let bytes = package::request_bytes(&p, &self.db.proxy, self.manager)?;
         let v = package::verify(&bytes)?;
+        if let Some(e) = &v.manifest.engines {
+            e.check()?;
+        }
         if let Some(hash) = p["inspectionHash"].as_str() {
             ensure!(
                 package::digest(&bytes) == hash,
@@ -1915,6 +2099,9 @@ impl Service {
         for request in requests {
             let bytes = package::request_bytes(request, &self.db.proxy, self.manager)?;
             let v = package::verify(&bytes)?;
+            if let Some(e) = &v.manifest.engines {
+                e.check()?;
+            }
             let source = request["source"].as_str().map(str::to_owned);
             let item = plan
                 .items
@@ -2027,7 +2214,8 @@ impl Service {
                     let mut request = request.clone();
                     request["approve"] = json!(true);
                     request["approveRunAs"] = p["approveRunAs"].clone();
-                    self.install(request)?;
+                    self.install(request)
+                        .with_context(|| format!("安装插件 {} 失败", item.manifest.id))?;
                 }
             }
             for (id, plugin) in &proposed.plugins {
@@ -2046,7 +2234,8 @@ impl Service {
                 .cloned()
                 .collect();
             for id in roots {
-                self.start_reason(&id, "batch-install")?;
+                self.start_reason(&id, "batch-install")
+                    .with_context(|| format!("启动插件 {id} 失败"))?;
             }
             self.save()?;
             Ok(json!({"installed":targets,"disabled":disable}))
@@ -2223,10 +2412,10 @@ pub fn serve(root: &Path, socket: &Path, manager: u32) -> Result<()> {
                 );
                 dispatch(&core, method, request["params"].clone())
             })();
-            let response = match result {
-                Ok(v) => json!({"result":v}),
-                Err(e) => json!({"error":e.to_string()}),
-            };
+            if let Err(error) = &result {
+                eprintln!("Framely request failed: {error:#}");
+            }
+            let response = ipc::response(result);
             let _ = ipc::write(&mut stream, &response);
         });
     }

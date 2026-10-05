@@ -82,3 +82,7 @@ sudo /var/lib/framely/current/bin/framely install ./yourname.my-plugin-0.1.0.fra
 GitHub Release 默认使用标签 `v<version>` 和附件 `<id>-<version>.framely`，源码清单可以省略 `downloadUrl`。社区登记会自动拼接地址；打包前按[发布指南](publishing.md)生成包含最终地址的临时清单，因为当前 `framely pack` 不会自己读取仓库地址。自定义下载地址再显式填写 `downloadUrl`。随后公开 Release、上传包，提供使用说明、运行用户、更新记录和实际测试范围，再自行托管插件源或登记固定源码提交。社区数据库还需校验整包预期哈希和字段兼容性。
 
 后续更新：提升版本号 → 重新生成发布清单（自定义地址时更新地址）→ 构建打包并校验 → 实机验证 → 新 Release → 更新来源登记。不要替换旧版本附件。
+
+## 启动台操作与本体兼容
+
+[启动台操作与本体兼容](launcher.md)

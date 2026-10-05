@@ -1,4 +1,4 @@
-use anyhow::{bail, ensure, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
@@ -116,9 +116,105 @@ fn window_width_meters() -> Option<f32> {
     Some(3.0)
 }
 
+pub const LAUNCHER_VERSION: &str = "0.4.3-preview.2";
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Engines {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framely: Option<String>,
+}
+impl Engines {
+    pub fn validate(&self) -> Result<()> {
+        if let Some(r) = &self.framely {
+            crate::relations::requirement(r)?;
+        }
+        Ok(())
+    }
+    pub fn matches(&self, version: &str) -> bool {
+        self.framely.as_ref().is_none_or(|r| {
+            crate::relations::requirement(r)
+                .ok()
+                .zip(semver::Version::parse(version).ok())
+                .is_some_and(|(r, v)| r.matches(&v))
+        })
+    }
+    pub fn check(&self) -> Result<()> {
+        ensure!(
+            self.matches(env!("CARGO_PKG_VERSION")),
+            "Plugin requires Framely {}; current version is {}",
+            self.framely.as_deref().unwrap_or("*"),
+            env!("CARGO_PKG_VERSION")
+        );
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum LaunchTarget {
+    QuickPage,
+    Window { window: String },
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum LauncherActionTarget {
+    Window {
+        window: String,
+    },
+    Backend {
+        method: String,
+        #[serde(default)]
+        params: serde_json::Value,
+    },
+    Frontend {
+        entry: String,
+    },
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LauncherAction {
+    pub id: String,
+    pub label: String,
+    pub target: LauncherActionTarget,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LauncherSettings {
+    #[serde(default)]
+    pub primary_trigger: bool,
+    #[serde(default = "yes")]
+    pub menu_auto_close: bool,
+    #[serde(default = "menu_timeout")]
+    pub menu_timeout_seconds: u32,
+}
+fn menu_timeout() -> u32 {
+    10
+}
+impl Default for LauncherSettings {
+    fn default() -> Self {
+        Self {
+            primary_trigger: false,
+            menu_auto_close: true,
+            menu_timeout_seconds: 10,
+        }
+    }
+}
+impl LauncherSettings {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            (1..=300).contains(&self.menu_timeout_seconds),
+            "Menu timeout must be between 1 and 300 seconds"
+        );
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Ui {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub launch: BTreeMap<String, LaunchTarget>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub launcher_actions: Vec<LauncherAction>,
     pub quick_page: Option<String>,
     #[serde(default)]
     pub windows: BTreeMap<String, Window>,
@@ -138,6 +234,8 @@ pub struct Publish {
 pub struct Manifest {
     pub schema_version: u32,
     pub api_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engines: Option<Engines>,
     pub id: String,
     pub name: String,
     pub version: String,
@@ -197,6 +295,9 @@ impl Manifest {
             self.schema_version == 1 && self.api_version == API_VERSION,
             "Unsupported manifest/API version"
         );
+        if let Some(e) = &self.engines {
+            e.validate()?;
+        }
         valid_id(&self.id)?;
         self.relations().validate(&self.id, &self.version)?;
         for link in self
@@ -317,6 +418,81 @@ impl Manifest {
         }
         if let Some(p) = &self.ui.quick_page {
             check(p)?;
+        }
+        if !self.ui.launch.is_empty() || !self.ui.launcher_actions.is_empty() {
+            let range = self
+                .engines
+                .as_ref()
+                .and_then(|e| e.framely.as_ref())
+                .context("Launcher features require engines.framely")?;
+            let requirement = crate::relations::requirement(range)?;
+            // Require an explicit floor so older hosts cannot be included accidentally.
+            let floor = semver::Version::parse(LAUNCHER_VERSION)?;
+            ensure!(
+                requirement.comparators.iter().any(|c| {
+                    matches!(
+                        c.op,
+                        semver::Op::Greater
+                            | semver::Op::GreaterEq
+                            | semver::Op::Exact
+                            | semver::Op::Caret
+                            | semver::Op::Tilde
+                    ) && c.minor.is_some()
+                        && c.patch.is_some()
+                        && semver::Version {
+                            major: c.major,
+                            minor: c.minor.unwrap(),
+                            patch: c.patch.unwrap(),
+                            pre: c.pre.clone(),
+                            build: semver::BuildMetadata::EMPTY,
+                        } >= floor
+                }),
+                "Launcher features require an explicit version floor of {} or newer",
+                LAUNCHER_VERSION
+            );
+        }
+        for (source, target) in &self.ui.launch {
+            ensure!(
+                ["launcher", "quickPanel", "manager"].contains(&source.as_str()),
+                "Unknown launch source"
+            );
+            match target {
+                LaunchTarget::QuickPage => {
+                    ensure!(self.ui.quick_page.is_some(), "No quick page declared")
+                }
+                LaunchTarget::Window { window } => ensure!(
+                    self.ui.windows.contains_key(window),
+                    "Launch window not declared"
+                ),
+            }
+        }
+        ensure!(
+            self.ui.launcher_actions.len() <= 16,
+            "Too many launcher actions"
+        );
+        let mut action_ids = std::collections::BTreeSet::new();
+        for action in &self.ui.launcher_actions {
+            valid_id(&action.id)?;
+            ensure!(
+                action_ids.insert(&action.id)
+                    && !action.label.is_empty()
+                    && action.label.len() <= 120,
+                "Invalid launcher action"
+            );
+            match &action.target {
+                LauncherActionTarget::Window { window } => ensure!(
+                    self.ui.windows.contains_key(window),
+                    "Action window not declared"
+                ),
+                LauncherActionTarget::Frontend { entry } => check(entry)?,
+                LauncherActionTarget::Backend { method, .. } => ensure!(
+                    self.backend.is_some()
+                        && !method.is_empty()
+                        && method.len() <= 120
+                        && !method.starts_with("framely."),
+                    "Invalid backend action method"
+                ),
+            }
         }
         ensure!(self.ui.windows.len() <= 8, "Too many declared windows");
         for (key, w) in &self.ui.windows {
@@ -591,6 +767,12 @@ pub struct Database {
     pub notification_inbox: BTreeMap<String, NotificationEntry>,
     #[serde(default)]
     pub notification_settings: NotificationSettings,
+    #[serde(default)]
+    pub launcher: LauncherSettings,
+    #[serde(default)]
+    pub steam_favorites: std::collections::BTreeSet<u32>,
+    #[serde(default)]
+    pub launcher_order: Vec<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -773,7 +955,11 @@ pub struct CatalogEntry {
     pub documentation_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub homepage: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatible: Option<bool>,
     pub api_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engines: Option<Engines>,
     pub url: String,
     pub sha256: String,
     #[serde(default)]
@@ -820,6 +1006,9 @@ impl CatalogEntry {
     }
 
     pub fn validate(&self, allow_http: bool) -> Result<()> {
+        if let Some(e) = &self.engines {
+            e.validate()?;
+        }
         valid_id(&self.id)?;
         self.relations().validate(&self.id, &self.version)?;
         for link in self
