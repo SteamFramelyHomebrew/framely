@@ -817,7 +817,7 @@ fn apply_prepared(core: &mut Service, prepared: crate::planner::Prepared) -> any
 fn batch_install_in_safe_mode_preserves_packages_without_starting_plugins() {
     let tmp = tempfile::tempdir().unwrap();
     let _tools = fake_backend_tools(tmp.path());
-    let mut core = accepted_service(&tmp.path().join("state"), 1000).unwrap();
+    let mut core = accepted_service(&tmp.path().join("state"), unsafe { libc::geteuid() }).unwrap();
     core.handle("safeMode", json!({"enabled":true})).unwrap();
     for version in ["1.0.0", "1.1.0"] {
         let bytes = relation_package(
