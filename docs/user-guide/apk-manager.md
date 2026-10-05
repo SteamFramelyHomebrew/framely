@@ -20,6 +20,8 @@ Applications are identified by context plus package name. The same package in tw
 
 Choose **Install APK**, select an individual `.apk`, and review its name, package, version, minimum Android SDK and target container. Uploads from the network panel are staged on Frame's persistent filesystem, not its limited `/tmp`. Transfer shows actual bytes; subsequent work shows named stages instead of invented percentages.
 
+Inside Frame, file inputs in both management panels use Framely’s built-in file picker, including APKs, plugin packages and language files. It opens Downloads by default, remembers the last selected folder, and provides a lazily loaded folder tree for Home, temporary files and mounted storage, with folder navigation, path entry, search, hidden files and file-type filtering. Select a file and confirm; B/Escape cancels the picker without closing the panel. External browsers continue using their system file picker. The launcher’s **Install APK** shortcut opens APK Manager.
+
 New apps default to independent containers. Existing containers are offered only when they can accept the target package without overwriting another app's shared APK mount. Lepton recommends one application per container because Android apps do not have the usual enforced isolation inside its containers.
 
 After installation, choose **Open** if desired; installation does not automatically launch the APK. An app with no detected launch entry remains manageable but does not appear in the launcher.

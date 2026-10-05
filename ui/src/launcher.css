@@ -76,3 +76,6 @@
 
 .launcher-shortcuts{left:auto;right:0}
 .launcher-shortcuts .launcher-category-label{left:auto;right:calc(100% + 20px)}
+
+/* These viewport boundaries also drive icon clamping and dwell paging. */
+.launcher-shell .launcher-drag-edge{position:fixed;right:auto;bottom:auto;background:#b4dbf42b}.launcher-shell .launcher-drag-edge.active{background:#b4dbf4b3}

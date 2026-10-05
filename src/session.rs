@@ -519,6 +519,29 @@ impl Agent {
             },
             "Session authentication failed"
         );
+        if path.starts_with("/host/files/") {
+            ensure!(!remote && r.method() == &Method::Post, "File browser is only available inside Frame");
+            ensure!(r.headers().iter().any(|h| h.field.equiv("Origin") && h.value.as_str() == expected_origin), "Cross-origin file browser request denied");
+            ensure!(self.core("agreement.status", json!({}))?["accepted"] == true, "请先同意用户协议和隐私声明");
+            let mut bytes = Vec::new();
+            r.as_reader().take(65537).read_to_end(&mut bytes)?;
+            ensure!(bytes.len() <= 65536, "File browser request too large");
+            let result = (|| -> Result<Value> {
+                let params: Value = serde_json::from_slice(&bytes)?;
+                let home = crate::steam::home()?;
+                match path.as_str() {
+                    "/host/files/list" => crate::file_browser::list(&home, &params),
+                    "/host/files/complete" => {
+                        let id = params["id"].as_str().filter(|s| !s.is_empty() && s.len() <= 128).context("Invalid file dialog")?;
+                        let paths = crate::file_browser::selection(&home, &params)?;
+                        push(&self.commands, json!({"kind":"file.dialog.complete","id":id,"paths":paths}));
+                        Ok(json!(true))
+                    }
+                    _ => anyhow::bail!("Unknown file browser operation"),
+                }
+            })();
+            return send_json(r, match result { Ok(v) => json!({"result":v}), Err(e) => json!({"error":e.to_string()}) });
+        }
         if let Some(path) = path.strip_prefix("/api/upload/") {
             ensure!(r.method() == &Method::Post, "Invalid upload method");
             let origin = r
@@ -2058,6 +2081,9 @@ mod tests {
         assert!(ureq::get(&format!("{origin}/boot/{}", agent.web_key))
             .call()
             .is_err());
+        for path in ["/host/files/list", "/host/files/complete"] {
+            assert!(matches!(ureq::post(&format!("{origin}{path}")).set("Origin", &origin).send_json(json!({})), Err(ureq::Error::Status(403, _))));
+        }
         assert!(ureq::get(&format!("{origin}/host/poll"))
             .set("X-Framely-Native", &agent.native_key)
             .call()
