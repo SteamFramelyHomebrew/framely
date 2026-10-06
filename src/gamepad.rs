@@ -61,9 +61,13 @@ static WATCHER: OnceLock<()> = OnceLock::new();
 impl Drop for Bridge {
     fn drop(&mut self) {
         let _ = writeln!(self.input, "disable");
-        unsafe {
-            libc::kill(self.child.id() as i32, libc::SIGTERM);
-        };
+        // A watcher may already have reaped an exited helper. Never signal
+        // that recycled PID while removing its cached mount.
+        if self.child.try_wait().ok().flatten().is_none() {
+            unsafe {
+                libc::kill(self.child.id() as i32, libc::SIGTERM);
+            }
+        }
         let began = Instant::now();
         while began.elapsed() < Duration::from_millis(500) {
             if self.child.try_wait().ok().flatten().is_some() {

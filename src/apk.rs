@@ -2864,6 +2864,7 @@ setup_podman_mounts
     }
     #[test]
     fn local_apk_review_snapshots_source_and_rejects_invalid_selections() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         let source = home.path().join("selected.APK");
         crate::apk_metadata::fixture(&source, true, 7);
