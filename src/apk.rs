@@ -3660,6 +3660,26 @@ setup_props
                 let command = u.path().trim_end_matches('/').rsplit('/').next().unwrap();
                 calls.push(command.to_owned());
                 let response = PathBuf::from(&q["response"]);
+                // Frame's Steam client does not write Devkit replies into
+                // Framely's persistent home directory. Keep this fixture
+                // stricter than a generic FIFO responder.
+                assert_eq!(response.parent().unwrap().parent(), Some(Path::new("/tmp")));
+                assert!(response
+                    .parent()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("framely-steam-rpc-"));
+                assert_eq!(
+                    fs::metadata(response.parent().unwrap())
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o700
+                );
                 match command {
                     "create-shortcut" if fail => {
                         fail = false;

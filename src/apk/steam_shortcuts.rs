@@ -71,14 +71,14 @@ pub(super) fn rpc(home: &Path, command: &str, id: Option<&str>) -> Result<String
     );
     let pid = fs::read_to_string(steam.join("steam.pid"))?;
     ensure!(runtime_pid_alive(pid.trim()), "Steam is not running");
-    let directory = root(home).join("steam/responses");
-    fs::create_dir_all(&directory)?;
-    ensure!(
-        fs::symlink_metadata(&directory)?.is_dir(),
-        "Invalid Steam response directory"
-    );
-    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
-    let response = directory.join(hex::encode(rand::random::<[u8; 16]>()));
+    // Steam's Devkit response writer accepts /tmp paths, but silently ignores
+    // responses in the application's persistent home directory on Frame.
+    // Match Valve's helper, using a private directory independent of TMPDIR.
+    let directory = tempfile::Builder::new()
+        .prefix("framely-steam-rpc-")
+        .tempdir_in("/tmp")?;
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))?;
+    let response = directory.path().join("response");
     let mut q = url::form_urlencoded::Serializer::new(String::new());
     q.append_pair(
         "response",
