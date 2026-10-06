@@ -1,0 +1,14 @@
+{
+  "controller_type": "frame_hmd",
+  "name": "Framely eye tracking",
+  "bindings": {
+    "/actions/gaze": {
+      "eyetracking": [
+        {
+          "path": "/user/head/eyetracking",
+          "output": "/actions/gaze/in/eye"
+        }
+      ]
+    }
+  }
+}

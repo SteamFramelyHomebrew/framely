@@ -2071,3 +2071,49 @@ fn launcher_trigger_defaults_preserve_explicit_preferences() {
         serde_json::from_value(serde_json::to_value(saved).unwrap()).unwrap();
     assert!(!restored.primary_trigger);
 }
+
+#[test]
+fn launcher_gaze_calibration_validates_persists_and_clears() {
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("state");
+    let uid = unsafe { libc::geteuid() };
+    let mut core = accepted_service(&state, uid).unwrap();
+    assert!(core
+        .handle("launcher.gaze.calibration.get", json!({}))
+        .unwrap()
+        .is_null());
+    let calibration = json!({"space":"headAngles","matrix":[1.1,0.02,-0.03,0.01,0.95,0.02],"width":1440,"height":800,"error":0.01,"maxError":0.02});
+    let mut legacy = calibration.clone();
+    legacy.as_object_mut().unwrap().remove("space");
+    let legacy_model: crate::model::GazeCalibration =
+        serde_json::from_value(legacy.clone()).unwrap();
+    assert!(legacy_model.validate().is_err());
+    assert!(core
+        .handle("launcher.gaze.calibration.save", legacy)
+        .is_err());
+    core.handle("launcher.gaze.calibration.save", calibration.clone())
+        .unwrap();
+    for bad in [
+        json!({"space":"headAngles","matrix":[-1,0,0,0,1,0],"width":1440,"height":800,"error":0.01,"maxError":0.02}),
+        json!({"space":"headAngles","matrix":[1,0,0,0,1,0],"width":1440,"height":800,"error":0.08,"maxError":0.09}),
+    ] {
+        assert!(core.handle("launcher.gaze.calibration.save", bad).is_err());
+    }
+    let mut loaded = Service::load(&state, uid).unwrap();
+    assert_eq!(
+        loaded
+            .handle("launcher.gaze.calibration.get", json!({}))
+            .unwrap(),
+        calibration
+    );
+    loaded.handle("launcher.settings.save", json!({})).unwrap();
+    assert!(loaded.db.gaze_calibration.is_some());
+    loaded
+        .handle("launcher.gaze.calibration.save", Value::Null)
+        .unwrap();
+    assert!(Service::load(&state, uid)
+        .unwrap()
+        .db
+        .gaze_calibration
+        .is_none());
+}

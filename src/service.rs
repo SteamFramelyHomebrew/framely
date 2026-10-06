@@ -1058,6 +1058,16 @@ impl Service {
                 self.save()?;
                 Ok(json!(true))
             }
+            "launcher.gaze.calibration.get" => Ok(json!(self.db.gaze_calibration)),
+            "launcher.gaze.calibration.save" => {
+                let calibration: Option<GazeCalibration> = serde_json::from_value(p)?;
+                if let Some(value) = &calibration {
+                    value.validate()?;
+                }
+                self.db.gaze_calibration = calibration;
+                self.save()?;
+                Ok(json!(true))
+            }
             "launcher.settings.save" => {
                 let settings: LauncherSettings = serde_json::from_value(p)?;
                 settings.validate()?;

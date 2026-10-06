@@ -88,7 +88,7 @@ async function until(check:()=>boolean){for(let i=0;i<60;i++){if(check())return;
  const settings=[...document.querySelectorAll('nav button')].find(b=>b.textContent==='设置') as HTMLButtonElement;
  settings.click();await until(()=>!!document.querySelector('.quick-settings'));
  if(document.querySelector('.quick-settings input[type=file]')||document.querySelector('.quick-settings [download]'))throw Error('Quick settings exposes language installation or template download');
- const safe=document.querySelector('.setting-toggle') as HTMLElement,languageCard=document.querySelector('.language-settings') as HTMLElement;
+ const safe=document.querySelector('[role=switch][aria-label="安全模式"]') as HTMLElement,languageCard=document.querySelector('.language-settings') as HTMLElement;
  if(languageCard.getBoundingClientRect().top-safe.getBoundingClientRect().bottom<24)throw Error('Safe mode is too close to language divider');
  button('界面语言').click();await wait();
  const english=[...document.querySelectorAll('[role=option]')].find(b=>b.textContent==='English') as HTMLButtonElement;

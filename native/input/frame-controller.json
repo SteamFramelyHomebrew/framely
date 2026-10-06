@@ -92,6 +92,40 @@
               "output": "/actions/entry/in/navigate"
             }
           }
+        },
+        {
+          "path": "/user/hand/left/input/dpad_down",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/entry/in/confirm"
+            }
+          },
+          "parameters": {
+            "haptic_amplitude": "0"
+          }
+        },
+        {
+          "path": "/user/hand/right/input/a",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/entry/in/confirm"
+            }
+          },
+          "parameters": {
+            "haptic_amplitude": "0"
+          }
+        }
+      ],
+      "haptics": [
+        {
+          "path": "/user/hand/left/output/haptic",
+          "output": "/actions/entry/out/gazeHaptic"
+        },
+        {
+          "path": "/user/hand/right/output/haptic",
+          "output": "/actions/entry/out/gazeHaptic"
         }
       ]
     }

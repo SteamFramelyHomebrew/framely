@@ -3,6 +3,10 @@
     {
       "name": "/actions/entry",
       "usage": "leftright"
+    },
+    {
+      "name": "/actions/gaze",
+      "usage": "single"
     }
   ],
   "actions": [
@@ -25,12 +29,33 @@
     {
       "name": "/actions/entry/in/navigate",
       "type": "vector2"
+    },
+    {
+      "name": "/actions/gaze/in/eye",
+      "type": "eyetracking",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/entry/in/confirm",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/entry/out/gazeHaptic",
+      "type": "vibration"
     }
   ],
   "default_bindings": [
     {
       "controller_type": "frame_controller",
       "binding_url": "frame-controller.json"
+    },
+    {
+      "controller_type": "generic_hmd",
+      "binding_url": "generic_hmd.json"
+    },
+    {
+      "controller_type": "frame_hmd",
+      "binding_url": "frame_hmd.json"
     }
   ],
   "localization": [
@@ -41,7 +66,11 @@
       "/actions/entry/in/upper": "Upper trigger",
       "/actions/entry/in/aim": "Pointer",
       "/actions/entry/in/close": "Close launcher (B)",
-      "/actions/entry/in/navigate": "Launcher navigation"
+      "/actions/entry/in/navigate": "Launcher navigation",
+      "/actions/entry/in/confirm": "Confirm gaze target (left lower button / A)",
+      "/actions/entry/out/gazeHaptic": "Gaze focus feedback",
+      "/actions/gaze": "Framely eye tracking",
+      "/actions/gaze/in/eye": "Eye gaze"
     }
   ]
 }

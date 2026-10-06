@@ -188,6 +188,50 @@ pub struct LauncherSettings {
     #[serde(default = "launcher_categories")]
     pub all_categories: Vec<String>,
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GazeCalibration {
+    #[serde(default)]
+    pub space: String,
+    pub matrix: [f64; 6],
+    pub width: u32,
+    pub height: u32,
+    pub error: f64,
+    pub max_error: f64,
+}
+impl GazeCalibration {
+    // Preview models have not passed independent validation yet. Accept valid
+    // geometry and finite metrics so validation can measure their actual quality.
+    pub fn validate_preview(&self) -> Result<()> {
+        let m = self.matrix;
+        let det = m[0] * m[4] - m[1] * m[3];
+        ensure!(
+            self.space == "headAngles"
+                && m.iter().all(|v| v.is_finite() && v.abs() <= 4.0)
+                && (0.25..=4.0).contains(&det)
+                && m[2].abs() <= 0.5
+                && m[5].abs() <= 0.5
+                && (320..=8192).contains(&self.width)
+                && (240..=8192).contains(&self.height)
+                && self.error.is_finite()
+                && self.error >= 0.0
+                && self.max_error.is_finite()
+                && self.max_error >= 0.0
+                && self.max_error + 1e-12 >= self.error,
+            "Invalid gaze calibration model"
+        );
+        Ok(())
+    }
+    pub fn validate(&self) -> Result<()> {
+        self.validate_preview()?;
+        ensure!(
+            self.error <= 0.035 && self.max_error <= 0.065,
+            "Gaze calibration validation error exceeds the allowed limit"
+        );
+        Ok(())
+    }
+}
+
 fn launcher_categories() -> Vec<String> {
     ["plugin", "steam", "lepton", "desktop"]
         .into_iter()
@@ -786,6 +830,8 @@ pub struct Database {
     pub notification_settings: NotificationSettings,
     #[serde(default)]
     pub launcher: LauncherSettings,
+    #[serde(default)]
+    pub gaze_calibration: Option<GazeCalibration>,
     #[serde(default)]
     pub steam_favorites: std::collections::BTreeSet<u32>,
     #[serde(default)]

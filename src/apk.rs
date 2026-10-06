@@ -871,11 +871,70 @@ fn restore_package_mount(home: &Path, c: &Container, log: &Path) -> Result<()> {
     }
     Ok(())
 }
+// Adapt only the entry script in a private temporary file. Keep Lepton's original
+// libraries and dev-context data handling; app mode can clear existing baked data.
+fn direct_launch_script(source: &str) -> Result<String> {
+    let directory =
+        "SCRIPT_DIR=$( cd -- \"$( dirname -- \"${BASH_SOURCE[0]}\" )\" &> /dev/null && pwd )";
+    let include = "source \"${SCRIPT_DIR}/liblepton/liblepton.sh\"";
+    ensure!(
+        source.matches(directory).count() == 1 && source.matches(include).count() == 1,
+        "Unsupported Lepton entry script; cannot start an APK without showing the desktop"
+    );
+    let hooks = r#"
+# Framely: boot without a desktop window, retaining the original dev context.
+# Do not use is_app: Lepton's app bake path can reset existing application data.
+eval "$(declare -f setup_props | sed '1s/setup_props/framely_original_setup_props/')"
+function app_wants_flatscreen() {
+    [[ "${APP_WANTS_FLATSCREEN:-true}" == true ]]
+}
+function setup_props() {
+    framely_original_setup_props "$@"
+    sed -i 's/^waydroid.background_start=false$/waydroid.background_start=true/' "$(props_file)"
+    printf '\nwaydroid.active_apps=none\n' >> "$(props_file)"
+}
+"#;
+    Ok(source
+        .replace(directory, "SCRIPT_DIR=\"${FRAMELY_LEPTON_DIR:?}\"")
+        .replace(include, &format!("{include}\n{hooks}")))
+}
 fn start(home: &Path, c: &Container, show: Option<bool>, log: &Path) -> Result<()> {
+    start_container(home, c, show, false, log)
+}
+fn start_container(
+    home: &Path,
+    c: &Container,
+    show: Option<bool>,
+    direct: bool,
+    log: &Path,
+) -> Result<()> {
     if running(&c.name) {
         return restore_package_mount(home, c, log);
     }
-    let mut cmd = Command::new(runner(home)?);
+    let runner = runner(home)?;
+    let mut temporary = None;
+    let mut cmd = if direct {
+        let script = direct_launch_script(&fs::read_to_string(&runner)?)?;
+        let path = root(home).join("logs").join(format!(
+            "lepton-launch-{}.sh",
+            hex::encode(rand::random::<[u8; 16]>())
+        ));
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o700)
+            .open(&path)?;
+        file.write_all(script.as_bytes())?;
+        let mut command = Command::new(&path);
+        command.env(
+            "FRAMELY_LEPTON_DIR",
+            runner.parent().context("Missing Lepton directory")?,
+        );
+        temporary = Some(path);
+        command
+    } else {
+        Command::new(&runner)
+    };
     cmd.args(["start", &c.name])
         .env("LEPTON_NO_CLEANUP", "true")
         .env("TERM", "dumb")
@@ -901,9 +960,20 @@ fn start(home: &Path, c: &Container, show: Option<bool>, log: &Path) -> Result<(
     cmd.stdin(Stdio::null())
         .stdout(file.try_clone()?)
         .stderr(file);
-    let mut child = cmd.spawn()?;
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(path) = temporary {
+                let _ = fs::remove_file(path);
+            }
+            return Err(error.into());
+        }
+    };
     std::thread::spawn(move || {
         let _ = child.wait();
+        if let Some(path) = temporary {
+            let _ = fs::remove_file(path);
+        }
     });
     let began = Instant::now();
     while began.elapsed() < Duration::from_secs(60) {
@@ -944,8 +1014,13 @@ fn wrapper_active(name: &str) -> bool {
                 .split(|b| *b == 0)
                 .filter_map(|b| std::str::from_utf8(b).ok())
                 .collect();
-            args.windows(3)
-                .any(|a| a[0].ends_with("/lepton") && a[1] == "start" && a[2] == name)
+            args.windows(3).any(|a| {
+                (a[0].ends_with("/lepton")
+                    || (a[0].contains("/framely/apk-manager/logs/lepton-launch-")
+                        && a[0].ends_with(".sh")))
+                    && a[1] == "start"
+                    && a[2] == name
+            })
         })
 }
 fn stop(c: &Container, log: &Path) -> Result<()> {
@@ -1239,7 +1314,7 @@ fn install_package(c: &Container, apk: &Path, log: &Path) -> Result<()> {
     );
     Ok(())
 }
-fn launch(c: &Container, a: &App, log: &Path) -> Result<()> {
+fn launch_component(a: &App) -> Result<String> {
     let name = a
         .activity
         .as_ref()
@@ -1249,7 +1324,10 @@ fn launch(c: &Container, a: &App, log: &Path) -> Result<()> {
         a.metadata.declared_activities.contains(name),
         "Activity is not declared by this APK"
     );
-    let component = format!("{}/{}", a.metadata.package, name);
+    Ok(format!("{}/{}", a.metadata.package, name))
+}
+fn launch(c: &Container, a: &App, log: &Path) -> Result<()> {
+    let component = launch_component(a)?;
     podman(
         &[
             "exec",
@@ -1275,9 +1353,25 @@ fn launch(c: &Container, a: &App, log: &Path) -> Result<()> {
         Some(log),
     )?;
     ensure!(
-        !s.contains("Error:") && !s.contains("Exception"),
+        !s.contains("Error:")
+            && !s.contains("Exception")
+            && s.lines().any(|line| line.trim() == "Status: ok"),
         "Application launch failed: {s}"
     );
+    // Reveal the target only after ActivityManager has completed the launch.
+    // The compositor's app mode avoids exposing the Android home screen.
+    if a.show_window.unwrap_or(!a.metadata.vr) {
+        podman(
+            &[
+                "exec",
+                &format!("lepton-{}", c.name),
+                "setprop",
+                "waydroid.active_apps",
+                &a.metadata.package,
+            ],
+            Some(log),
+        )?;
+    }
     Ok(())
 }
 fn live_installed(c: &Container, package: &str, log: &Path) -> Result<bool> {
@@ -1775,8 +1869,15 @@ pub fn operate(
                     match kind {
                         "launch" => {
                             ensure!(a.installed, "Application is not installed");
+                            launch_component(&a)?;
                             progress(json!({"phase":"starting"}));
-                            start(home, &c, a.show_window.or(Some(!a.metadata.vr)), &log)?;
+                            start_container(
+                                home,
+                                &c,
+                                a.show_window.or(Some(!a.metadata.vr)),
+                                true,
+                                &log,
+                            )?;
                             launch(&c, &a, &log)?;
                         }
                         "close" => {
@@ -2047,6 +2148,62 @@ pub fn launch_app(home: &Path, id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn direct_boot_preserves_context_and_controls_window_visibility() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = dir.path().join("vendor with spaces/liblepton");
+        fs::create_dir_all(&library).unwrap();
+        fs::write(
+            library.join("liblepton.sh"),
+            r#"
+function props_file() { printf '%s' "$TEST_PROPS"; }
+function is_app() { return 1; }
+function setup_props() {
+    printf 'retained.context=%s\n' "$2" > "$(props_file)"
+    if app_wants_flatscreen; then
+        printf 'waydroid.background_start=false\nlepton.headless=false\n' >> "$(props_file)"
+    else
+        printf 'lepton.headless=true\n' >> "$(props_file)"
+    fi
+}
+"#,
+        )
+        .unwrap();
+        let script = direct_launch_script(
+            r#"#!/bin/bash
+set -euo pipefail
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+source "${SCRIPT_DIR}/liblepton/liblepton.sh"
+if is_app; then exit 99; fi
+setup_props "$@"
+"#,
+        )
+        .unwrap();
+        let entry = dir.path().join("launch.sh");
+        fs::write(&entry, script).unwrap();
+        let props = dir.path().join("props");
+        for visible in [true, false] {
+            let status = Command::new("bash")
+                .arg(&entry)
+                .args(["start", "existing-context"])
+                .env("FRAMELY_LEPTON_DIR", library.parent().unwrap())
+                .env("TEST_PROPS", &props)
+                .env("APP_WANTS_FLATSCREEN", visible.to_string())
+                .status()
+                .unwrap();
+            assert!(status.success());
+            let props = fs::read_to_string(&props).unwrap();
+            assert!(props.contains("retained.context=existing-context"));
+            assert!(props.contains("waydroid.active_apps=none"));
+            assert!(props.contains(if visible {
+                "waydroid.background_start=true"
+            } else {
+                "lepton.headless=true"
+            }));
+            assert!(!props.contains("waydroid.background_start=false"));
+        }
+        assert!(direct_launch_script("unrecognized future entrypoint").is_err());
+    }
     static SERIAL: Mutex<()> = Mutex::new(());
     struct Fixture {
         dir: tempfile::TempDir,
@@ -2081,6 +2238,7 @@ mod tests {
             fs::write(&state, "true").unwrap();
             let script = format!(
                 r#"#!/bin/sh
+printf '%s\n' "$*" >> '{commands}'
 case "$1" in
  inspect) cat '{state}';;
  ps) if [ "$(cat '{state}')" = true ]; then echo lepton-test; fi;;
@@ -2097,11 +2255,13 @@ case "$1" in
    esac
   elif [ "$3" = getprop ]; then echo 30;
   elif [ "$3" = cmd ]; then echo com.example.app/.Main;
-  elif [ "$3" = am ]; then echo 'Status: ok';
+  elif [ "$3" = am ]; then if [ -f '{launch_fail}' ]; then echo 'Error: launch failed'; else echo 'Status: ok'; fi;
   fi;;
 esac
 "#,
                 state = state.display(),
+                commands = dir.path().join("commands").display(),
+                launch_fail = dir.path().join("launch-fail").display(),
                 incoming = dir.path().join("incoming.apk").display(),
                 apk = baked.join("app_overlay/base.apk").display(),
                 fail = dir.path().join("fail").display(),
@@ -2150,6 +2310,38 @@ esac
         fn save_file(&self) -> PathBuf {
             self.home.join(".local/share/lepton/contexts/test/baked/data_overlay/data/com.example.app/files/save")
         }
+    }
+    #[test]
+    fn launch_reveals_only_the_successful_target_and_respects_vr_override() {
+        let f = Fixture::new();
+        let db = load(&f.home).unwrap();
+        let (mut a, c) = app(&f.home, &db, "test/com.example.app").unwrap();
+        let commands = f.dir.path().join("commands");
+        let log = f.dir.path().join("launch.log");
+        a.show_window = Some(true);
+        launch(&c, &a, &log).unwrap();
+        let trace = fs::read_to_string(&commands).unwrap();
+        let start = trace
+            .find("am start -W --user 0 -n com.example.app/")
+            .unwrap();
+        let reveal = trace
+            .find("setprop waydroid.active_apps com.example.app")
+            .unwrap();
+        assert!(start < reveal);
+        fs::write(&commands, "").unwrap();
+        a.show_window = Some(false);
+        launch(&c, &a, &log).unwrap();
+        assert!(!fs::read_to_string(&commands)
+            .unwrap()
+            .contains("waydroid.active_apps"));
+        fs::write(&commands, "").unwrap();
+        a.show_window = Some(true);
+        fs::write(f.dir.path().join("launch-fail"), "").unwrap();
+        assert!(launch(&c, &a, &log).is_err());
+        assert!(!fs::read_to_string(&commands)
+            .unwrap()
+            .contains("waydroid.active_apps"));
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
     }
     #[test]
     fn discovery_reads_mount_layer_and_does_not_claim_existing_context() {

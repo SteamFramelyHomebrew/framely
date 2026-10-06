@@ -370,7 +370,7 @@ impl Agent {
                 .unwrap_or(json!(0));
             return send_json(
                 r,
-                json!({"commands":commands,"notificationBadge":badge,"launcher":self.core("status",json!({})).ok().map(|v|v["database"]["launcher"].clone()).unwrap_or(json!({}))}),
+                json!({"commands":commands,"notificationBadge":badge,"gazeCalibration":self.core("launcher.gaze.calibration.get",json!({})).unwrap_or(Value::Null),"launcher":self.core("status",json!({})).ok().map(|v|v["database"]["launcher"].clone()).unwrap_or(json!({}))}),
             );
         }
         if let Some(rel) = path.strip_prefix("/plugin-assets/") {
@@ -520,9 +520,20 @@ impl Agent {
             "Session authentication failed"
         );
         if path.starts_with("/host/files/") {
-            ensure!(!remote && r.method() == &Method::Post, "File browser is only available inside Frame");
-            ensure!(r.headers().iter().any(|h| h.field.equiv("Origin") && h.value.as_str() == expected_origin), "Cross-origin file browser request denied");
-            ensure!(self.core("agreement.status", json!({}))?["accepted"] == true, "请先同意用户协议和隐私声明");
+            ensure!(
+                !remote && r.method() == &Method::Post,
+                "File browser is only available inside Frame"
+            );
+            ensure!(
+                r.headers()
+                    .iter()
+                    .any(|h| h.field.equiv("Origin") && h.value.as_str() == expected_origin),
+                "Cross-origin file browser request denied"
+            );
+            ensure!(
+                self.core("agreement.status", json!({}))?["accepted"] == true,
+                "请先同意用户协议和隐私声明"
+            );
             let mut bytes = Vec::new();
             r.as_reader().take(65537).read_to_end(&mut bytes)?;
             ensure!(bytes.len() <= 65536, "File browser request too large");
@@ -532,15 +543,27 @@ impl Agent {
                 match path.as_str() {
                     "/host/files/list" => crate::file_browser::list(&home, &params),
                     "/host/files/complete" => {
-                        let id = params["id"].as_str().filter(|s| !s.is_empty() && s.len() <= 128).context("Invalid file dialog")?;
+                        let id = params["id"]
+                            .as_str()
+                            .filter(|s| !s.is_empty() && s.len() <= 128)
+                            .context("Invalid file dialog")?;
                         let paths = crate::file_browser::selection(&home, &params)?;
-                        push(&self.commands, json!({"kind":"file.dialog.complete","id":id,"paths":paths}));
+                        push(
+                            &self.commands,
+                            json!({"kind":"file.dialog.complete","id":id,"paths":paths}),
+                        );
                         Ok(json!(true))
                     }
                     _ => anyhow::bail!("Unknown file browser operation"),
                 }
             })();
-            return send_json(r, match result { Ok(v) => json!({"result":v}), Err(e) => json!({"error":e.to_string()}) });
+            return send_json(
+                r,
+                match result {
+                    Ok(v) => json!({"result":v}),
+                    Err(e) => json!({"error":e.to_string()}),
+                },
+            );
         }
         if let Some(path) = path.strip_prefix("/api/upload/") {
             ensure!(r.method() == &Method::Post, "Invalid upload method");
@@ -740,6 +763,38 @@ impl Agent {
                     .context("Invalid Steam app")? as u32;
                 crate::steam::launch(id)?;
                 push(&self.commands, json!({"kind":"launcher.close"}));
+                Ok(json!(true))
+            }
+            "host.launcher.calibration.target" => {
+                let id = p["id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty() && id.len() <= 128)
+                    .context("Invalid calibration target")?;
+                for coordinate in ["x", "y"] {
+                    let value = p[coordinate]
+                        .as_f64()
+                        .context("Invalid calibration target")?;
+                    ensure!(
+                        value.is_finite() && (0.0..=1.0).contains(&value),
+                        "Invalid calibration target"
+                    );
+                }
+                let preview: Option<crate::model::GazeCalibration> =
+                    serde_json::from_value(p["preview"].clone())?;
+                if let Some(calibration) = &preview {
+                    calibration.validate_preview()?;
+                }
+                push(
+                    &self.commands,
+                    json!({"kind":"gaze.target","id":id,"x":p["x"],"y":p["y"],"preview":preview}),
+                );
+                Ok(json!(true))
+            }
+            "host.launcher.calibrate" => {
+                push(
+                    &self.commands,
+                    json!({"kind":"launcher.calibrate","active":p["active"].as_bool().unwrap_or(true)}),
+                );
                 Ok(json!(true))
             }
             "host.launcher.close" => {
@@ -1017,6 +1072,8 @@ impl Agent {
             | "plugin.launch"
             | "plugin.launcher.action"
             | "launcher.settings.save"
+            | "launcher.gaze.calibration.get"
+            | "launcher.gaze.calibration.save"
             | "launcher.order.save"
             | "launcher.favorite"
             | "steam.favorite"
@@ -1731,6 +1788,55 @@ mod tests {
         })
     }
     #[test]
+    fn calibration_preview_allows_unvalidated_error_but_rejects_invalid_geometry() {
+        let root = tempfile::tempdir().unwrap();
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let agent = agent(&server, root.path());
+        let mut core =
+            crate::tests::accepted_service(&agent.state, unsafe { libc::geteuid() }).unwrap();
+        let socket = UnixListener::bind(&agent.socket).unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let core_stop = stop.clone();
+        let core_worker = std::thread::spawn(move || {
+            while !core_stop.load(Ordering::Relaxed) {
+                if let Ok((mut stream, _)) = socket.accept() {
+                    let request = ipc::read(&mut stream).unwrap();
+                    let response = ipc::response(core.handle(
+                        request["method"].as_str().unwrap(),
+                        request["params"].clone(),
+                    ));
+                    ipc::write(&mut stream, &response).unwrap();
+                } else {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        });
+        let http = http_server(server, agent.clone(), stop.clone());
+        let request = |preview: Value| -> Value {
+            ureq::post(&format!("{}/api", agent.origin))
+                .set("Cookie", &format!("framely={}", agent.web_key))
+                .set("Origin", &agent.origin)
+                .send_json(json!({"method":"host.launcher.calibration.target", "params":{"id":"verify:1","x":0.3,"y":0.5,"preview":preview}}))
+                .unwrap().into_json().unwrap()
+        };
+        let preview = json!({"space":"headAngles","matrix":[1.0,0.0,0.1,0.0,1.0,-0.1],"width":1440,"height":800,"error":0.08,"maxError":0.15});
+        let allowed = request(preview.clone());
+        let mut invalid = preview.clone();
+        invalid["matrix"][0] = json!(-1);
+        let rejected = request(invalid);
+        stop.store(true, Ordering::Relaxed);
+        http.join().unwrap();
+        core_worker.join().unwrap();
+        assert_eq!(allowed["result"], json!(true), "{allowed}");
+        assert!(rejected.get("error").is_some(), "{rejected}");
+        let commands = agent.commands.lock().unwrap();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0]["preview"], preview);
+        let model: crate::model::GazeCalibration = serde_json::from_value(preview).unwrap();
+        assert!(model.validate().is_err()); // Still cannot persist a poor result.
+    }
+    #[test]
     fn launcher_favorites_pass_through_real_http_session_and_persist() {
         let root = tempfile::tempdir().unwrap();
         let server = Server::http("127.0.0.1:0").unwrap();
@@ -2082,7 +2188,12 @@ mod tests {
             .call()
             .is_err());
         for path in ["/host/files/list", "/host/files/complete"] {
-            assert!(matches!(ureq::post(&format!("{origin}{path}")).set("Origin", &origin).send_json(json!({})), Err(ureq::Error::Status(403, _))));
+            assert!(matches!(
+                ureq::post(&format!("{origin}{path}"))
+                    .set("Origin", &origin)
+                    .send_json(json!({})),
+                Err(ureq::Error::Status(403, _))
+            ));
         }
         assert!(ureq::get(&format!("{origin}/host/poll"))
             .set("X-Framely-Native", &agent.native_key)

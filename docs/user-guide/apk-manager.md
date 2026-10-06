@@ -36,6 +36,8 @@ Once a modifying operation starts, cancellation is disabled until its actual out
 
 The launcher uses declared MAIN/LAUNCHER, television launcher and recognized VR entries, plus the running Android package manager's resolved launcher entry. Disabled packages/components are excluded. A launch entry does not guarantee that an app will run successfully.
 
+Launching an APK boots its existing container in the background and reveals the target application after ActivityManager reports success. Framely keeps Lepton’s development-context data handling instead of switching an existing container to APK bake mode. A temporary launch adapter uses the installed Lepton libraries without editing Steam’s installation; an unsupported entry script reports an error before starting a cold container. Container maintenance commands retain their normal behavior.
+
 Window handling is automatic by default. **Advanced settings → Show Android window** is a troubleshooting override, applied on container restart. It does not convert a flat application into VR or a VR application into a flat application. Lepton development contexts may mount their APK at a different path after a restart. Framely re-registers the same signed APK when Android can no longer resolve it, preserving data and reporting failures. Advanced settings also allow selecting an enabled, declared Activity when a nonstandard app needs a different entry.
 
 Launcher favorites, search and manual ordering continue to use stable context/package identities. Updating and refreshing do not reorder icons. Uninstalling hides an icon without deleting its favorite/order record; reinstalling in the same context restores it. Long-press a local Lepton icon to open APK management or removal confirmation.

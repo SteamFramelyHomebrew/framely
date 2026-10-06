@@ -1,0 +1,21 @@
+#include "launcher_gaze.h"
+#include <cassert>
+#include <limits>
+int main(){
+ vr::VREyeTrackingData_t e{};vr::VROverlayIntersectionParams_t ray{};assert(!launcher_gaze_ray(e,ray));
+ e.bActive=e.bValid=e.bTracked=true;e.vGazeOrigin={{1,2,3}};e.vGazeTarget={{1,2,1}};assert(launcher_gaze_ray(e,ray));assert(ray.vDirection.v[2]==-1&&ray.vSource.v[0]==1);
+ e.vGazeTarget=e.vGazeOrigin;assert(!launcher_gaze_ray(e,ray));e.vGazeTarget.v[0]=std::numeric_limits<float>::quiet_NaN();assert(!launcher_gaze_ray(e,ray));
+ LauncherGazePress p;bool connected[2]{true,true},buttons[2]{true,false};
+ assert(p.update(true,connected,buttons)==LauncherGazePress::None); // entry held
+ buttons[0]=false;assert(p.update(true,connected,buttons)==LauncherGazePress::None);
+ buttons[0]=true;assert(p.update(true,connected,buttons)==LauncherGazePress::Down);
+ buttons[1]=true;assert(p.update(true,connected,buttons)==LauncherGazePress::None);
+ buttons[0]=false;assert(p.update(true,connected,buttons)==LauncherGazePress::Up);
+ assert(p.update(true,connected,buttons)==LauncherGazePress::None); // overlapping button doesn't re-click
+ buttons[1]=false;p.update(true,connected,buttons);buttons[1]=true;assert(p.update(true,connected,buttons)==LauncherGazePress::Down);
+ connected[1]=false;assert(p.update(true,connected,buttons)==LauncherGazePress::Cancel);
+ connected[1]=true;assert(p.update(true,connected,buttons)==LauncherGazePress::None);
+ buttons[1]=false;p.update(true,connected,buttons);buttons[0]=true;assert(p.update(true,connected,buttons)==LauncherGazePress::Down);
+ assert(p.update(false,connected,buttons)==LauncherGazePress::Cancel);
+ assert(p.update(true,connected,buttons)==LauncherGazePress::None);
+}
