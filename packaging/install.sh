@@ -200,6 +200,8 @@ ExecStart=$root/current/bin/framely session --state $root --assets $root/current
 Restart=on-failure
 RestartSec=5
 KillMode=control-group
+# Allow a bounded, reversible UI-only boost; no realtime scheduling.
+LimitNICE=25
 TimeoutStopSec=10
 [Install]
 WantedBy=multi-user.target

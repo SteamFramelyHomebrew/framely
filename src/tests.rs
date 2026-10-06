@@ -1973,13 +1973,14 @@ fn launcher_dispatch_preserves_old_open_semantics_and_window_context() {
 
     core.handle(
         "launcher.settings.save",
-        json!({"primaryTrigger":true,"menuAutoClose":false,"menuTimeoutSeconds":25}),
+        json!({"primaryTrigger":true,"menuAutoClose":false,"menuTimeoutSeconds":25,"prioritizeUi":false}),
     )
     .unwrap();
     let loaded = Service::load(&root.path().join("state"), unsafe { libc::geteuid() }).unwrap();
     assert!(loaded.db.launcher.primary_trigger);
     assert!(!loaded.db.launcher.menu_auto_close);
     assert_eq!(loaded.db.launcher.menu_timeout_seconds, 25);
+    assert!(!loaded.db.launcher.prioritize_ui);
     let order = vec![
         "framely",
         "plugin:launch.routes",
@@ -2004,6 +2005,11 @@ fn launcher_dispatch_preserves_old_open_semantics_and_window_context() {
 
 #[test]
 fn launcher_categories_migrate_validate_and_favorites_survive_reload() {
+    assert!(
+        serde_json::from_value::<crate::model::LauncherSettings>(json!({}))
+            .unwrap()
+            .prioritize_ui
+    );
     let root = tempfile::tempdir().unwrap();
     let state = root.path().join("state");
     let mut core = accepted_service(&state, unsafe { libc::geteuid() }).unwrap();

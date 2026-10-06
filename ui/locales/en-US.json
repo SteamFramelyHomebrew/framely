@@ -910,6 +910,8 @@
     "无法复制，请使用浏览器的复制功能。": "Unable to copy. Use the browser copy command.",
     "保存手柄设置": "Save gamepad settings",
     "Frame 手柄输入": "Frame gamepad input",
-    "默认关闭。将 Frame 手柄用作标准游戏手柄；开启后下次打开 APK 生效，必要时重启容器。关闭立即停止输入。": "Off by default. Use Frame controllers as a standard gamepad. Enabling takes effect at the next APK launch and may restart its container. Disabling stops input immediately."
+    "默认关闭。将 Frame 手柄用作标准游戏手柄；开启后下次打开 APK 生效，必要时重启容器。关闭立即停止输入。": "Off by default. Use Frame controllers as a standard gamepad. Enabling takes effect at the next APK launch and may restart its container. Disabling stops input immediately.",
+    "启动台资源优先": "Prioritize launcher resources",
+    "启动台显示时提高界面 CPU 调度优先级，关闭后恢复。": "Raise UI CPU scheduling priority while the launcher is visible; restore it when closed."
   }
 }

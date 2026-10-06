@@ -180,6 +180,8 @@ pub struct LauncherAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LauncherSettings {
     #[serde(default = "yes")]
+    pub prioritize_ui: bool,
+    #[serde(default = "yes")]
     pub primary_trigger: bool,
     #[serde(default = "yes")]
     pub menu_auto_close: bool,
@@ -244,6 +246,7 @@ fn menu_timeout() -> u32 {
 impl Default for LauncherSettings {
     fn default() -> Self {
         Self {
+            prioritize_ui: true,
             primary_trigger: true,
             menu_auto_close: true,
             menu_timeout_seconds: 10,

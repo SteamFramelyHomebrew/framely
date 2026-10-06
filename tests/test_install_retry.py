@@ -123,6 +123,8 @@ class InstallRetry(unittest.TestCase):
             self.assertTrue(state.is_symlink())
             self.assertTrue((units / 'framely.service').is_file())
             self.assertTrue((units / 'framely-session.service').is_file())
+            self.assertIn('LimitNICE=25', (units / 'framely-session.service').read_text())
+            self.assertNotIn('LimitNICE=', (units / 'framely.service').read_text())
             self.assertFalse((base / 'useradd-args').exists())
             self.assertEqual((state / 'previous-release').read_text(), 'releases/older\n')
             self.assertEqual((state / 'state.json').read_text(), '{"settings":"preserved"}')

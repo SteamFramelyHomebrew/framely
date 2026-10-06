@@ -927,6 +927,7 @@ impl Agent {
             "desktop.list" => Ok(json!(crate::desktop::discover(&crate::steam::home()?))),
             "desktop.launch" => {
                 let id = p["app"].as_str().context("Missing desktop app")?;
+                let launcher_session = p["launcherSession"].as_u64();
                 if let Some(app) = id.strip_prefix("lepton:") {
                     let commands = self.commands.clone();
                     crate::apk::launch_app_with_progress(
@@ -934,7 +935,10 @@ impl Agent {
                         app,
                         Arc::new(move |event| {
                             if event["phase"] == "started" {
-                                push(&commands, json!({"kind":"launcher.close","handoff":true}));
+                                push(
+                                    &commands,
+                                    json!({"kind":"launcher.close","handoff":true,"launcherSession":launcher_session}),
+                                );
                             }
                         }),
                     )?;
@@ -942,13 +946,14 @@ impl Agent {
                     crate::desktop::launch(&crate::steam::home()?, id)?;
                     push(
                         &self.commands,
-                        json!({"kind":"launcher.close","handoff":true}),
+                        json!({"kind":"launcher.close","handoff":true,"launcherSession":launcher_session}),
                     );
                 }
                 Ok(json!(true))
             }
             "steam.list" => Ok(json!(crate::steam::discover(&crate::steam::home()?))),
             "steam.launch" => {
+                let launcher_session = p["launcherSession"].as_u64();
                 let id = p["app"]
                     .as_u64()
                     .filter(|v| *v > 0 && *v <= u32::MAX as u64)
@@ -956,7 +961,7 @@ impl Agent {
                 crate::steam::launch(id)?;
                 push(
                     &self.commands,
-                    json!({"kind":"launcher.close","handoff":true}),
+                    json!({"kind":"launcher.close","handoff":true,"launcherSession":launcher_session}),
                 );
                 Ok(json!(true))
             }

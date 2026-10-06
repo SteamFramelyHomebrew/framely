@@ -1,6 +1,7 @@
 import React,{useState} from 'react';import{createRoot}from'react-dom/client';
 import{Launcher,LauncherSettings,type LauncherConfig}from'../ui/src/launcher';import{configureLanguage}from'../ui/src/i18n';import type{Plugin}from'../ui/src/main';import'../ui/src/style.css';
 const wait=(ms=80)=>new Promise(r=>setTimeout(r,ms));const until=async(f:()=>any)=>{for(let i=0;i<120;i++){if(f())return;await wait(30);}throw Error('Timed out '+document.body.innerText.slice(0,240)+' '+JSON.stringify(calls.slice(-4))+' edit='+!!document.querySelector('.launcher-editing'));};
+(window as Window & {framelyLauncherSession?:number}).framelyLauncherSession=42;
 let stalledMethod='',releaseStalled:((r:Response)=>void)|undefined;
 let config:LauncherConfig={primaryTrigger:false,menuAutoClose:true,menuTimeoutSeconds:1};let order:string[]=[];let localApps:any[]=[];let redraw:()=>void;let settings=false;const calls:{method:string;params:any}[]=[];
 const plugins:Record<string,Plugin>={
@@ -8,7 +9,7 @@ const plugins:Record<string,Plugin>={
  'demo.beta':{manifest:{id:'demo.beta',icon:'icon.png',name:'Passthrough color',description:'Color',author:'Framely',version:'1.0.0',ui:{quickPage:'page.js',windows:{}}},enabled:true,favorite:false,order:1},
  'demo.off':{manifest:{id:'demo.off',name:'Disabled app',description:'',author:'Framely',version:'1.0.0',ui:{windows:{}}},enabled:false,favorite:false,order:2},
 };
-window.fetch=async(url,init)=>{if(String(url)!=='/api')throw Error('Unexpected fetch');const{method,params}=JSON.parse(String(init?.body));calls.push({method,params});if(method===stalledMethod)return new Promise<Response>(resolve=>{releaseStalled=resolve;});let result:any=true;
+window.fetch=async(url,init)=>{if(String(url)!=='/api')throw Error('Unexpected fetch');const{method,params}=JSON.parse(String(init?.body));calls.push({method,params});if(["desktop.launch","steam.launch"].includes(method)&&params.launcherSession!==42)throw Error("Launch did not carry the current launcher session");if(method===stalledMethod)return new Promise<Response>(resolve=>{releaseStalled=resolve;});let result:any=true;
  if(method==='steam.list')result=[{id:620980,name:'Beat Saber'},{id:546560,name:'Half-Life: Alyx'},{id:413150,name:'Stardew Valley'},{id:1245620,name:'Elden Ring'},{id:367520,name:'Hollow Knight'},{id:570,name:'Dota 2'},{id:440,name:'Team Fortress 2'}].map(a=>({...a,icon:`/preview-icons/${a.id}.jpg`,iconFit:'cover'}));
  else if(method==='desktop.list')result=localApps;
  else if(method==='status')result={database:{plugins,safeMode:false}};
@@ -104,6 +105,6 @@ function openMenu(){const b=document.querySelector<HTMLButtonElement>('.launch-i
  stalledMethod='';releaseStalled!(new Response(JSON.stringify({result:true})));window.setTimeout=realTimeout;await wait(100);
  console.log('FRAMELY_LAUNCHER_TIMEOUT_RECOVERY_OK');
  const closes=calls.filter(c=>c.method==='host.launcher.close').length;document.querySelector('.launcher-shell')!.dispatchEvent(new MouseEvent('click',{bubbles:true}));window.dispatchEvent(new Event('framely.back'));await until(()=>calls.filter(c=>c.method==='host.launcher.close').length===closes+1);window.dispatchEvent(new Event('framely.launcher.closing'));await wait(80);const closingAnimation=document.querySelector('.launcher-shell')!.getAnimations()[0];if(!closingAnimation||Number((closingAnimation.effect as KeyframeEffect).getKeyframes().at(-1)?.opacity)!==0)throw Error('Closing animation missing');window.dispatchEvent(new Event('framely.launcher.open'));await wait(500);
- settings=true;redraw();await wait();const switches=document.querySelectorAll<HTMLInputElement>('[role=switch]');switches[0].click();await wait();if(!config.primaryTrigger)throw Error('Trigger setting not saved');await wait(180);console.log('FRAMELY_PREVIEW_INSTALL_LAUNCHER_SETTINGS_ZH');configureLanguage('en-US',[]);redraw();await wait(180);console.log('FRAMELY_PREVIEW_INSTALL_LAUNCHER_SETTINGS_EN');console.log('FRAMELY_BRIDGE_PASS');
+ settings=true;redraw();await wait();const switches=document.querySelectorAll<HTMLInputElement>('[role=switch]');switches[0].click();await wait();if(config.prioritizeUi!==false)throw Error("Resource priority setting not saved");switches[1].click();await wait();if(!config.primaryTrigger)throw Error('Trigger setting not saved');await wait(180);console.log('FRAMELY_PREVIEW_INSTALL_LAUNCHER_SETTINGS_ZH');configureLanguage('en-US',[]);redraw();await wait(180);console.log('FRAMELY_PREVIEW_INSTALL_LAUNCHER_SETTINGS_EN');console.log('FRAMELY_BRIDGE_PASS');
 }catch(e){console.error('FRAMELY_BRIDGE_FAIL '+e);}};
 createRoot(document.getElementById('root')!).render(<Fixture/>);wait(150).then(()=>console.log('FRAMELY_VIEW_READY'));

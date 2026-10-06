@@ -65,3 +65,9 @@ Hold the primary trigger and move the laser up or down to drag scrollable page c
 
 
 Launcher blank-space clicks only dismiss the icon menu. Click outside the launcher window or press B to dismiss it (B exits arrangement first). Steam’s move/depth controls keep the window open and pause stick navigation until the stick returns to neutral. While dragging an icon in arrangement mode, horizontal stick input changes pages; vertical input does not change categories. The boundary rails remain an alternative: hold the pointer beyond a rail for 650 ms to move to the adjacent page.
+
+## Launcher resource priority and closing
+
+Settings → Launcher includes **Prioritize launcher resources**, enabled by default. While the launcher is open, Framely raises its native UI and CEF thread CPU priority to a bounded nice level of −5, then restores the previous priorities when closed or disabled. Games and terminal processes are excluded. This can help CPU contention; it does not reserve GPU capacity. The installed session service must include the matching priority limit.
+
+Closing the launcher returns to the previously selected Dock window when it is still available. Starting an application hands focus to Steam instead of restoring the old window. APK windows are handed off after Android confirms the activity launch; startup health checks continue afterward. A running container with a hidden application window is reused rather than restarted solely because the previous game exited.
