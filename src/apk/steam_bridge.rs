@@ -352,6 +352,11 @@ fn handle(home: &Path, pid: u32, v: Value) -> Result<Value> {
                 {
                     std::thread::sleep(Duration::from_millis(500));
                 }
+                // The native Lepton entry may remove its container before the
+                // lease watcher runs. Release its virtual device here, while
+                // we still hold the context lock, so a later launch cannot be
+                // affected by an old helper or have its new device removed.
+                crate::gamepad::stop_context(&c.name);
                 drop(ownership);
             });
             Ok(response)
