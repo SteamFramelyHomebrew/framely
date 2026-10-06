@@ -28,9 +28,11 @@ Files opens the user's home directory and accesses the filesystem with that user
 
 Use the address bar, breadcrumbs, parent button or expandable folder tree. Quick access includes Home, Downloads, mounted storage, the filesystem root, the recycle bin and your saved folders. Add the current folder using the star button; rename, reorder or remove its shortcut with the adjacent controls. Unavailable folders keep their saved shortcut and display the access error when opened.
 
+Drag the divider between the sidebar and file list to resize it; the width is remembered in this browser and limited automatically on narrow windows. The sidebar scrolls independently. Opening a folder in the file list or address bar expands the tree to its location and highlights it.
+
 The file list provides hidden-file visibility, sorting, checkboxes for multiple selection, current-folder filtering and cancellable recursive filename search. Recursive search does not follow directory links. Lists are paged in groups of 200; recursive results are limited to 5,000 matches and 500,000 visited entries. Media contents are never scanned to create thumbnails.
 
-**Actions** provides copy, cut, paste, rename, delete, properties, permission editing, compression, extraction and opening files. Right-click selects a file and opens these actions. Symbolic links have an arrow marker and their target in Properties. Copy preserves links; deleting a link does not delete its target. Special filesystem objects cannot be copied or archived.
+**Actions** provides copy, cut, paste, rename, delete, properties, permission editing, compression, extraction and opening files. Right-click a file or folder to open a menu at the pointer; right-clicking a selected item preserves the multi-selection. Right-click the empty list area for new file/folder, paste, upload and refresh actions. Escape or clicking elsewhere closes the menu. Symbolic links have an arrow marker and their target in Properties. Copy preserves links; deleting a link does not delete its target. Special filesystem objects cannot be copied or archived.
 
 Copy, move, upload and extraction let you skip conflicts, keep both names or confirm replacement for the batch. Replacement of a same-name folder replaces that whole folder; it does not merge its contents. Long tasks show actual bytes or completed entries, can be cancelled, and report individual failures. Completed items remain completed when a later item fails or the task is cancelled. Switching manager sections keeps active file work and editor state in the current page.
 
