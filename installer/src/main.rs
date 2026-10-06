@@ -343,6 +343,17 @@ impl Installer {
                     } else {
                         "操作失败，请查看操作结果与日志。".into()
                     };
+                    let first_install = result.is_ok()
+                        && self.chosen_action == "install"
+                        && self
+                            .device_state
+                            .as_ref()
+                            .is_some_and(|state| !state.present);
+                    if first_install && !self.preview {
+                        if let Some(url) = self.manager_url() {
+                            cx.open_url(&url);
+                        }
+                    }
                     self.queue_prompt(dialogs::Prompt::Outcome(
                         self.chosen_action.clone(),
                         result.clone(),
@@ -361,6 +372,27 @@ impl Installer {
             cx.notify();
         }
         self.present_prompt(window, cx);
+    }
+    fn manager_url(&self) -> Option<String> {
+        let completed = self
+            .operation_result
+            .as_ref()
+            .is_some_and(|(action, result)| result.is_ok() && action != "uninstall");
+        if self.connected_host.is_empty() || (self.connection.is_none() && !completed) {
+            return None;
+        }
+        let host = self
+            .connected_host
+            .rsplit_once(':')
+            .map(|(host, _)| host)
+            .unwrap_or(&self.connected_host)
+            .trim_matches(['[', ']']);
+        let host = if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host.to_owned()
+        };
+        Some(format!("http://{host}:15915/manager"))
     }
     fn export_logs(&mut self, cx: &mut Context<Self>) {
         if self.busy {
@@ -779,6 +811,7 @@ fn preview_pages(dir: PathBuf) -> anyhow::Result<()> {
         (2, "uninstalled"),
         (2, "same-version"),
         (2, "update-complete"),
+        (2, "first-install-complete"),
         (2, "operation-failed"),
     ] {
         context.update_window(handle, |_, window, cx| {
@@ -895,10 +928,23 @@ fn preview_pages(dir: PathBuf) -> anyhow::Result<()> {
                     assert!(view.same_update() && view.selection_ready());
                     view.request_operation(cx);
                     assert!(view.confirmation.is_none());
-                } else if name == "update-complete" || name == "operation-failed" {
-                    view.chosen_action = "update".into();
+                } else if matches!(
+                    name,
+                    "update-complete" | "first-install-complete" | "operation-failed"
+                ) {
+                    view.chosen_action = if name == "first-install-complete" {
+                        "install"
+                    } else {
+                        "update"
+                    }
+                    .into();
+                    view.connected_host = "192.168.1.42:22".into();
+                    if name == "first-install-complete" {
+                        view.device_state = Some(Installation::default());
+                    }
+
                     view.sender
-                        .send(Event::Done(if name == "update-complete" {
+                        .send(Event::Done(if name != "operation-failed" {
                             Ok(())
                         } else {
                             Err("网络连接中断，请重新连接设备后重试。".into())
@@ -911,6 +957,19 @@ fn preview_pages(dir: PathBuf) -> anyhow::Result<()> {
                             && view.confirmation.is_none()
                             && !view.busy
                     );
+                    assert_eq!(view.manager_url().is_some(), name != "operation-failed");
+                    if name != "operation-failed" {
+                        assert_eq!(
+                            view.manager_url().as_deref(),
+                            Some("http://192.168.1.42:15915/manager")
+                        );
+                        view.connected_host = "[fd00::42]:22".into();
+                        assert_eq!(
+                            view.manager_url().as_deref(),
+                            Some("http://[fd00::42]:15915/manager")
+                        );
+                        view.connected_host = "192.168.1.42:22".into();
+                    }
                 }
                 cx.notify();
             });

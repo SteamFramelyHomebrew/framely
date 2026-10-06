@@ -1162,17 +1162,10 @@ impl Render for Installer {
                     })),
             );
         } else {
-            if self.connection.is_some() {
-                let url = format!(
-                    "http://{}:15915",
-                    self.connected_host
-                        .rsplit_once(':')
-                        .map(|(h, _)| h)
-                        .unwrap_or(&self.connected_host)
-                );
+            if let Some(url) = self.manager_url() {
                 footer = footer.child(
                     Button::new("manager")
-                        .ghost()
+                        .primary()
                         .label("管理面板")
                         .on_click(move |_, _, cx| cx.open_url(&url)),
                 );

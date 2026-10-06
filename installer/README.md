@@ -32,6 +32,8 @@ After an operation, maintenance shows a separate success/failure card and a reco
 
 Scanning, downloads, and SSH work run on background threads, with progress and logs in the UI. The network panel button assumes port 15915; use the actual address if the device port has changed.
 
+After a successful first installation, the installer automatically opens the network management panel in your browser. The highlighted **Management panel** button remains available after installation and updates.
+
 Online first installation always downloads the complete `*-offline-linux-arm64.tar.gz` package with CEF. Online updates download the core package without CEF and reuse the device runtime. A missing or newly required CEF runtime is downloaded separately by the device. For local first installation, choose the complete offline package. See [package selection](../docs/user-guide/installation.md#release-packages-and-cef).
 
 Release queries, checksum files and package downloads automatically use the computer's manual system proxy: Windows Internet Settings, macOS network settings, or Linux GNOME/KDE settings. `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY` (or their lowercase forms) override desktop settings; `NO_PROXY` and desktop bypass rules are respected, including on redirects. HTTP CONNECT and SOCKS proxies are supported. PAC scripts and IPv6 proxy endpoints are currently unsupported; use a manual proxy with a hostname or IPv4 address. SSH/SFTP and downloads initiated by Frame use the device connection and network rather than the computer's HTTP proxy.

@@ -32,6 +32,8 @@ Rust + GPUI Kit 的桌面安装器，连接 Steam Frame，安装、更新、修�
 
 扫描、下载和 SSH 工作在后台线程运行，界面展示进度和日志。默认网络管理面板按钮使用端口 15915；设备修改端口后应使用实际地址。
 
+首次安装成功后，安装器会自动在浏览器打开网络管理面板；高亮的“管理面板”按钮在安装和更新完成后仍可使用。
+
 在线首次安装固定下载包含 CEF 的完整 `*-offline-linux-arm64.tar.gz` 包；在线更新下载不含 CEF 的本体包并复用设备运行库。所需 CEF 缺失或版本更换时，由设备单独下载。本地首次安装也需选择完整离线包，参见[发行包说明](../docs/zh-CN/user-guide/installation.md#发行包与-cef)。
 
 版本查询、校验文件和压缩包下载自动读取电脑的手动系统代理：Windows Internet 设置、macOS 网络设置及 Linux GNOME/KDE 设置。`HTTPS_PROXY`、`HTTP_PROXY`、`ALL_PROXY`（也支持小写）优先于桌面设置；遵循 `NO_PROXY` 及桌面绕过规则，重定向后也会重新判断。支持 HTTP CONNECT 和 SOCKS 代理。暂不支持 PAC 脚本及 IPv6 代理地址，可使用主机名或 IPv4 地址的手动代理。SSH/SFTP 使用设备连接，Frame 主动下载使用设备网络，不使用电脑的 HTTP 代理。
