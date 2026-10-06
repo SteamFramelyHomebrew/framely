@@ -39,7 +39,7 @@ curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/i
 
 Replace the example tag with the published version you want to install. Enter the sudo password when prompted. See the [installation guide](docs/user-guide/installation.md) for updates, repair, and uninstallation.
 
-First installation uses the complete offline package with CEF; updates use the smaller core package and reuse CEF; the device needs neither Node.js nor Rust. Installation requests sudo and does not automatically disable SteamOS read-only protection. Press the main trigger on the Framely Dock icon in the SteamVR Dashboard to open the launcher, or the upper trigger to open the quick menu. Open the manager from the launcher’s Settings button. The trigger actions can be swapped in Launcher settings.
+First installation uses the complete offline package with CEF; updates use the smaller core package and reuse CEF; the device needs neither Node.js nor Rust. Installation requests sudo and does not automatically disable SteamOS read-only protection. Click the Framely Dock icon in the SteamVR Dashboard to open the launcher, or hold it for 600 ms to open the quick panel; a progress ring appears while holding. Open the manager from the launcher’s Settings button.
 
 The network panel uses port `15915` by default. Visit `http://DEVICE_IP:15915` on your phone or computer. When no password is configured, the first visit requires setting and confirming a password before login. The device password and panel password are independent.
 
