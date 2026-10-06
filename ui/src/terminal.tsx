@@ -18,7 +18,7 @@ export function TerminalManager(){
  useEffect(()=>{sessionStorage.setItem('framely-terminal-session',selected);},[selected]);
  useEffect(()=>{void refresh();const timer=setInterval(()=>void refresh(),3000);return()=>clearInterval(timer);},[]);
  async function create(){if(busy)return;setBusy(true);try{const s=await managerApi<Session>('terminal',{operation:'create',name:t('终端')});setSelected(s.id);setName(s.name);await refresh();term.current?.focus();}catch(e){setError(String(e));}finally{setBusy(false);}}
- useEffect(()=>{if(!host.current||!selected)return;const terminal=new Terminal({fontSize:16,scrollback:10000,cursorBlink:!matchMedia('(prefers-reduced-motion: reduce)').matches,disableStdin:true,theme:{background:'#19191b',foreground:'#e8e8ed',selectionBackground:'#555555'}}),fitter=new FitAddon();terminal.loadAddon(fitter);terminal.open(host.current);term.current=terminal;fit.current=fitter;terminal.parser.registerOscHandler(52,()=>true);
+ useEffect(()=>{if(!host.current||!selected)return;const terminal=new Terminal({fontSize:16,scrollback:10000,allowTransparency:true,cursorBlink:!matchMedia('(prefers-reduced-motion: reduce)').matches,disableStdin:true,theme:{background:'#00000000',foreground:'#e8e8ed',selectionBackground:'#555555'}}),fitter=new FitAddon();terminal.loadAddon(fitter);terminal.open(host.current);term.current=terminal;fit.current=fitter;terminal.parser.registerOscHandler(52,()=>true);
   terminal.attachCustomKeyEventHandler(event=>{
    if(event.type!=='keydown'||!event.ctrlKey||!event.shiftKey||event.altKey||event.metaKey)return true;
    if(event.code==='KeyV')return false; // Native paste supplies the clipboard to xterm; do not emit Ctrl-V.
