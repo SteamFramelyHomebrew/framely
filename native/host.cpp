@@ -307,9 +307,11 @@ static void observe_dashboard(const vr::VREvent_t& event){
  if(!error&&key[0]&&dashboard_keys.size()<512)dashboard_keys.insert(key);
 }
 static void finish_launcher_close(){
+ launcher_fade.reset();
  if(!views.count("launcher"))return;auto& v=*views.at("launcher");
+ overlays->SetOverlayAlpha(v.overlay,0.f);
  // Do not steal focus if Steam or the user already selected another window.
- if(!overlays->IsActiveDashboardOverlay(v.overlay))return;
+ if(!overlays->IsActiveDashboardOverlay(v.overlay)){overlays->HideOverlay(v.overlay);return;}
  if(launcher_restore_previous&&!launcher_previous_dashboard.empty()){
   vr::VROverlayHandle_t previous=0;if(!overlays->FindOverlay(launcher_previous_dashboard.c_str(),&previous)){
    overlays->ShowDashboard(launcher_previous_dashboard.c_str());menu_open=launcher_previous_menu;return;
@@ -328,7 +330,7 @@ static void hide_launcher(bool restore=true,bool immediate=false){
  if(was_open&&views.count("launcher")&&overlays->IsActiveDashboardOverlay(views.at("launcher")->overlay)){
   auto* frame=views.at("launcher")->browser->get_main_frame(views.at("launcher")->browser);
   execute(frame,"window.dispatchEvent(new Event('framely.launcher.closing'))");frame->base.release(&frame->base);
-  auto now=std::chrono::steady_clock::now();launcher_fade.close(now);launcher_close_at=now+std::chrono::milliseconds(launcher_fade.reduced?0:480);
+  auto now=std::chrono::steady_clock::now();launcher_fade.close(now);launcher_close_at=now+std::chrono::milliseconds(launcher_fade.reduced?0:240);
  }
 }
 static void launcher_back(){
@@ -345,16 +347,17 @@ static bool launcher_accepts(const vr::VREvent_t& e){
 static void toggle_entry(bool launcher){
  if(launcher){
   if(launcher_open){hide_launcher();return;}
-  launcher_previous_dashboard=selected_dashboard();launcher_previous_menu=menu_open;launcher_restore_previous=true;
+  if(!launcher_close_at.time_since_epoch().count()||!views.count("launcher")||!overlays->IsActiveDashboardOverlay(views.at("launcher")->overlay)){launcher_previous_dashboard=selected_dashboard();launcher_previous_menu=menu_open;}launcher_restore_previous=true;
   menu_open=false;if(views.count("menu"))show(*views.at("menu"),false);
   auto& view=create_view("launcher","Framely launcher",origin+"/launcher",true,1440,800);
   vr::VREvent_t stale{};while(overlays->PollNextOverlayEvent(view.overlay,&stale,sizeof(stale))){}
   ++launcher_session;launcher_close_at={};launcher_dock.clear();launcher_dismiss.opened(std::chrono::steady_clock::now());launcher_open=true;launcher_selected=false;launcher_stick={};launcher_outside_at={};
-  // Steam must see a visible dashboard surface before activating it. Zero
-  // alpha can prevent activation, so never wait for selection to start a fade.
-  overlays->SetOverlayAlpha(view.overlay,1.f);overlays->ShowOverlay(view.overlay);
-  overlays->ShowDashboard("launcher");
+  // Wake CEF before activation. A small nonzero alpha keeps Steam activation
+  // working without exposing the previous session's full-opacity texture.
   launcher_fade.open(std::chrono::steady_clock::now());
+  view.host->was_hidden(view.host,0);view.host->invalidate(view.host,PET_VIEW);
+  overlays->SetOverlayAlpha(view.overlay,.02f);overlays->ShowOverlay(view.overlay);
+  overlays->ShowDashboard("launcher");
   auto* frame=view.browser->get_main_frame(view.browser);execute(frame,"window.framelyLauncherSession="+std::to_string(launcher_session)+";window.dispatchEvent(new Event('framely.launcher.open'))");frame->base.release(&frame->base);
  }else{hide_launcher(false);menu_open=!menu_open;if(menu_open)menu_button.opened(std::chrono::steady_clock::now());}
 }
@@ -565,7 +568,7 @@ int main(int argc,char** argv){
    if(!main_overlay)main_overlay=active_main_window();
    if(main_overlay&&!overlays->GetOverlayMouseScale(main_overlay,&main_scale)&&!overlays->GetTransformForOverlayCoordinates(main_overlay,vr::TrackingUniverseStanding,{{main_scale.v[0]*.5f,main_scale.v[1]*.5f}},&main_pose))main=&main_pose;
    if(evidence.radius>0?dock_menu_placement(anchor,size,evidence.radius,evidence.pre_curve_pitch,popup):menu_placement(anchor,size,popup,0,main)){v.placement.apply(overlays,v.overlay,popup.transform,popup.width);v.placement.curve(overlays,v.overlay,popup.width,popup.radius);show(v,menu_open);}else show(v,false);}}else if(!keyboard_menu.holds(now)){if(overlays->IsOverlayVisible(button))overlays->ClearOverlayCursorPositionOverride(button);overlays->HideOverlay(button);if(views.count("menu"))show(*views.at("menu"),false);}
-  if(was_visible&&!visible&&!keyboard_open&&!keyboard_menu.holds(now)){menu_button.pressed=false;menu_open=false;if(!overlays->IsDashboardVisible())launcher_open=false;for(auto&[key,v]:views)if(!v->dashboard&&key!="menu"&&key!="notifications"&&key!="launcher")close_view(*v);}was_visible=visible;
+  if(was_visible&&!visible&&!keyboard_open&&!keyboard_menu.holds(now)){menu_button.pressed=false;menu_open=false;if(!overlays->IsDashboardVisible())hide_launcher(false,true);for(auto&[key,v]:views)if(!v->dashboard&&key!="menu"&&key!="notifications"&&key!="launcher")close_view(*v);}was_visible=visible;
   if(launcher_close_at.time_since_epoch().count()&&now>=launcher_close_at){launcher_close_at={};if(!launcher_open)finish_launcher_close();}
   // The runtime owns dashboard placement, curvature, visibility and switching.
   // Never move the launcher into standing space or hide another app's overlay.
@@ -573,8 +576,9 @@ int main(int argc,char** argv){
   if(views.count("launcher")){
    bool selected=overlays->IsActiveDashboardOverlay(views.at("launcher")->overlay);
    if(launcher_open&&selected)launcher_selected=true;
+   if(launcher_open&&selected&&overlays->IsDashboardVisible()&&overlays->IsOverlayVisible(views.at("launcher")->overlay)&&views.at("launcher")->texture_ready[views.at("launcher")->texture_slot])launcher_fade.ready(now);
    if(launcher_open||launcher_close_at.time_since_epoch().count())overlays->SetOverlayAlpha(views.at("launcher")->overlay,launcher_open?std::max(.02f,launcher_fade.value(now)):launcher_fade.value(now));
-   if(launcher_open&&!selected&&overlays->IsDashboardVisible()&&!launcher_dock_interaction()&&(launcher_selected||now-launcher_dismiss.opened_at>std::chrono::seconds(1))){if(launcher_calibrating)hide_launcher();else launcher_open=false;}
+   if(launcher_open&&!selected&&overlays->IsDashboardVisible()&&!launcher_dock_interaction()&&(launcher_selected||now-launcher_dismiss.opened_at>std::chrono::seconds(5))){hide_launcher(false,true);}
   }
   auto activate_entry=[&](EntryHold::Action action){
    if(action==EntryHold::Action::Idle)return;
