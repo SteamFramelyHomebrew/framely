@@ -200,7 +200,7 @@
     "不同版本": "Different version",
     "全部": "All",
     "返回插件库": "Back to library",
-    "更新": "Update",
+    "更新": "Updates",
     "检查此版本": "Inspect this version",
     "当前安装来自其他源，确认安装此版本后会更换来源。": "The current installation is from another source. Installing this version will change the source.",
     "{0}截图 {1}": "{0} screenshot {1}",
@@ -703,6 +703,10 @@
     "平面模式显示二维窗口；VR 模式隐藏二维窗口，应用本身需要支持 VR。": "Flat mode shows a 2D window. VR mode hides it; the app must support VR.",
     "窗口方向": "Window orientation",
     "横屏": "Landscape",
-    "竖屏": "Portrait"
+    "竖屏": "Portrait",
+    "终端": "Terminal",
+    "文件": "Files",
+    "通用": "General",
+    "APK": "APK"
   }
 }
