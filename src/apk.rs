@@ -1045,6 +1045,34 @@ fn start_container(
 ) -> Result<()> {
     start_oriented_container(home, c, show, direct, None, None, log)
 }
+const ANDROID_READY_PROBE: &str = r#"
+[ "$(getprop sys.boot_completed)" = 1 ] &&
+[ "$(am get-started-user-state 0)" = RUNNING_UNLOCKED ] &&
+[ -d /storage/emulated/0 ] &&
+dumpsys mount | grep -q 'mountUserId=0 state=MOUNTED' &&
+pm path android | grep -q '^package:' &&
+echo FRAMELY_ANDROID_READY
+"#;
+fn wait_android_ready(c: &Container) -> Result<()> {
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_secs(60) {
+        let mut command = crate::process::tool("podman");
+        command.args([
+            "exec",
+            &format!("lepton-{}", c.name),
+            "sh",
+            "-c",
+            ANDROID_READY_PROBE,
+        ]);
+        if output(command, Duration::from_secs(3), None)
+            .is_ok_and(|s| s.lines().any(|line| line.trim() == "FRAMELY_ANDROID_READY"))
+        {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    bail!("Android boot, user unlock or external storage did not become ready; inspect the container log")
+}
 fn start_oriented_container(
     home: &Path,
     c: &Container,
@@ -1059,6 +1087,7 @@ fn start_oriented_container(
         "Invalid window orientation"
     );
     if running(&c.name) {
+        wait_android_ready(c)?;
         return restore_package_mount(home, c, log);
     }
     let runner = runner(home)?;
@@ -1135,25 +1164,10 @@ fn start_oriented_container(
             let _ = fs::remove_file(path);
         }
     });
-    let began = Instant::now();
-    while began.elapsed() < Duration::from_secs(60) {
-        if podman(
-            &[
-                "exec",
-                &format!("lepton-{}", c.name),
-                "pm",
-                "path",
-                "android",
-            ],
-            None,
-        )
-        .is_ok_and(|s| s.contains("package:"))
-        {
-            return restore_package_mount(home, c, log);
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    bail!("Lepton did not become ready; inspect the container log")
+    // PackageManager can respond before the user's external storage is ready.
+    // Lepton's own app launcher also waits for boot and media mounting.
+    wait_android_ready(c)?;
+    restore_package_mount(home, c, log)
 }
 fn wrapper_active(name: &str) -> bool {
     fs::read_dir("/proc")
@@ -2996,6 +3010,9 @@ case "$1" in
     uninstall) touch '{removed}'; /bin/rm -f '{apk}'; echo '<package-restrictions><pkg name="com.example.app" installed="false"/></package-restrictions>' > '{restrictions}'; if [ "$5" != -k ]; then /bin/rm -rf '{data}'; fi; echo Success;;
     clear) echo Success;;
    esac
+  elif [ "$3" = sh ]; then
+   if [ -f '{not_ready}' ]; then /bin/rm -f '{not_ready}'; exit 1; fi
+   echo FRAMELY_ANDROID_READY;
   elif [ "$3" = pidof ]; then
    if [ -f '{dead}' ] || {{ [ "$4" = com.example.app ] && [ -f '{custom}' ]; }} || {{ [ "$4" = surfaceflinger ] && [ -f '{headless}' ]; }}; then exit 1; else echo 1050; fi;
   elif [ "$3" = dumpsys ]; then if [ -f '{custom}' ]; then echo 'packageList={{com.example.app}}'; fi;
@@ -3013,6 +3030,7 @@ esac
 "#,
                 state = state.display(),
                 commands = dir.path().join("commands").display(),
+                not_ready = dir.path().join("boot-not-ready").display(),
                 launch_fail = dir.path().join("launch-fail").display(),
                 dead = dir.path().join("dead-process").display(),
                 custom = dir.path().join("custom-process").display(),
@@ -3075,6 +3093,24 @@ echo true > '{}'
         fn save_file(&self) -> PathBuf {
             self.home.join(".local/share/lepton/contexts/test/baked/data_overlay/data/com.example.app/files/save")
         }
+    }
+    #[test]
+    fn starting_existing_container_waits_for_android_before_package_repair() {
+        let f = Fixture::new();
+        let db = load(&f.home).unwrap();
+        let (_, c) = app(&f.home, &db, "test/com.example.app").unwrap();
+        fs::write(f.dir.path().join("boot-not-ready"), "").unwrap();
+        start(&f.home, &c, None, &f.dir.path().join("launch.log")).unwrap();
+        let commands = fs::read_to_string(f.dir.path().join("commands")).unwrap();
+        let probes: Vec<_> = commands
+            .match_indices("echo FRAMELY_ANDROID_READY")
+            .collect();
+        assert_eq!(probes.len(), 2);
+        let repair = commands
+            .find("exec lepton-test cmd_real package install")
+            .unwrap();
+        assert!(repair > probes[1].0);
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
     }
     #[test]
     fn installation_display_mode_is_validated_and_saved_after_success() {
@@ -3393,6 +3429,7 @@ case "$1" in
     path) echo package:/data/app/extra/base.apk;;
     install) if /bin/cmp -s '{incoming}' '{mounted}'; then /bin/mkdir -p '{first_dir}'; /bin/cp -f '{incoming}' '{first}'; else /bin/cp -f '{incoming}' '{second}'; fi; /bin/cp '{xml}' '{database}'; echo Success;;
    esac
+  elif [ "$3" = sh ]; then echo FRAMELY_ANDROID_READY;
   elif [ "$3" = pidof ]; then echo 1050;
   elif [ "$3" = getprop ]; then echo 30;
   elif [ "$3" = cmd ]; then echo com.example.extra/.Main;
