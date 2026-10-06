@@ -1,5 +1,7 @@
 # APK Manager
 
+Global controller and container lifecycle preferences are under **APK → Settings**, separate from the application list. Per-application display and launch preferences remain in each app’s management dialog.
+
 [简体中文](../zh-CN/user-guide/apk-manager.md)
 
 [Documentation](../README.md) · [Launcher](../launcher.md)

@@ -1140,6 +1140,7 @@ impl Agent {
                                 | "notification-settings"
                                 | "launcher-settings"
                                 | "apk"
+                                | "apk-settings"
                         )
                     )
                 {

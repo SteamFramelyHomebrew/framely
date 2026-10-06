@@ -1,5 +1,7 @@
 # APK 管理
 
+全局手柄与容器生命周期选项位于 **APK → 设置**，不再占用应用列表。每个应用的显示与启动选项仍保留在对应应用的管理弹窗内。
+
 [English](../../user-guide/apk-manager.md)
 
 [文档首页](../README.md) · [启动台](../launcher.md)

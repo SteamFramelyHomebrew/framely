@@ -1,7 +1,7 @@
 #include "plugin_navigation.h"
 #include <cassert>
 int main() {
- for (const auto& page : {"settings","updates","about","terminal","files","apk-containers"}) assert(manager_navigation_page(page));
+ for (const auto& page : {"settings","updates","about","terminal","files","apk-containers","apk-settings"}) assert(manager_navigation_page(page));
  assert(!manager_navigation_page("unknown"));
  const std::string origin="http://localhost:19626";
  assert(allow_plugin_navigation(origin+"/window",origin,true,true));
