@@ -2189,9 +2189,10 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                                     &["exec", &name, "getprop", "waydroid.active_apps"],
                                     Some(&log),
                                 )?;
-                                // A background install has no display. Also recreate a
-                                // closed display through normal boot instead of the
-                                // HWC transition that Gamescope rejects.
+                                // Lepton's hidden/full-display transition can kill
+                                // its display service on Gamescope. These display
+                                // changes require recreation; a visible running
+                                // application reuses its container and input device.
                                 let orientation = podman(
                                     &["exec", &name, "getprop", "framely.window_orientation"],
                                     Some(&log),
@@ -2249,7 +2250,7 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                                 Ok(())
                             })();
                             if launch_result.is_err() {
-                                crate::gamepad::stop_context(&c.name);
+                                crate::gamepad::stop_app(&c.name, &a.metadata.package);
                             }
                             launch_result?;
                         }
@@ -2949,7 +2950,13 @@ case "$1" in
   elif [ "$3" = pidof ]; then
    if [ -f '{dead}' ] || {{ [ "$4" = com.example.app ] && [ -f '{custom}' ]; }} || {{ [ "$4" = surfaceflinger ] && [ -f '{headless}' ]; }}; then exit 1; else echo 1050; fi;
   elif [ "$3" = dumpsys ]; then if [ -f '{custom}' ]; then echo 'packageList={{com.example.app}}'; fi;
-  elif [ "$3" = getprop ]; then echo 30;
+  elif [ "$3" = getprop ]; then
+    case "$4" in
+      waydroid.active_apps) if [ -f '{closed}' ]; then echo none; else echo Waydroid; fi;;
+      lepton.headless) echo false;;
+      framely.window_orientation) echo auto;;
+      *) echo 30;;
+    esac
   elif [ "$3" = cmd ]; then echo com.example.app/.Main;
   elif [ "$3" = am ]; then if [ -f '{launch_fail}' ]; then echo 'Error: launch failed'; else echo 'Status: ok'; fi;
   fi;;
@@ -2961,6 +2968,7 @@ esac
                 dead = dir.path().join("dead-process").display(),
                 custom = dir.path().join("custom-process").display(),
                 headless = dir.path().join("headless-display").display(),
+                closed = dir.path().join("closed-window").display(),
                 incoming = dir.path().join("incoming.apk").display(),
                 apk = baked.join("app_overlay/base.apk").display(),
                 fail = dir.path().join("fail").display(),
@@ -3095,6 +3103,23 @@ echo true > '{}'
         assert!(error
             .to_string()
             .contains("Lepton exited shortly after launch"));
+    }
+    #[test]
+    fn launching_an_already_visible_app_reuses_running_container() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let id = "test/com.example.app";
+        let media = f.home.join(".local/share/lepton/contexts/test/baked/data_overlay/media/0/Android/data/com.example.app/files/update.part");
+        fs::create_dir_all(media.parent().unwrap()).unwrap();
+        fs::write(&media, "partial download").unwrap();
+        f.operation("launch", json!({"app":id})).unwrap();
+        let trace = fs::read_to_string(f.dir.path().join("commands")).unwrap();
+        assert!(
+            !trace.lines().any(|line| line.starts_with("stop ")),
+            "{trace}"
+        );
+        assert!(trace.contains("setprop waydroid.active_apps Waydroid"));
+        assert_eq!(fs::read_to_string(media).unwrap(), "partial download");
     }
     #[test]
     fn launch_health_supports_custom_processes_and_headless_vr() {
