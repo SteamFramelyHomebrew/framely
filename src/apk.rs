@@ -4421,7 +4421,8 @@ setup_props
         )
         .unwrap();
         assert!(native::prepare(&f.home, id, 0x92345679).is_err());
-        let (c, a, response) = native::prepare(&f.home, id, 0x92345678).unwrap();
+        let (c, a, response, ownership) = native::prepare(&f.home, id, 0x92345678).unwrap();
+        assert!(native::prepare(&f.home, id, 0x92345678).is_err());
         assert_eq!(c.id, "test");
         assert_eq!(c.name, "steamlaunch-2452903544");
         assert!(!c.steam);
@@ -4439,6 +4440,8 @@ setup_props
             fs::read(installed_dir.join("lib/arm64/game.so")).unwrap(),
             b"existing extracted library"
         );
+        drop(ownership);
+        assert!(native::prepare(&f.home, id, 0x92345678).is_ok());
     }
     #[test]
     fn unreadable_state_is_not_uninstallation_or_a_launch_target() {

@@ -274,14 +274,18 @@ fn handle(home: &Path, pid: u32, v: Value) -> Result<Value> {
                 .and_then(|v| u32::try_from(v).ok())
                 .filter(|v| *v >= 0x80000000)
                 .context("Launch this APK entry through Steam")?;
-            let (c, a, response) = super::native::prepare(home, id, app_id)?;
+            let (c, a, response, ownership) = super::native::prepare(home, id, app_id)?;
             let owner_signature = signature(pid).context("Steam launch exited")?;
             let home = home.to_owned();
             let id = id.to_owned();
             let token = token.to_owned();
+            let gamepad_event = response["env"]["FRAMELY_GAMEPAD_EVENT"]
+                .as_str()
+                .map(PathBuf::from);
             std::thread::spawn(move || {
                 let result = (|| -> Result<Value> {
                     let deadline = Instant::now() + Duration::from_secs(120);
+                    let creation_deadline = Instant::now() + Duration::from_secs(45);
                     loop {
                         ensure!(
                             signature(pid).as_deref() == Some(&owner_signature),
@@ -291,7 +295,14 @@ fn handle(home: &Path, pid: u32, v: Value) -> Result<Value> {
                             Instant::now() < deadline,
                             "Native Lepton startup timed out; inspect the APK log"
                         );
-                        if let Ok(Some(instance)) = current_instance(&c) {
+                        let instance = current_instance(&c)?;
+                        if instance.is_none() {
+                            if let Some(event) = &gamepad_event {
+                                ensure!(event.exists(), "Virtual gamepad disappeared before Lepton created its container; retry the launch");
+                            }
+                            ensure!(Instant::now() < creation_deadline, "Lepton did not create its container; inspect the native Lepton startup log");
+                        }
+                        if let Some(instance) = instance {
                             if let Ok(s) = lifecycle::sample(&c) {
                                 if s.package == a.metadata.package
                                     && s.alive.contains(&a.metadata.package)
@@ -316,12 +327,32 @@ fn handle(home: &Path, pid: u32, v: Value) -> Result<Value> {
                         std::thread::sleep(Duration::from_millis(500));
                     }
                 })();
+                // A failed Podman run can leave Lepton waiting for a create
+                // event forever. End only this verified, still-uncreated launch;
+                // never interrupt a container that has already booted.
+                if result.is_err() && matches!(current_instance(&c), Ok(None)) {
+                    if signature(pid).as_deref() == Some(&owner_signature) {
+                        unsafe {
+                            libc::kill(pid as i32, libc::SIGTERM);
+                        }
+                    }
+                    crate::gamepad::stop_context(&c.name);
+                }
                 if let Some(p) = PENDING.lock().unwrap().remove(&id) {
                     if result.is_ok() {
                         (p.progress)(json!({"phase":"started"}));
                     }
                     let _ = p.result.send(result.map_err(|e| format!("{e:#}")));
                 }
+                // Preserve storage ownership after reporting startup success.
+                // Steam drops inherited fds, so the service retains this lock
+                // through exit and the container's eventual shutdown.
+                while signature(pid).as_deref() == Some(&owner_signature)
+                    || !matches!(current_instance(&c), Ok(None))
+                {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                drop(ownership);
             });
             Ok(response)
         }

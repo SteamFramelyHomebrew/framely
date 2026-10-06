@@ -49,7 +49,11 @@ pub(super) fn runtime_name(r: &Record) -> Option<String> {
         .map(|id| format!("steamlaunch-{id}"))
 }
 
-pub(super) fn prepare(home: &Path, id: &str, app_id: u32) -> Result<(Container, App, Value)> {
+pub(super) fn prepare(
+    home: &Path,
+    id: &str,
+    app_id: u32,
+) -> Result<(Container, App, Value, fs::File)> {
     let _guard = MUTATION
         .try_lock()
         .map_err(|_| anyhow::anyhow!("Another APK operation is running"))?;
@@ -70,6 +74,23 @@ pub(super) fn prepare(home: &Path, id: &str, app_id: u32) -> Result<(Container, 
             && r.steam_binding.as_ref().is_some_and(|b| b.native)
             && r.steam_app_id == Some(app_id),
         "Steam APK binding changed; refresh the entry and retry"
+    );
+    // Steam's launcher closes inherited descriptors. Keep this lock in the
+    // session service, which owns it until the launch and container have ended.
+    fs::create_dir_all(root(home).join("steam"))?;
+    let ownership = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(
+            root(home)
+                .join("steam")
+                .join(format!("context-{}.lock", hash(&r.context))),
+        )?;
+    ensure!(
+        unsafe { libc::flock(ownership.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
+        "Another application is starting or running in this container"
     );
     let (a, mut c) = app(home, &db, id)?;
     ensure!(
@@ -163,7 +184,7 @@ pub(super) fn prepare(home: &Path, id: &str, app_id: u32) -> Result<(Container, 
     }
     db.records.get_mut(id).unwrap().steam_app_id = Some(app_id);
     save(home, &db)?;
-    Ok((c, a, json!({"script":path,"env":env})))
+    Ok((c, a, json!({"script":path,"env":env}), ownership))
 }
 
 pub(super) fn run(app: &str, token: &str, command: &[String]) -> Result<()> {
@@ -223,40 +244,6 @@ pub(super) fn run(app: &str, token: &str, command: &[String]) -> Result<()> {
     ensure!(
         fs::canonicalize(&command[entry + 3])? == fs::canonicalize(&apk)?,
         "Unexpected APK launch target"
-    );
-    fs::create_dir_all(root(&home).join("steam"))?;
-    let context_lock = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(
-            root(&home)
-                .join("steam")
-                .join(format!("context-{}.lock", hash(&r.context))),
-        )?;
-    ensure!(
-        unsafe { libc::flock(context_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
-        "Another application is starting or running in this container"
-    );
-    ensure!(
-        unsafe { libc::fcntl(context_lock.as_raw_fd(), libc::F_SETFD, 0) } == 0,
-        "Cannot retain native storage ownership"
-    );
-    let lock = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(steam_shortcuts::wrapper(&home, app).with_extension("owner.lock"))?;
-    ensure!(
-        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
-        "This APK already has an active Steam launch"
-    );
-    // Keep the ownership lock across exec and Lepton's process-group launcher.
-    ensure!(
-        unsafe { libc::fcntl(lock.as_raw_fd(), libc::F_SETFD, 0) } == 0,
-        "Cannot retain native launch ownership"
     );
     let response = steam_bridge::native_call(
         app,

@@ -1,7 +1,6 @@
 // Session-owned OpenVR -> Android gamepad. No CEF dependency or timed test limit.
 #include "openvr.h"
 #include <linux/uinput.h>
-#include <sys/prctl.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <poll.h>
@@ -23,7 +22,10 @@ static bool event(int fd,int type,int code,int value){input_event e{};e.type=typ
 static bool send(int fd,const int* state){bool ok=true;for(int k=0;k<10;k++)ok=event(fd,EV_KEY,keys[k],state[k])&&ok;for(int k=0;k<8;k++)ok=event(fd,EV_ABS,axes[k],state[10+k])&&ok;return event(fd,EV_SYN,SYN_REPORT,0)&&ok;}
 int main(int argc,char**argv){
  if(argc!=2||geteuid()==0){fprintf(stderr,"Run gamepad bridge as the Steam session user with an action manifest.\n");return 1;}
- auto parent=getppid();prctl(PR_SET_PDEATHSIG,SIGTERM);if(getppid()!=parent)return 1;
+ // A session request runs on a short-lived worker thread. PR_SET_PDEATHSIG
+ // follows that thread's lifetime, so it destroys the pad as soon as prepare
+ // returns. The session-owned stdin pipe and parent process own this helper.
+ const auto parent=getppid();
  signal(SIGTERM,stop);signal(SIGINT,stop);signal(SIGPIPE,SIG_IGN);
  vr::EVRInitError error;vr::VR_Init(&error,vr::VRApplication_Overlay);if(error){fprintf(stderr,"SteamVR gamepad input unavailable: %d\n",error);return 1;}
  auto*input=vr::VRInput();vr::VRActiveActionSet_t set{};
@@ -47,7 +49,7 @@ int main(int argc,char**argv){
  printf("%s\n",node.c_str());fflush(stdout);
  // Parent owns routing. Start neutral; EOF, disconnect or disabled actions release input.
  bool enabled=false;std::string commands;int previous[18]{};
- while(!stopped){pollfd p{STDIN_FILENO,POLLIN,0};if(poll(&p,1,0)>0){char buffer[128];auto count=read(0,buffer,sizeof buffer);if(count<=0)break;commands.append(buffer,count);size_t at;while((at=commands.find('\n'))!=std::string::npos){auto command=commands.substr(0,at);commands.erase(0,at+1);enabled=command=="enable";}if(commands.size()>128)break;}
+ while(!stopped&&getppid()==parent){pollfd p{STDIN_FILENO,POLLIN,0};if(poll(&p,1,0)>0){char buffer[128];auto count=read(0,buffer,sizeof buffer);if(count<=0)break;commands.append(buffer,count);size_t at;while((at=commands.find('\n'))!=std::string::npos){auto command=commands.substr(0,at);commands.erase(0,at+1);enabled=command=="enable";}if(commands.size()>128)break;}
   int state[18]{};
   // If Android releases its exclusive claim (e.g. InputReader restart),
   // pause until it claims the node again. Do not feed other host consumers.
