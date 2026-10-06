@@ -260,7 +260,7 @@ fn containers(home: &Path, db: &Database) -> Vec<Container> {
                     id: name.clone(),
                     managed: db.owned_contexts.contains(&name),
                     steam: name.starts_with("steamlaunch-"),
-                    running: running(&name),
+                    running: false,
                     name,
                     baked,
                 });
@@ -277,7 +277,7 @@ fn containers(home: &Path, db: &Database) -> Vec<Container> {
                     id: id.clone(),
                     name: id.clone(),
                     baked,
-                    running: running(id),
+                    running: false,
                     managed: true,
                     steam: false,
                 });
@@ -343,6 +343,11 @@ fn containers(home: &Path, db: &Database) -> Vec<Container> {
                     }
                 }
             }
+        }
+    } else {
+        // Preserve the old per-container fallback when the bulk query fails.
+        for c in &mut out {
+            c.running = running(&c.name);
         }
     }
     out
@@ -654,6 +659,9 @@ fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App
                     .iter()
                     .find(|c| c.id == r.context)
                     .map(|c| {
+                        if !measure {
+                            return 0;
+                        }
                         let d = c.baked.join("data_overlay");
                         size(&d.join("data").join(&r.metadata.package))
                             + size(&d.join("user/0").join(&r.metadata.package))
@@ -923,8 +931,10 @@ fn restore_package_mount(home: &Path, c: &Container, log: &Path) -> Result<()> {
         if !apk.is_file() {
             continue;
         }
-        let persistent = apk.starts_with(c.baked.join("data_overlay/app"));
-        if !persistent || !live_installed(c, &metadata.package, log)? {
+        // The discovery source may still be a legacy mount/cache while Android
+        // already has a valid independent installation. Never reinstall solely
+        // because of that source path: replacing an APK also stops its process.
+        if !persistent_registration(c, &metadata, log)? {
             install_package(c, &apk, log)?;
             ensure!(
                 live_installed(c, &metadata.package, log)?,
@@ -933,6 +943,59 @@ fn restore_package_mount(home: &Path, c: &Container, log: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+fn persistent_registration(c: &Container, expected: &Metadata, log: &Path) -> Result<bool> {
+    let paths = podman(
+        &[
+            "exec",
+            &format!("lepton-{}", c.name),
+            "pm",
+            "path",
+            "--user",
+            "0",
+            &expected.package,
+        ],
+        Some(log),
+    )?;
+    ensure!(
+        !paths.contains("Error:") && !paths.contains("Exception"),
+        "Cannot verify Android APK path; no package was replaced"
+    );
+    let Some(path) = paths.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("package:")
+            .filter(|p| p.ends_with("/base.apk"))
+    }) else {
+        return Ok(false);
+    };
+    let Some(relative) = path.strip_prefix("/data/app/") else {
+        return Ok(false);
+    };
+    ensure!(
+        !relative.split('/').any(|p| matches!(p, "" | "." | "..")),
+        "Invalid Android APK path; no package was replaced"
+    );
+    let root = c.baked.join("data_overlay/app");
+    let apk = match fs::canonicalize(root.join(relative)) {
+        Ok(path) => path,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    ensure!(
+        apk.starts_with(fs::canonicalize(&root)?) && apk.starts_with(&c.baked),
+        "Android APK path escapes container; no package was replaced"
+    );
+    ensure!(
+        fs::metadata(&apk)?.is_file(),
+        "Android APK is not a regular file; no package was replaced"
+    );
+    let actual = cached_metadata(&apk)?;
+    ensure!(
+        actual.package == expected.package,
+        "Android APK path points to another package; no package was replaced"
+    );
+    // A stale host registration must never downgrade an externally updated APK.
+    Ok(actual.version_code >= expected.version_code)
 }
 // Adapt only the entry script in a private temporary file. Keep Lepton's original
 // libraries and dev-context data handling; app mode can clear existing baked data.
@@ -1265,7 +1328,9 @@ fn record_app(db: &mut Database, a: &App) {
 }
 fn app(home: &Path, db: &Database, id: &str) -> Result<(App, Container)> {
     let cs = containers(home, db);
-    let (apps, _) = apps(home, db, &cs, false);
+    let (context, _) = id.rsplit_once('/').context("Invalid APK application ID")?;
+    let target: Vec<_> = cs.iter().filter(|c| c.id == context).cloned().collect();
+    let (apps, _) = apps(home, db, &target, false);
     let a = apps
         .into_iter()
         .find(|a| a.id == id)
@@ -1637,63 +1702,78 @@ fn launch(c: &Container, a: &App, log: &Path) -> Result<()> {
     let samples = 16;
     #[cfg(test)]
     let samples = 1;
-    let mut processes = vec![(
-        a.metadata.package.as_str(),
-        "Application exited shortly after launch",
-    )];
-    if a.show_window.unwrap_or(!a.metadata.vr) {
-        processes.insert(
-            0,
-            (
-                "surfaceflinger",
-                "Android display service exited shortly after launch",
-            ),
-        );
-    }
     for _ in 0..samples {
-        ensure!(
-            running(&c.name),
-            "Lepton exited shortly after launch; inspect the application log"
-        );
-        for (process, error) in &processes {
-            let pid = podman(
-                &["exec", &format!("lepton-{}", c.name), "pidof", process],
-                Some(log),
-            );
-            if *process == a.metadata.package && !pid.as_ref().is_ok_and(|s| !s.trim().is_empty()) {
-                // Apps may declare a custom process name. Android's live
-                // process records associate that process with its package.
-                let dump = podman(
-                    &[
-                        "exec",
-                        &format!("lepton-{}", c.name),
-                        "dumpsys",
-                        "activity",
-                        "processes",
-                    ],
-                    Some(log),
-                )?;
-                if dump.lines().any(|line| {
-                    line.split_once("packageList={")
-                        .and_then(|(_, names)| names.split_once('}'))
-                        .is_some_and(|(names, _)| {
-                            names
-                                .split(',')
-                                .any(|name| name.trim() == a.metadata.package)
-                        })
-                }) {
-                    continue;
-                }
-            }
-            let pid = pid.with_context(|| format!("{error}; inspect the application log"))?;
-            ensure!(
-                !pid.trim().is_empty(),
-                "{error}; inspect the application log"
-            );
-        }
+        check_launch_health(c, a, log)?;
         #[cfg(not(test))]
         std::thread::sleep(Duration::from_millis(500));
     }
+    Ok(())
+}
+const LAUNCH_HEALTH_PROBE: &str = r#"
+if [ "$1" = flat ] && ! pidof surfaceflinger >/dev/null; then
+    echo FRAMELY_DISPLAY_MISSING
+elif pidof "$2" >/dev/null; then
+    echo FRAMELY_APP_PRESENT
+else
+    echo FRAMELY_APP_MISSING
+fi
+"#;
+fn check_launch_health(c: &Container, a: &App, log: &Path) -> Result<()> {
+    let container = format!("lepton-{}", c.name);
+    let result = podman(
+        &[
+            "exec",
+            &container,
+            "sh",
+            "-c",
+            LAUNCH_HEALTH_PROBE,
+            "framely-launch-health",
+            if a.show_window.unwrap_or(!a.metadata.vr) {
+                "flat"
+            } else {
+                "vr"
+            },
+            &a.metadata.package,
+        ],
+        Some(log),
+    );
+    let text = match result {
+        Ok(text) => text,
+        Err(error) => {
+            ensure!(
+                running(&c.name),
+                "Lepton exited shortly after launch; inspect the application log"
+            );
+            return Err(
+                error.context("Cannot verify Android process state; inspect the application log")
+            );
+        }
+    };
+    match text.trim() {
+        "FRAMELY_APP_PRESENT" => return Ok(()),
+        "FRAMELY_DISPLAY_MISSING" => bail!(
+            "Android display service exited shortly after launch; inspect the application log"
+        ),
+        "FRAMELY_APP_MISSING" => {}
+        _ => bail!("Cannot verify Android process state; inspect the application log"),
+    }
+    // Keep support for applications with a custom Android process name.
+    let dump = podman(
+        &["exec", &container, "dumpsys", "activity", "processes"],
+        Some(log),
+    )?;
+    ensure!(
+        dump.lines().any(|line| {
+            line.split_once("packageList={")
+                .and_then(|(_, names)| names.split_once('}'))
+                .is_some_and(|(names, _)| {
+                    names
+                        .split(',')
+                        .any(|name| name.trim() == a.metadata.package)
+                })
+        }),
+        "Application exited shortly after launch; inspect the application log"
+    );
     Ok(())
 }
 fn live_installed(c: &Container, package: &str, log: &Path) -> Result<bool> {
@@ -3011,8 +3091,15 @@ case "$1" in
     clear) echo Success;;
    esac
   elif [ "$3" = sh ]; then
-   if [ -f '{not_ready}' ]; then /bin/rm -f '{not_ready}'; exit 1; fi
-   echo FRAMELY_ANDROID_READY;
+   if [ "$6" = framely-launch-health ]; then
+    if [ "$(cat '{state}')" != true ]; then exit 1;
+    elif [ "$7" = flat ] && {{ [ -f '{dead}' ] || [ -f '{headless}' ]; }}; then echo FRAMELY_DISPLAY_MISSING;
+    elif [ -f '{dead}' ] || [ -f '{custom}' ]; then echo FRAMELY_APP_MISSING;
+    else echo FRAMELY_APP_PRESENT; fi
+   else
+    if [ -f '{not_ready}' ]; then /bin/rm -f '{not_ready}'; exit 1; fi
+    echo FRAMELY_ANDROID_READY;
+   fi;
   elif [ "$3" = pidof ]; then
    if [ -f '{dead}' ] || {{ [ "$4" = com.example.app ] && [ -f '{custom}' ]; }} || {{ [ "$4" = surfaceflinger ] && [ -f '{headless}' ]; }}; then exit 1; else echo 1050; fi;
   elif [ "$3" = dumpsys ]; then if [ -f '{custom}' ]; then echo 'packageList={{com.example.app}}'; fi;
@@ -3093,6 +3180,104 @@ echo true > '{}'
         fn save_file(&self) -> PathBuf {
             self.home.join(".local/share/lepton/contexts/test/baked/data_overlay/data/com.example.app/files/save")
         }
+    }
+    #[test]
+    fn application_lookup_does_not_query_other_containers() {
+        let f = Fixture::new();
+        let contexts = f.home.join(".local/share/lepton/contexts");
+        fs::create_dir_all(contexts.join("other")).unwrap();
+        copy(
+            &contexts.join("test/baked"),
+            &contexts.join("other/baked"),
+            &f.dir.path().join("copy.log"),
+        )
+        .unwrap();
+        let commands = f.dir.path().join("commands");
+        fs::write(&commands, "").unwrap();
+        let (a, c) = app(&f.home, &load(&f.home).unwrap(), "test/com.example.app").unwrap();
+        assert_eq!(a.context, "test");
+        assert_eq!(c.name, "test");
+        let trace = fs::read_to_string(commands).unwrap();
+        assert!(trace.contains("exec lepton-test pm list"));
+        assert!(!trace.contains("exec lepton-other"), "{trace}");
+        assert!(
+            !trace.lines().any(|line| line.starts_with("inspect ")),
+            "{trace}"
+        );
+    }
+    #[test]
+    fn container_discovery_falls_back_if_bulk_status_query_fails() {
+        let f = Fixture::new();
+        let tool = f.dir.path().join("tools/podman");
+        let script = fs::read_to_string(&tool)
+            .unwrap()
+            .replace(" ps) if", " ps) exit 1; if");
+        fs::write(&tool, script).unwrap();
+        let cs = containers(&f.home, &load(&f.home).unwrap());
+        assert!(cs.iter().any(|c| c.id == "test" && c.running));
+        let trace = fs::read_to_string(f.dir.path().join("commands")).unwrap();
+        assert!(
+            trace.lines().any(|line| line.starts_with("inspect ")),
+            "{trace}"
+        );
+    }
+    #[test]
+    fn restore_refuses_ambiguous_or_escaping_live_apk_without_replacing_data() {
+        let f = Fixture::new();
+        let (_, c) = app(&f.home, &load(&f.home).unwrap(), "test/com.example.app").unwrap();
+        let persistent = c
+            .baked
+            .join("data_overlay/app/xyz/com.example.app/base.apk");
+        fs::create_dir_all(persistent.parent().unwrap()).unwrap();
+        crate::apk_metadata::fixture_named(&persistent, true, 42, "com.example.other");
+        let log = f.dir.path().join("repair.log");
+        let commands = f.dir.path().join("commands");
+        fs::write(&commands, "").unwrap();
+        assert!(restore_package_mount(&f.home, &c, &log).is_err());
+        fs::remove_file(&persistent).unwrap();
+        let external = f.dir.path().join("outside.apk");
+        crate::apk_metadata::fixture(&external, true, 42);
+        std::os::unix::fs::symlink(&external, &persistent).unwrap();
+        assert!(restore_package_mount(&f.home, &c, &log).is_err());
+        assert!(!fs::read_to_string(commands)
+            .unwrap()
+            .contains("package install"));
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        assert!(external.is_file());
+    }
+    #[test]
+    fn restore_reuses_live_apk_even_with_stale_legacy_source_and_newer_version() {
+        let f = Fixture::new();
+        let baked = f.home.join(".local/share/lepton/contexts/test/baked");
+        let persistent = baked.join("data_overlay/app/xyz/com.example.app/base.apk");
+        fs::create_dir_all(persistent.parent().unwrap()).unwrap();
+        crate::apk_metadata::fixture(&persistent, true, 43);
+        // Discovery still sees the old APK through its shared mount.
+        fs::write(baked.join("data_overlay/system/packages.xml"),
+            "<packages><package name=\"com.example.app\" codePath=\"/data/steam_app\" version=\"42\"/></packages>").unwrap();
+        let db = load(&f.home).unwrap();
+        let (_, c) = app(&f.home, &db, "test/com.example.app").unwrap();
+        let commands = f.dir.path().join("commands");
+        fs::write(&commands, "").unwrap();
+        let log = f.dir.path().join("repair.log");
+        for _ in 0..2 {
+            restore_package_mount(&f.home, &c, &log).unwrap();
+        }
+        let trace = fs::read_to_string(&commands).unwrap();
+        assert!(!trace.contains("package install"), "{trace}");
+        assert!(
+            !trace.lines().any(|line| line.starts_with("cp ")),
+            "{trace}"
+        );
+        assert_eq!(cached_metadata(&persistent).unwrap().version_code, 43);
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        // A missing APK must still trigger recovery, despite a registered path.
+        fs::remove_file(&persistent).unwrap();
+        restore_package_mount(&f.home, &c, &log).unwrap();
+        assert!(fs::read_to_string(&commands)
+            .unwrap()
+            .contains("package install"));
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
     }
     #[test]
     fn starting_existing_container_waits_for_android_before_package_repair() {
@@ -3426,10 +3611,10 @@ case "$1" in
   if [ "$3" = pm ]; then
    case "$4" in
     list) echo package:com.example.app; if [ -f '{second}' ]; then echo package:com.example.extra; fi;;
-    path) echo package:/data/app/extra/base.apk;;
+    path) if [ "$7" = com.example.app ]; then echo package:/data/app/xyz/com.example.app/base.apk; else echo package:/data/app/extra/base.apk; fi;;
     install) if /bin/cmp -s '{incoming}' '{mounted}'; then /bin/mkdir -p '{first_dir}'; /bin/cp -f '{incoming}' '{first}'; else /bin/cp -f '{incoming}' '{second}'; fi; /bin/cp '{xml}' '{database}'; echo Success;;
    esac
-  elif [ "$3" = sh ]; then echo FRAMELY_ANDROID_READY;
+  elif [ "$3" = sh ]; then if [ "$6" = framely-launch-health ]; then echo FRAMELY_APP_PRESENT; else echo FRAMELY_ANDROID_READY; fi;
   elif [ "$3" = pidof ]; then echo 1050;
   elif [ "$3" = getprop ]; then echo 30;
   elif [ "$3" = cmd ]; then echo com.example.extra/.Main;
