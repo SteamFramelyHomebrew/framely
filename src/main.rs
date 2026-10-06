@@ -189,6 +189,9 @@ fn run() -> Result<()> {
                     &file.context("Use --file for APK inspection")?
                 )?),
                 "list" => apk::list(&home)?,
+                "input-status" => {
+                    apk::input_status(&home, p["app"].as_str().context("Missing app")?)?
+                }
                 "cleanup-list" => apk::cleanup_list(&home)?,
                 "logs" => apk::logs(&home, p["app"].as_str().context("Missing app")?)?,
                 "inspect" => apk::inspect(

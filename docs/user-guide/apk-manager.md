@@ -105,7 +105,9 @@ Enabling applies on the next application launch. Framely may restart its contain
 
 The bridge runs as the Steam session user and requires access to `/dev/uinput`, active SteamVR and the supported Lepton startup hooks. It does not modify Steam's installed Lepton files. Only its virtual event node is mounted into the target container, where Android claims it exclusively. If this claim fails, no input is forwarded and the launch reports an error. Disable the option to use the normal launch path. Bridge errors are recorded in `~/.local/share/framely/apk-manager/logs/gamepad.log`; key presses are not logged. The native helper and Android adapter ship in both offline and core update packages.
 
-When this option is enabled, launch APKs through the management panel or launcher. A one-shot CLI launch cannot own the persistent input bridge and reports an error instead.
+Native Steam launches select the input target before startup acknowledgement. Forwarding begins only after Android claims the virtual device and the target application becomes foreground. Each container's helper has its own temporary SteamVR identity, so another helper cannot replace its registration. Returning to an already running application reselects its input target.
+
+When this option is enabled, launch APKs through the management panel or launcher. A one-shot CLI launch cannot own the persistent input bridge and reports an error instead. For read-only diagnostics, run `framely apk input-status '{"app":"CONTEXT/PACKAGE"}'` as the Steam session user. It reports Android process, foreground and lifecycle status without input events or Steam tokens; it does not prove that the application handles gamepad events.
 
 ## Container lifecycle
 

@@ -21,20 +21,29 @@ static const int axes[]={ABS_X,ABS_Y,ABS_RX,ABS_RY,ABS_Z,ABS_RZ,ABS_HAT0X,ABS_HA
 static bool event(int fd,int type,int code,int value){input_event e{};e.type=type;e.code=code;e.value=value;return write(fd,&e,sizeof e)==sizeof e;}
 static bool send(int fd,const int* state){bool ok=true;for(int k=0;k<10;k++)ok=event(fd,EV_KEY,keys[k],state[k])&&ok;for(int k=0;k<8;k++)ok=event(fd,EV_ABS,axes[k],state[10+k])&&ok;return event(fd,EV_SYN,SYN_REPORT,0)&&ok;}
 int main(int argc,char**argv){
- if(argc!=2||geteuid()==0){fprintf(stderr,"Run gamepad bridge as the Steam session user with an action manifest.\n");return 1;}
+ if((argc!=2&&argc!=4)||geteuid()==0){fprintf(stderr,"Run gamepad bridge as the Steam session user with an action manifest.\n");return 1;}
  // A session request runs on a short-lived worker thread. PR_SET_PDEATHSIG
  // follows that thread's lifetime, so it destroys the pad as soon as prepare
  // returns. The session-owned stdin pipe and parent process own this helper.
  const auto parent=getppid();
  signal(SIGTERM,stop);signal(SIGINT,stop);signal(SIGPIPE,SIG_IGN);
  vr::EVRInitError error;vr::VR_Init(&error,vr::VRApplication_Overlay);if(error){fprintf(stderr,"SteamVR gamepad input unavailable: %d\n",error);return 1;}
+ // Different live containers must not share SteamVR's generated executable
+ // identity. Otherwise a second helper replaces the first app's registered PID.
+ bool registered=false;
+ auto shutdown=[&](){if(registered)vr::VRApplications()->RemoveApplicationManifest(argv[2]);vr::VR_Shutdown();};
+ if(argc==4){
+  if(vr::VRApplications()->AddApplicationManifest(argv[2],true)!=vr::VRApplicationError_None){fprintf(stderr,"Gamepad application registration failed.\n");shutdown();return 1;}
+  registered=true;
+  auto identity=vr::VRApplications()->IdentifyApplication(getpid(),argv[3]);if(identity!=vr::VRApplicationError_None){fprintf(stderr,"Gamepad application identity failed: %d (%s).\n",identity,vr::VRApplications()->GetApplicationsErrorNameFromEnum(identity));shutdown();return 1;}
+ }
  auto*input=vr::VRInput();vr::VRActiveActionSet_t set{};
  bool valid=input->SetActionManifestPath(argv[1])==vr::VRInputError_None&&input->GetActionSetHandle("/actions/framely_gamepad",&set.ulActionSet)==vr::VRInputError_None;
  const char*names[]={"right_a","right_b","right_x","right_y","left_bumper","right_bumper","left_menu","right_menu","left_stickclick","right_stickclick","left_thumbstick","right_thumbstick","left_trigger","right_trigger","left_dpad_left","left_dpad_right","left_dpad_up","left_dpad_down"};
  vr::VRActionHandle_t handles[18]{};
  for(int k=0;k<18;k++)valid= input->GetActionHandle((std::string("/actions/framely_gamepad/in/")+names[k]).c_str(),&handles[k])==vr::VRInputError_None&&valid;
- if(!valid){fprintf(stderr,"Invalid gamepad action bindings.\n");vr::VR_Shutdown();return 1;}
- int fd=open("/dev/uinput",O_WRONLY|O_NONBLOCK|O_CLOEXEC);if(fd<0){perror("Gamepad /dev/uinput");vr::VR_Shutdown();return 1;}
+ if(!valid){fprintf(stderr,"Invalid gamepad action bindings.\n");shutdown();return 1;}
+ int fd=open("/dev/uinput",O_WRONLY|O_NONBLOCK|O_CLOEXEC);if(fd<0){perror("Gamepad /dev/uinput");shutdown();return 1;}
  bool ok=ioctl(fd,UI_SET_EVBIT,EV_KEY)==0&&ioctl(fd,UI_SET_EVBIT,EV_ABS)==0;
  for(auto key:keys)ok=ioctl(fd,UI_SET_KEYBIT,key)==0&&ok;
  for(int k=0;k<8;k++){ok=ioctl(fd,UI_SET_ABSBIT,axes[k])==0&&ok;uinput_abs_setup a{};a.code=axes[k];a.absinfo.minimum=k<4?-32768:(k<6?0:-1);a.absinfo.maximum=k<4?32767:(k<6?255:1);a.absinfo.flat=k<4?1024:0;ok=ioctl(fd,UI_ABS_SETUP,&a)==0&&ok;}
@@ -43,9 +52,9 @@ int main(int argc,char**argv){
  char sysname[128]{};ok=ioctl(fd,UI_GET_SYSNAME(sizeof sysname),sysname)>=0&&ok;
  std::string node;
  for(int tries=0;ok&&tries<100&&node.empty();tries++){std::error_code ec;for(auto&entry:std::filesystem::directory_iterator(std::string("/sys/class/input/")+sysname,ec)){auto name=entry.path().filename().string();if(name.rfind("event",0)==0)node="/dev/input/"+name;}if(node.empty())std::this_thread::sleep_for(std::chrono::milliseconds(20));}
- if(!ok||node.empty()){fprintf(stderr,"Could not create the virtual gamepad.\n");ioctl(fd,UI_DEV_DESTROY);close(fd);vr::VR_Shutdown();return 1;}
+ if(!ok||node.empty()){fprintf(stderr,"Could not create the virtual gamepad.\n");ioctl(fd,UI_DEV_DESTROY);close(fd);shutdown();return 1;}
  int witness=-1;for(int tries=0;tries<100&&witness<0;tries++){witness=open(node.c_str(),O_RDONLY|O_NONBLOCK|O_CLOEXEC);if(witness<0)std::this_thread::sleep_for(std::chrono::milliseconds(20));}
- if(witness<0){perror("Gamepad event access");ioctl(fd,UI_DEV_DESTROY);close(fd);vr::VR_Shutdown();return 1;}
+ if(witness<0){perror("Gamepad event access");ioctl(fd,UI_DEV_DESTROY);close(fd);shutdown();return 1;}
  printf("%s\n",node.c_str());fflush(stdout);
  // Parent owns routing. Start neutral; EOF, disconnect or disabled actions release input.
  bool enabled=false;std::string commands;int previous[18]{};
@@ -67,5 +76,5 @@ int main(int argc,char**argv){
   if(memcmp(previous,state,sizeof state)){if(!send(fd,state))break;memcpy(previous,state,sizeof state);}
   std::this_thread::sleep_for(std::chrono::milliseconds(8));
  }
- int neutral[18]{};send(fd,neutral);close(witness);ioctl(fd,UI_DEV_DESTROY);close(fd);vr::VR_Shutdown();return 0;
+ int neutral[18]{};send(fd,neutral);close(witness);ioctl(fd,UI_DEV_DESTROY);close(fd);shutdown();return 0;
 }

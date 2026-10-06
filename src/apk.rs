@@ -2931,6 +2931,21 @@ pub(crate) fn gamepad_health(context: &str, package: &str) -> (Option<bool>, boo
         Err(_) => (None, false),
     }
 }
+/// Read-only input/lifecycle diagnostics; excludes input events and Steam tokens.
+pub fn input_status(home: &Path, id: &str) -> Result<Value> {
+    let db = load(home)?;
+    let (a, c) = app(home, &db, id)?;
+    let sample = lifecycle::sample(&c);
+    let (alive, focused) = gamepad_health(&c.name, &a.metadata.package);
+    Ok(json!({
+        "app": id, "container": c.name, "package": a.metadata.package,
+        "alive": alive, "foreground": focused,
+        "lifecycle": match sample {
+            Ok(s) => json!({"activePackage":s.package,"alivePackages":s.alive}),
+            Err(e) => json!({"error":format!("{e:#}")}),
+        }
+    }))
+}
 fn gamepad_present(text: &str, package: &str) -> bool {
     gamepad_foreground(text, package)
         || text.lines().any(|line| {

@@ -286,6 +286,7 @@ fn handle(home: &Path, pid: u32, v: Value) -> Result<Value> {
                 let result = (|| -> Result<Value> {
                     let deadline = Instant::now() + Duration::from_secs(120);
                     let creation_deadline = Instant::now() + Duration::from_secs(45);
+                    let mut observation = "waiting for container creation".to_owned();
                     loop {
                         ensure!(
                             signature(pid).as_deref() == Some(&owner_signature),
@@ -293,7 +294,7 @@ fn handle(home: &Path, pid: u32, v: Value) -> Result<Value> {
                         );
                         ensure!(
                             Instant::now() < deadline,
-                            "Native Lepton startup timed out; inspect the APK log"
+                            "Native Lepton startup timed out: {observation}; inspect the APK log"
                         );
                         let instance = current_instance(&c)?;
                         if instance.is_none() {
@@ -303,30 +304,46 @@ fn handle(home: &Path, pid: u32, v: Value) -> Result<Value> {
                             ensure!(Instant::now() < creation_deadline, "Lepton did not create its container; inspect the native Lepton startup log");
                         }
                         if let Some(instance) = instance {
-                            if let Ok(s) = lifecycle::sample(&c) {
-                                if s.package == a.metadata.package
-                                    && s.alive.contains(&a.metadata.package)
-                                {
-                                    save_lease(
-                                        &home,
-                                        &Lease {
-                                            app: id.clone(),
-                                            token: token.clone(),
-                                            pid,
-                                            signature: owner_signature.clone(),
-                                            instance,
-                                        },
-                                    )?;
-                                    if crate::gamepad::current(&c.name).is_some() {
-                                        crate::gamepad::activate(&c.name, &a.metadata.package)?;
+                            match lifecycle::sample(&c) {
+                                Ok(s) => {
+                                    observation = format!(
+                                        "active package {}, target process present={}",
+                                        s.package,
+                                        s.alive.contains(&a.metadata.package)
+                                    );
+                                    if s.package == a.metadata.package
+                                        && s.alive.contains(&a.metadata.package)
+                                    {
+                                        save_lease(
+                                            &home,
+                                            &Lease {
+                                                app: id.clone(),
+                                                token: token.clone(),
+                                                pid,
+                                                signature: owner_signature.clone(),
+                                                instance,
+                                            },
+                                        )?;
+                                        if crate::gamepad::current(&c.name).is_some() {
+                                            crate::gamepad::activate(&c.name, &a.metadata.package)?;
+                                        }
+                                        return Ok(json!({"started":true,"native":true}));
                                     }
-                                    return Ok(json!({"started":true,"native":true}));
                                 }
+                                Err(e) => observation = format!("lifecycle check failed: {e:#}"),
                             }
                         }
                         std::thread::sleep(Duration::from_millis(500));
                     }
                 })();
+                if let Err(e) = &result {
+                    // Also report launches made directly from Steam, which
+                    // have no pending panel job to receive this error.
+                    eprintln!(
+                        "Native APK startup failed for {} (owner PID {pid}): {e:#}",
+                        c.name
+                    );
+                }
                 // A failed Podman run can leave Lepton waiting for a create
                 // event forever. End only this verified, still-uncreated launch;
                 // never interrupt a container that has already booted.
@@ -602,6 +619,9 @@ fn focus_owned(home: &Path, lease: &Lease, progress: &Progress) -> Result<Value>
             .join("logs")
             .join(format!("{}-steam-focus-{}.log", hash(&lease.app), now()));
     launch_with_started(&c, &a, &log, || progress(json!({"phase":"started"})))?;
+    if crate::gamepad::current(&c.name).is_some() {
+        crate::gamepad::activate(&c.name, &a.metadata.package)?;
+    }
     Ok(json!({"started":true,"reused":true}))
 }
 pub(super) fn request_launch(

@@ -154,6 +154,17 @@ pub fn prepare(storage: &Path, context: &str) -> Result<Mount> {
     let ready = storage.join(format!("gamepad-{token}"));
     fs::create_dir(&ready)?;
     fs::set_permissions(&ready, fs::Permissions::from_mode(0o733))?;
+    let app_key = format!("framely.gamepad.{token}");
+    let app_manifest = ready.join("application.vrmanifest");
+    fs::write(
+        &app_manifest,
+        serde_json::to_vec(&serde_json::json!({
+            "applications":[{"app_key":app_key,"launch_type":"binary","is_self_identified":true,
+                "binary_path_linux_arm":helper,"binary_path_linux":helper,"action_manifest_path":manifest,
+                "strings":{"en_us":{"name":"Framely gamepad input"}}}]
+        }))?,
+    )?;
+    fs::set_permissions(&app_manifest, fs::Permissions::from_mode(0o600))?;
     let log = fs::OpenOptions::new()
         .append(true)
         .create(true)
@@ -161,6 +172,8 @@ pub fn prepare(storage: &Path, context: &str) -> Result<Mount> {
         .open(storage.join("logs/gamepad.log"))?;
     let mut child = Command::new(helper)
         .arg(manifest)
+        .arg(&app_manifest)
+        .arg(&app_key)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(log)
@@ -263,6 +276,12 @@ pub fn activate(context: &str, package: &str) -> Result<()> {
         claimed(&mount.ready),
         "Android did not claim the virtual gamepad; restart the container and retry"
     );
+    select_target(context, package)
+}
+/// Select routing before native startup acknowledgement. The watcher still
+/// requires the target activity to be foreground and Android to claim the pad.
+pub fn select_target(context: &str, package: &str) -> Result<()> {
+    let mount = current(context).context("Gamepad input is no longer running")?;
     let mut bridges = BRIDGE.lock().unwrap();
     let bridge = bridges
         .contexts
@@ -300,7 +319,6 @@ mod tests {
     #[test]
     fn temporary_game_handoffs_neutralize_input_without_disconnect() {
         let directory = tempfile::tempdir().unwrap();
-        fs::write(directory.path().join("ready"), "ready\n").unwrap();
         let mut child = Command::new("sh")
             .args([
                 "-c",
@@ -331,6 +349,13 @@ mod tests {
             output.read_line(&mut line).unwrap();
             line
         };
+        // Native routing may be selected before Android boots. Foreground
+        // alone must not enable a device Android has not yet claimed.
+        bridge.update(Some(true), true).unwrap();
+        assert!(!bridge.enabled);
+        fs::write(directory.path().join("ready"), "ready\n").unwrap();
+        bridge.update(Some(true), false).unwrap();
+        assert!(!bridge.enabled);
         bridge.update(Some(true), true).unwrap();
         assert_eq!(read(), "enable\n");
         bridge.update(Some(false), false).unwrap();
