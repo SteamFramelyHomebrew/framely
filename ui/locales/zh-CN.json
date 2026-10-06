@@ -881,6 +881,7 @@
     "Terminal input stalled; reconnect without replaying input": "终端输入阻塞，请重新连接，不要重放输入",
     "Invalid terminal dimensions": "终端尺寸无效",
     "Text editor supports files up to 5 MiB": "文本编辑器仅支持 5 MiB 以内的文件",
-    "文本内容": "文本内容"
+    "文本内容": "文本内容",
+    "目录树": "目录树"
   }
 }

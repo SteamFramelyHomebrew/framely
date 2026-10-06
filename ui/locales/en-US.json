@@ -881,6 +881,7 @@
     "Terminal input stalled; reconnect without replaying input": "Terminal input stalled; reconnect without replaying input",
     "Invalid terminal dimensions": "Invalid terminal dimensions",
     "Text editor supports files up to 5 MiB": "Text editor supports files up to 5 MiB",
-    "文本内容": "Text content"
+    "文本内容": "Text content",
+    "目录树": "Folder tree"
   }
 }
