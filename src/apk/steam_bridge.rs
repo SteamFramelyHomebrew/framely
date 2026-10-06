@@ -263,6 +263,68 @@ fn handle(home: &Path, pid: u32, v: Value) -> Result<Value> {
         .as_str()
         .context("Missing Steam APK entry token")?;
     match v["method"].as_str() {
+        Some("native.prepare") => {
+            let r = record(home, id, token)?;
+            ensure!(
+                !r.removed && r.steam_launch && shortcuts::linked(home, &r),
+                "Steam launch is disabled"
+            );
+            let app_id = v["steamAppId"]
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .filter(|v| *v >= 0x80000000)
+                .context("Launch this APK entry through Steam")?;
+            let (c, a, response) = super::native::prepare(home, id, app_id)?;
+            let owner_signature = signature(pid).context("Steam launch exited")?;
+            let home = home.to_owned();
+            let id = id.to_owned();
+            let token = token.to_owned();
+            std::thread::spawn(move || {
+                let result = (|| -> Result<Value> {
+                    let deadline = Instant::now() + Duration::from_secs(120);
+                    loop {
+                        ensure!(
+                            signature(pid).as_deref() == Some(&owner_signature),
+                            "Native Lepton launch exited; inspect the APK log"
+                        );
+                        ensure!(
+                            Instant::now() < deadline,
+                            "Native Lepton startup timed out; inspect the APK log"
+                        );
+                        if let Ok(Some(instance)) = current_instance(&c) {
+                            if let Ok(s) = lifecycle::sample(&c) {
+                                if s.package == a.metadata.package
+                                    && s.alive.contains(&a.metadata.package)
+                                {
+                                    save_lease(
+                                        &home,
+                                        &Lease {
+                                            app: id.clone(),
+                                            token: token.clone(),
+                                            pid,
+                                            signature: owner_signature.clone(),
+                                            instance,
+                                        },
+                                    )?;
+                                    if crate::gamepad::current(&c.name).is_some() {
+                                        crate::gamepad::activate(&c.name, &a.metadata.package)?;
+                                    }
+                                    return Ok(json!({"started":true,"native":true}));
+                                }
+                            }
+                        }
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                })();
+                if let Some(p) = PENDING.lock().unwrap().remove(&id) {
+                    if result.is_ok() {
+                        (p.progress)(json!({"phase":"started"}));
+                    }
+                    let _ = p.result.send(result.map_err(|e| format!("{e:#}")));
+                }
+            });
+            Ok(response)
+        }
         Some("start") => {
             let r = record(home, id, token)?;
             ensure!(
@@ -416,7 +478,7 @@ pub(super) fn start_session() -> Result<()> {
                 let result = peer(&stream).and_then(|pid| {
                     read_request(&mut stream).and_then(|v| {
                         let id = v["app"].as_str().unwrap_or("").to_owned();
-                        let start = v["method"] == "start";
+                        let start = v["method"] == "start" || v["method"] == "native.prepare";
                         if start {
                             record(&home, &id, v["token"].as_str().unwrap_or(""))?;
                             ensure!(
@@ -567,13 +629,27 @@ pub(super) fn request_launch(
     }
     result
 }
+pub(super) fn native_call(app: &str, token: &str, app_id: u32) -> Result<Value> {
+    call_with_id(app, token, "native.prepare", 15, Some(app_id))
+}
 fn call(app: &str, token: &str, method: &str, timeout: u64) -> Result<Value> {
+    call_with_id(app, token, method, timeout, None)
+}
+fn call_with_id(
+    app: &str,
+    token: &str,
+    method: &str,
+    timeout: u64,
+    owner: Option<u32>,
+) -> Result<Value> {
     let mut s = UnixStream::connect(socket()?).context("Framely UI session is unavailable")?;
     s.set_read_timeout(Some(Duration::from_secs(timeout)))?;
     s.set_write_timeout(Some(Duration::from_secs(5)))?;
-    let app_id = std::env::var("SteamAppId")
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok());
+    let app_id = owner.or_else(|| {
+        std::env::var("SteamAppId")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+    });
     ipc::write(
         &mut s,
         &json!({"method":method,"app":app,"token":token,"steamAppId":app_id}),

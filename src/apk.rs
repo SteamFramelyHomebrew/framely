@@ -21,13 +21,18 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 mod lifecycle;
+mod native;
 mod steam_bridge;
 mod steam_shortcuts;
+mod steam_ui;
 mod storage;
 pub fn steam_session_started() -> Result<()> {
     steam_bridge::start_session()?;
     steam_shortcuts::start_auto_registration();
     Ok(())
+}
+pub fn native_steam(app: &str, token: &str, command: &[String]) -> Result<()> {
+    native::run(app, token, command)
 }
 pub fn steam_wrapper(app: &str, token: &str) -> Result<()> {
     steam_bridge::run(app, token)
@@ -414,7 +419,10 @@ fn containers(home: &Path, db: &Database) -> Vec<Container> {
                 if let Ok(baked) = validate_baked(&Path::new(p.trim()).join("baked")) {
                     if let Some(c) = out.iter_mut().find(|c| c.baked == baked) {
                         c.name = n.into();
-                        c.steam |= n.starts_with("steamlaunch-");
+                        c.steam |= n.starts_with("steamlaunch-")
+                            && !db.records.values().any(|r| {
+                                r.context == c.id && native::runtime_name(r).as_deref() == Some(n)
+                            });
                         c.running = true;
                     } else {
                         out.push(Container {
@@ -1097,8 +1105,11 @@ fn direct_launch_script(source: &str) -> Result<String> {
 # single-app launcher deletes media/0 before creating its external-storage link.
 function framely_prepare_media() {
     if [[ -n "${FRAMELY_EXTERNAL_MEDIA_DIR:-}" ]]; then
-        framely_prepare_external_media
-        return $?
+        framely_prepare_external_media || return
+        if [[ "${FRAMELY_NATIVE_LAUNCH:-false}" == true ]]; then
+            rm -f -- "$(data_mount_path)/media/0" || return
+        fi
+        return 0
     fi
     local media="$(data_mount_path)/media/0"
     local external="${STEAM_COMPAT_DATA_PATH:-}/external"
@@ -1136,6 +1147,11 @@ for framely_mount_hook in setup_mounts setup_podman_mounts; do
     fi
     if [[ "$framely_mount_body" == *"$framely_media_remove"* ]]; then
         framely_mount_body="${framely_mount_body//"$framely_media_remove"/framely_prepare_media || return}"
+        if [[ "${FRAMELY_NATIVE_LAUNCH:-false}" == true ]]; then
+            framely_native_link='ln -s "${STEAM_COMPAT_DATA_PATH}/external"'
+            framely_preserved_link='ln -s "${FRAMELY_EXTERNAL_MEDIA_DIR:?}"'
+            framely_mount_body="${framely_mount_body//"$framely_native_link"/"$framely_preserved_link"}"
+        fi
         eval "$framely_mount_body"
     fi
     unset framely_mount_body framely_media_remove
@@ -1269,6 +1285,18 @@ fn start_oriented_container(
         wait_android_ready(c)?;
         return restore_package_mount(home, c, log);
     }
+    let lock_dir = root(home).join("steam");
+    fs::create_dir_all(&lock_dir)?;
+    let _context_lock = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(lock_dir.join(format!("context-{}.lock", hash(&c.id))))?;
+    ensure!(
+        unsafe { libc::flock(_context_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
+        "A native Steam launch still owns this container; wait for it to finish closing"
+    );
     let runner = runner(home)?;
     storage::prepare(&c.baked)?;
     // Manual container startup must use the same resource-preserving adapter.
@@ -1310,7 +1338,11 @@ fn start_oriented_container(
             },
         );
     cmd.env_remove("SteamAppId");
-    storage::configure(&mut cmd, &c.baked, c.id.starts_with("external-"));
+    storage::configure(
+        &mut cmd,
+        &c.baked,
+        c.id.starts_with("external-") || c.name != c.id,
+    );
     if let Some(id) = steam_app_id {
         cmd.env("FRAMELY_STEAM_APP_ID", id.to_string());
     } else {
@@ -1322,7 +1354,7 @@ fn start_oriented_container(
             .env("FRAMELY_GAMEPAD_READY", &mount.ready)
             .env("FRAMELY_GAMEPAD_TOKEN", &mount.token);
     }
-    if c.id.starts_with("external-") {
+    if c.id.starts_with("external-") || c.name != c.id {
         cmd.env(
             "STEAM_COMPAT_DATA_PATH",
             c.baked.parent().context("Missing compatdata parent")?,
@@ -1461,11 +1493,16 @@ fn app(home: &Path, db: &Database, id: &str) -> Result<(App, Container)> {
         .find(|a| a.id == id)
         .context("APK application not found")?;
     ensure!(!a.steam, "Manage Steam APKs through Steam");
-    let c = cs
+    let mut c = cs
         .iter()
         .find(|c| c.id == a.context)
         .cloned()
         .context("Container unavailable; add its data location first")?;
+    if !c.running {
+        if let Some(name) = db.records.get(id).and_then(native::runtime_name) {
+            c.name = name;
+        }
+    }
     ensure!(
         !cs.iter()
             .any(|other| other.name == c.name && other.baked != c.baked),
@@ -2199,8 +2236,17 @@ fn operate_internal(
                 let enabled = p["enabled"]
                     .as_bool()
                     .context("Invalid Steam launch setting")?;
-                let (a, _) = app(home, &db, id)?;
+                let (a, c) = app(home, &db, id)?;
                 ensure!(!a.steam, "This app is already managed by Steam");
+                if !enabled
+                    && c.name.starts_with("steamlaunch-")
+                    && db.records.get(id).and_then(native::runtime_name).is_some()
+                {
+                    ensure!(
+                        !running(&c.name),
+                        "Close this native Steam application before disabling Steam launch"
+                    );
+                }
                 record_app(&mut db, &a);
                 let rec = db.records.get_mut(id).context("Missing APK record")?;
                 if enabled {
@@ -2638,6 +2684,9 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                                 a.pending.is_none(),
                                 "Reconcile the interrupted operation before deleting data"
                             );
+                            if db.records.get(id).and_then(native::runtime_name).is_some() {
+                                stop(&c, &log)?;
+                            }
                             if let Some(rec) = db.records.get_mut(id) {
                                 steam_shortcuts::unregister(home, rec)?;
                                 rec.steam_launch = false;
@@ -3447,12 +3496,14 @@ setup_podman_mounts
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
+            steam_ui::TEST_RESULT.with(|p| *p.borrow_mut() = None);
             crate::process::TEST_TOOLS.with(|p| *p.borrow_mut() = None)
         }
     }
     impl Fixture {
         fn new() -> Self {
             let guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            steam_ui::TEST_RESULT.with(|p| *p.borrow_mut() = Some(json!(0x92345678u32)));
             let dir = tempfile::tempdir().unwrap();
             let home = dir.path().join("home");
             fs::create_dir_all(&home).unwrap();
@@ -3883,6 +3934,8 @@ setup_props
         rec.steam_token = Some("test-token".into());
         rec.steam_binding = Some(steam_shortcuts::Binding {
             game_id: steam_shortcuts::game_id(id),
+            native: false,
+            revision: String::new(),
         });
         save(&f.home, &db).unwrap();
         let path = steam_shortcuts::wrapper(&f.home, id);
@@ -4327,6 +4380,65 @@ setup_props
         assert!(baked.join("app_overlay/base.apk").exists());
         assert!(!parent.join("framely-restore.json").exists());
         assert!(!parent.join("restore-test").exists());
+    }
+    #[test]
+    fn native_launch_prepare_preserves_identity_data_and_rejects_running_or_changed_binding() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let id = "test/com.example.app";
+        let mut db = load(&f.home).unwrap();
+        let r = db.records.get_mut(id).unwrap();
+        r.steam_launch = true;
+        r.steam_app_id = Some(0x92345678);
+        r.steam_binding = Some(steam_shortcuts::Binding {
+            game_id: steam_shortcuts::game_id(id),
+            native: true,
+            revision: String::new(),
+        });
+        save(&f.home, &db).unwrap();
+        assert!(native::prepare(&f.home, id, 0x92345678).is_err());
+        fs::write(f.dir.path().join("running"), "false").unwrap();
+        let lepton = runner(&f.home).unwrap();
+        let source = fs::read_to_string(&lepton).unwrap();
+        fs::write(
+            &lepton,
+            format!(
+                "{source}\nfunction teardown() {{ :; }}\ncase \"${{COMMAND}}\" in\n*) :;;\nesac\n"
+            ),
+        )
+        .unwrap();
+        let baked = f.home.join(".local/share/lepton/contexts/test/baked");
+        let installed_dir = baked.join("data_overlay/app/xyz/com.example.app");
+        fs::create_dir_all(installed_dir.join("lib/arm64")).unwrap();
+        fs::copy(
+            baked.join("app_overlay/base.apk"),
+            installed_dir.join("base.apk"),
+        )
+        .unwrap();
+        fs::write(
+            installed_dir.join("lib/arm64/game.so"),
+            b"existing extracted library",
+        )
+        .unwrap();
+        assert!(native::prepare(&f.home, id, 0x92345679).is_err());
+        let (c, a, response) = native::prepare(&f.home, id, 0x92345678).unwrap();
+        assert_eq!(c.id, "test");
+        assert_eq!(c.name, "steamlaunch-2452903544");
+        assert!(!c.steam);
+        assert_eq!(a.id, id);
+        assert_eq!(
+            response["env"]["FRAMELY_NATIVE_APK_DIR"],
+            json!(installed_dir)
+        );
+        assert_eq!(
+            response["env"]["STEAM_COMPAT_DATA_PATH"],
+            json!(baked.parent().unwrap())
+        );
+        assert_eq!(fs::read(f.save_file()).unwrap(), b"saved progress");
+        assert_eq!(
+            fs::read(installed_dir.join("lib/arm64/game.so")).unwrap(),
+            b"existing extracted library"
+        );
     }
     #[test]
     fn unreadable_state_is_not_uninstallation_or_a_launch_target() {

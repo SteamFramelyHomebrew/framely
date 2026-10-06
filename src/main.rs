@@ -48,6 +48,15 @@ enum Cmd {
         #[arg(long)]
         token: String,
     },
+    /// Internal resource-preserving native Steam/Lepton entry.
+    ApkNative {
+        #[arg(long)]
+        app: String,
+        #[arg(long)]
+        token: String,
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
     /// Manage sideloaded APKs as the Steam session user (also works without the panel).
     Apk {
         operation: String,
@@ -163,6 +172,11 @@ enum Cmd {
 fn run() -> Result<()> {
     match Cli::parse().command {
         Cmd::ApkSteam { app, token } => apk::steam_wrapper(&app, &token),
+        Cmd::ApkNative {
+            app,
+            token,
+            command,
+        } => apk::native_steam(&app, &token, &command),
         Cmd::Apk {
             operation,
             params,

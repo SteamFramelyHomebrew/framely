@@ -115,20 +115,36 @@ Monitoring pauses during APK mutations and startup checks. A container restart, 
 
 ### SteamOS window-close limitation
 
-On Frame Gamescope `3.16.28-76-ge383171f`, both window and Dock close controls log `Closing Wayland windows not supported yet.` for Lepton windows. The close request does not reach Android, so this switch cannot make these controls work on that build. Use the APK panel's **Stop container** action until the system compositor supports Wayland close requests. Framely does not infer close intent from focus changes or this unscoped log message.
+On Frame Gamescope `3.16.28-76-ge383171f`, both window and Dock close controls log `Closing Wayland windows not supported yet.` for direct, non-Steam Lepton windows. The close request does not reach Android, so this switch cannot make these controls work on that path. Use **Launch through Steam** as described below, or the APK panel's **Stop container** action. Framely does not infer close intent from focus changes or this unscoped log message.
 
-## Steam-owned launches
+## Native Steam / Lepton launches
 
-For an installed sideloaded APK, open **Manage → Advanced settings → Launch through Steam**. This switch defaults to on. On startup and after installation, Framely automatically wraps existing and newly installed launchable sideloaded APKs; explicit opt-outs and Steam-managed apps are preserved. Registration does not start apps or restart their containers. If Steam is unavailable, registration retries in the background when it becomes ready. Framely automatically registers its own Devkit entry using Valve's authenticated local Steam IPC; Steam must be running. No manual shortcut addition, Steam restart, APK reinstallation or new container is required. The original Lepton launcher icon, order and favorites remain; registered wrappers are not added as desktop icons. Once Steam supplies an App ID, that explicit mapping also excludes its duplicate from the launcher Steam list.
+**Launch through Steam** defaults to on. Framely registers launchable sideloaded APKs with Steam's native Lepton compatibility tool. Existing opt-outs remain disabled, and Steam-managed titles are not registered again. Registration does not launch or restart applications. Steam must be awake; unavailable registration is retried in the background.
 
-Close an existing running container before its first Steam launch. Framely refuses to reboot a running app just to assign Steam ownership. The wrapper forwards Steam's App ID to a cold Lepton boot, retains the existing data directory, and stays alive while the target app runs. Steam **Stop** ends this wrapper; the user session service stops the exact owned app/container without deleting data. If an old shared container has other live apps, those apps and the container are preserved. A confirmed app-process exit waits 15 seconds; temporary query failures do not count as an exit. Lepton background services may keep the entry running until explicitly stopped.
+Steam entries show the APK's application name and icon. Framely generates matching library capsules, headers and hero images from the icon, without downloading artwork. The original launcher icon, order and favorites stay intact; the explicit Steam App ID binding excludes duplicate entries from the launcher Steam category. APK updates refresh generated entry metadata.
 
-The same service monitors a killed wrapper and reconnects after a Framely session restart. PID start identity and container boot identity prevent an old wrapper from stopping a newer container. This does not patch Gamescope. On the tested Frame system, the window and Dock close buttons still reach Gamescope's unsupported Wayland-close path and do not stop the Steam wrapper. Steam wrapping therefore does not repair these two buttons; use Steam **Stop** or APK management **Stop** instead. Disable the switch to remove only Framely's corresponding Steam entry and return to direct launch. Uninstalling its APK or deleting its container also removes that entry; Steam must be available for this cleanup.
+The native runtime has a `steamlaunch-…` process/container name, while the APK keeps its existing data directory and Framely identity. No game-data copy, APK reinstall or system compositor modification is required. A private, per-user Lepton entry adapter retains resource storage, selected activity, window orientation, shader cache and optional controller forwarding. It prevents native Lepton from clearing an existing installation after a timestamp change or early exit. Unknown entry-script formats are refused before starting the application.
 
-### Steam 托管启动
+Close an already running container before switching its launch path. Framely does not restart a running game to assign Steam ownership. Old shared containers remain discoverable, but only one Steam launch may own their data at a time. Duplicate launches are blocked using an ownership lock that survives the native process launch.
 
-已安装的侧载 APK 可以在 **管理 → 高级设置 → 通过 Steam 启动** 中控制此功能，默认开启。本体启动及安装完成后，会自动包装已有和新安装的可启动侧载 APK，跳过 Steam 已管理的应用，并保留用户主动关闭的选择。注册不启动应用或重启容器；Steam 暂不可用时，会在后台等待并自动重试。Framely 通过 Valve 的本地认证 IPC 自动注册 Devkit 入口，需要 Steam 正在运行；无需手动添加快捷方式、重启 Steam、重装 APK 或新建容器。启动台保留原来的 Lepton 图标、排序和收藏，不生成额外桌面图标；首次取得 Steam App ID 后，根据明确绑定从 Steam 分类中过滤重复入口。
+On the tested Frame build, native Lepton ownership lets both the window's lower close button and the Dock close button show Steam's exit confirmation. Confirming exit stops the app and its container. Steam **Stop** and APK management **Stop container** remain available. This result was verified with an isolated flat APK; application-specific and VR behavior may differ. Direct, non-Steam Lepton windows still encounter that build's unsupported Wayland close path.
 
-首次通过 Steam 启动前，请先关闭运行中的容器。Framely 不会为了绑定 Steam 而强制重启正在运行的应用。包装进程将 Steam App ID 传入冷启动的 Lepton，并保留原数据目录；应用运行期间包装进程保持存活。Steam 的“停止”结束包装进程后，用户会话服务停止准确对应的应用和容器，不删除数据。旧共享容器中如果还有其他应用运行，则保护它们和容器。确认目标进程退出后等待 15 秒；查询失败不视为退出。后台服务可能让 Steam 入口继续保持运行，需要手动停止。
+Entry metadata and the launch adapter are configured through Steam's existing local library UI API, reached through its local debugging endpoint on port 8080. Framely neither enables the endpoint nor changes Steam launch settings to enable it. If the API is unavailable or the shortcut target cannot be verified, registration reports an error and retries; it does not edit the live shortcuts database or silently switch to an unprotected launch. This Steam UI interface can change with Steam updates.
 
-包装进程被强制结束或 Framely 会话服务重启后，也会通过持久记录继续核对。进程启动标识及容器启动标识防止旧进程停止新容器。本功能不修改 Gamescope。已测试的 Frame 系统中，窗口下方及 Dock 的关闭按钮仍进入 Gamescope 尚未支持的 Wayland 关闭路径，没有停止 Steam 包装进程。因此，Steam 包装不能修复这两个按钮；请使用 Steam 的“停止”或 APK 管理中的“停止”。关闭开关只移除 Framely 对应该应用的 Steam 入口，并恢复直接启动。卸载 APK 或删除其容器时也会移除对应入口，此清理需要 Steam 可用。
+Disabling Steam launch removes only Framely's entry; close a native Steam app first. Uninstalling an APK stops its native container before removing its entry. APK data is removed only by the explicitly selected uninstall/data-cleanup operation. The same session service verifies process and container boot identities so an old ownership record cannot stop a newer application.
+
+### Steam / Lepton 原生启动
+
+**通过 Steam 启动**默认开启。Framely 使用 Steam 原生 Lepton 兼容工具注册可启动的侧载 APK，保留主动关闭的选择，跳过 Steam 已管理的应用。注册不会启动应用或重启容器；Steam 需要保持唤醒，不可用时会后台重试。
+
+Steam 入口显示 APK 的应用名称和图标，并根据图标生成对应的库封面、横幅和背景图，不联网下载图片。启动台原有图标、排序和收藏不变，通过明确的 Steam App ID 绑定过滤 Steam 分类中的重复入口。APK 更新会刷新生成的入口信息。
+
+原生运行时的进程和容器名为 `steamlaunch-…`，APK 仍保留原数据目录及 Framely 身份，无需复制游戏数据、重装 APK 或修改系统合成器。用户目录内的独立 Lepton 入口适配保留资源目录、选择的启动入口、窗口方向、着色器缓存和可选手柄转发，并防止原生 Lepton 在时间戳变化或短时间退出后清除已有安装。无法识别的入口脚本格式会在启动应用之前拒绝。
+
+切换启动路径之前，需要先关闭已经运行的容器；Framely 不会为了绑定 Steam 重启游戏。旧共享容器仍可识别，但同时只允许一个 Steam 启动占用其数据。跨进程保留的占用锁阻止重复启动及共享数据的并发启动。
+
+独立平面 APK 的实机验证显示，窗口下方和 Dock 的关闭按钮都能弹出 Steam 退出确认，确认后应用和容器停止。也可使用 Steam 的“停止”或 APK 管理中的“停止容器”。具体应用及 VR 应用行为可能不同；直接启动的非 Steam Lepton 窗口仍受当前系统未实现 Wayland 关闭的限制。
+
+名称、图片和启动适配通过 Steam 已有的本地库界面 API 配置，连接其 8080 端口的本地调试接口。Framely 不开启该接口，也不为此修改 Steam 启动设置。API 不可用或快捷方式目标验证失败时，注册显示错误并重试，不直接修改运行中的快捷方式数据库，也不悄悄切换为无数据保护的启动。此 Steam 界面接口可能随 Steam 更新变化。
+
+关闭原生 Steam 应用后，才能关闭“通过 Steam 启动”；关闭开关只移除 Framely 的入口。卸载 APK 时先停止其原生容器，再移除入口。只有明确选择的卸载或数据清理操作才删除应用数据。用户会话服务继续核对进程及容器启动标识，防止旧占用记录停止新的应用。

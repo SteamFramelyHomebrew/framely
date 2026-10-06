@@ -5,17 +5,24 @@ use std::os::unix::fs::OpenOptionsExt;
 #[serde(rename_all = "camelCase")]
 pub(super) struct Binding {
     pub game_id: String,
+    #[serde(default)]
+    pub native: bool,
+    #[serde(default)]
+    pub revision: String,
 }
 pub(super) fn game_id(id: &str) -> String {
     format!("framely{}", hash(id))
 }
+pub(super) fn native_apk(home: &Path, id: &str) -> PathBuf {
+    home.join("devkit-game").join(game_id(id)).join("base.apk")
+}
 pub(super) fn wrapper(home: &Path, id: &str) -> PathBuf {
     home.join("devkit-game").join(game_id(id)).join("launch.sh")
 }
-fn quote(s: &str) -> String {
+pub(super) fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
-fn write_owned(p: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+pub(super) fn write_owned(p: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     let parent = p.parent().context("Missing entry parent")?;
     ensure!(
         fs::symlink_metadata(parent)?.is_dir(),
@@ -142,9 +149,14 @@ pub(super) fn rpc(home: &Path, command: &str, id: Option<&str>) -> Result<String
     result
 }
 pub(super) fn linked(home: &Path, r: &Record) -> bool {
-    r.steam_binding
-        .as_ref()
-        .is_some_and(|b| b.game_id == game_id(&r.id) && wrapper(home, &r.id).is_file())
+    r.steam_binding.as_ref().is_some_and(|b| {
+        b.game_id == game_id(&r.id)
+            && if b.native {
+                native_apk(home, &r.id).is_file()
+            } else {
+                wrapper(home, &r.id).is_file()
+            }
+    })
 }
 pub(super) fn register(home: &Path, a: &App, r: &mut Record) -> Result<()> {
     ensure!(
@@ -164,12 +176,22 @@ pub(super) fn register(home: &Path, a: &App, r: &mut Record) -> Result<()> {
         "Invalid Steam entry directory"
     );
     fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
-    let script=format!("#!/bin/sh\n# Framely-owned entry; application data remains in its existing container.\nexec /var/lib/framely/current/bin/framely apk-steam --app {} --token {}\n",quote(&a.id),quote(&token));
-    write_owned(&p, script.as_bytes(), 0o700)?;
+    let db = load(home)?;
+    let (_, c) = app(home, &db, &a.id)?;
+    let apk = installed(home, &c)?
+        .into_iter()
+        .find(|(m, _)| m.package == a.metadata.package)
+        .map(|(_, p)| p)
+        .context("Installed APK is unavailable; existing data was not changed")?;
+    store_apk(&apk, dir)?;
+    // A stable APK target lets Steam own the actual Lepton compatibility launch.
     for (suffix, value) in [
-        ("argv", json!(["./launch.sh"])),
-        ("env", json!({})),
-        ("settings", json!({"compat_tool":"","steam_play":false})),
+        ("argv", json!(["./base.apk"])),
+        ("env", json!({"LEPTON_NO_CLEANUP":"true"})),
+        (
+            "settings",
+            json!({"compat_tool":"fauxdroid","steam_play":"0"}),
+        ),
     ] {
         write_owned(
             &home
@@ -178,6 +200,12 @@ pub(super) fn register(home: &Path, a: &App, r: &mut Record) -> Result<()> {
             &serde_json::to_vec(&value)?,
             0o600,
         )?;
+    }
+    let marker = dir.join("lepton-show-flatscreen");
+    if a.show_window.unwrap_or(!a.metadata.vr) {
+        write_owned(&marker, b"", 0o600)?;
+    } else if marker.exists() {
+        fs::remove_file(&marker)?;
     }
     rpc(home, "create-shortcut", Some(&game))?;
     let v: Value = serde_json::from_str(&rpc(home, "list-shortcuts", None)?)?;
@@ -188,7 +216,25 @@ pub(super) fn register(home: &Path, a: &App, r: &mut Record) -> Result<()> {
                 .is_some_and(|v| v.iter().any(|v| v == &game)),
         "Steam did not register the APK entry"
     );
-    r.steam_binding = Some(Binding { game_id: game });
+    let launch = format!(
+        "/var/lib/framely/current/bin/framely apk-native --app {} --token {} -- %command%",
+        quote(&a.id),
+        quote(&token)
+    );
+    let icon = icon_file(dir, &a.metadata)?;
+    r.steam_app_id = Some(super::steam_ui::configure(
+        &game,
+        r.steam_app_id,
+        &a.metadata.name,
+        icon.as_deref(),
+        &launch,
+        &native_apk(home, &a.id),
+    )?);
+    r.steam_binding = Some(Binding {
+        game_id: game,
+        native: true,
+        revision: revision(a),
+    });
     Ok(())
 }
 pub(super) fn unregister(home: &Path, r: &Record) -> Result<()> {
@@ -209,9 +255,58 @@ pub(super) fn unregister(home: &Path, r: &Record) -> Result<()> {
         if p.exists() {
             fs::remove_file(&p)?;
         }
+        for name in [
+            "base.apk",
+            "icon.png",
+            "icon.webp",
+            "icon.jpg",
+            "lepton-show-flatscreen",
+        ] {
+            let file = p.parent().unwrap().join(name);
+            if file.exists() {
+                ensure!(
+                    fs::symlink_metadata(&file)?.is_file(),
+                    "Invalid owned Steam file"
+                );
+                fs::remove_file(file)?;
+            }
+        }
         let _ = fs::remove_dir(p.parent().unwrap());
     }
     Ok(())
+}
+fn revision(a: &App) -> String {
+    hash(&json!({"metadata":a.metadata,"showWindow":a.show_window}).to_string())
+}
+fn icon_file(dir: &Path, metadata: &Metadata) -> Result<Option<PathBuf>> {
+    use base64::Engine;
+    let Some(icon) = metadata.icon.as_deref() else {
+        return Ok(None);
+    };
+    let Some((prefix, data)) = icon.split_once(",") else {
+        return Ok(None);
+    };
+    ensure!(
+        matches!(
+            prefix,
+            "data:image/png;base64" | "data:image/jpeg;base64" | "data:image/webp;base64"
+        ),
+        "Unsupported APK icon"
+    );
+    ensure!(data.len() <= 8 * 1024 * 1024, "APK icon is too large");
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(4096);
+    limits.max_image_height = Some(4096);
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    let picture = reader.decode()?.thumbnail(512, 512);
+    let path = dir.join("icon.png");
+    let mut png = std::io::Cursor::new(Vec::new());
+    picture.write_to(&mut png, image::ImageFormat::Png)?;
+    write_owned(&path, &png.into_inner(), 0o600)?;
+    Ok(Some(path))
 }
 // Preference and registration are separate: Steam can be asleep while the
 // default-on choice remains enabled. An explicit opt-out is never auto-enabled.
@@ -253,7 +348,14 @@ pub(super) fn ensure_registered(home: &Path, id: &str, force: bool) -> Result<bo
     record_app(&mut db, &a);
     let rec = db.records.get_mut(id).context("Missing APK record")?;
     rec.steam_preference = Some(true);
-    if !force && rec.steam_launch && linked(home, rec) {
+    if !force
+        && rec.steam_launch
+        && linked(home, rec)
+        && rec
+            .steam_binding
+            .as_ref()
+            .is_some_and(|b| b.native && b.revision == revision(&a))
+    {
         save(home, &db)?;
         return Ok(true);
     }
@@ -295,7 +397,12 @@ pub(super) fn synchronize(home: &Path) -> Result<()> {
         let force = !registered.contains(&game_id(&a.id));
         if !force
             && db.records.get(&a.id).is_some_and(|r| {
-                r.steam_preference == Some(true) && r.steam_launch && linked(home, r)
+                r.steam_preference == Some(true)
+                    && r.steam_launch
+                    && linked(home, r)
+                    && r.steam_binding
+                        .as_ref()
+                        .is_some_and(|b| b.native && b.revision == revision(&a))
             })
         {
             continue;
