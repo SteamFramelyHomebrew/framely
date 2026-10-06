@@ -103,7 +103,7 @@ fn record(home: &Path, id: &str, token: &str) -> Result<Record> {
     );
     Ok(r.clone())
 }
-fn current_instance(c: &Container) -> Result<Option<String>> {
+pub(super) fn current_instance(c: &Container) -> Result<Option<String>> {
     let mut cmd = crate::process::tool("podman");
     cmd.args([
         "inspect",
@@ -111,7 +111,27 @@ fn current_instance(c: &Container) -> Result<Option<String>> {
         "{{/*SteamBridge*/}}{{.Id}}|{{.State.StartedAt}}|{{.State.Running}}|{{.State.Pid}}",
         &format!("lepton-{}", c.name),
     ]);
-    let text = output(cmd, Duration::from_secs(3), None)?;
+    let text = match output(cmd, Duration::from_secs(3), None) {
+        Ok(text) => text,
+        Err(error) => {
+            // Lepton removes its transient Podman object when stopped. Only
+            // Podman's explicit "absent" exit code is safe to treat as stopped;
+            // permission/storage/runtime errors must not authorize a new boot.
+            let exists = crate::process::command_output_timeout(
+                crate::process::tool("podman").args([
+                    "container",
+                    "exists",
+                    &format!("lepton-{}", c.name),
+                ]),
+                Duration::from_secs(3),
+                false,
+            )?;
+            if exists.status.code() == Some(1) {
+                return Ok(None);
+            }
+            return Err(error.context("Cannot verify Steam APK container state"));
+        }
+    };
     let fields: Vec<_> = text.trim().split('|').collect();
     ensure!(
         fields.len() == 4

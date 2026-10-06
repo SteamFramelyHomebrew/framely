@@ -3466,7 +3466,8 @@ setup_podman_mounts
                 r#"#!/bin/sh
 printf '%s\n' "$*" >> '{commands}'
 case "$1" in
- inspect) case "$3" in *SteamBridge*) echo "fixture|{state}|$(cat '{state}')|{pid}";; *StartedAt*) echo "fixture|{state}|$(cat '{state}')";; *State.Pid*) echo "$(cat '{state}')|{pid}";; *) cat '{state}';; esac;;
+ inspect) case "$(cat '{state}')" in missing) echo 'Error: no such object: lepton-test' >&2; exit 125;; query-error) echo 'Error: storage permission denied' >&2; exit 125;; esac; case "$3" in *SteamBridge*) echo "fixture|{state}|$(cat '{state}')|{pid}";; *StartedAt*) echo "fixture|{state}|$(cat '{state}')";; *State.Pid*) echo "$(cat '{state}')|{pid}";; *) cat '{state}';; esac;;
+ container) case "$(cat '{state}')" in missing) exit 1;; query-error) exit 125;; *) exit 0;; esac;;
  ps) if [ "$(cat '{state}')" = true ]; then case "$3" in *Pid*) echo 'lepton-test|{pid}';; *) echo lepton-test;; esac; fi;;
  stop) echo false > '{state}'; echo stopped;;
  cp) /bin/cp -f "$2" '{incoming}';;
@@ -3821,6 +3822,25 @@ setup_props
         assert!(!f.home.join(".local/share/applications").exists());
     }
     #[test]
+    fn steam_container_probe_distinguishes_removed_stopped_and_query_failures() {
+        let f = Fixture::new();
+        let db = load(&f.home).unwrap();
+        let (_, c) = app(&f.home, &db, "test/com.example.app").unwrap();
+        fs::write(f.dir.path().join("commands"), "").unwrap();
+        assert!(steam_bridge::current_instance(&c).unwrap().is_some());
+        for state in ["false", "missing"] {
+            fs::write(f.dir.path().join("running"), state).unwrap();
+            assert!(steam_bridge::current_instance(&c).unwrap().is_none());
+        }
+        fs::write(f.dir.path().join("running"), "query-error").unwrap();
+        assert!(steam_bridge::current_instance(&c).is_err());
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        let commands = fs::read_to_string(f.dir.path().join("commands")).unwrap();
+        assert!(!commands
+            .lines()
+            .any(|line| line.starts_with("exec ") || line.starts_with("stop ")));
+    }
+    #[test]
     fn steam_wrapper_launch_and_stop_preserve_data_and_reject_unowned_requests() {
         let f = Fixture::new();
         let id = "test/com.example.app";
@@ -3840,7 +3860,11 @@ setup_props
         assert!(steam_bridge::test_request(&f.home, id, "wrong", "start").is_err());
         // A direct-running container must never be restarted to obtain Steam ownership.
         assert!(steam_bridge::test_request(&f.home, id, "test-token", "start").is_err());
-        fs::write(f.dir.path().join("running"), "false").unwrap();
+        fs::write(f.dir.path().join("running"), "query-error").unwrap();
+        assert!(steam_bridge::test_request(&f.home, id, "test-token", "start").is_err());
+        // Lepton --rm leaves no Podman object after shutdown. Cold Steam launch
+        // must work without requiring a previously created/stopped object.
+        fs::write(f.dir.path().join("running"), "missing").unwrap();
         assert_eq!(
             steam_bridge::test_request(&f.home, id, "test-token", "start").unwrap()["started"],
             true
