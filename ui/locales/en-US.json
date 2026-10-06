@@ -882,6 +882,20 @@
     "Invalid terminal dimensions": "Invalid terminal dimensions",
     "Text editor supports files up to 5 MiB": "Text editor supports files up to 5 MiB",
     "文本内容": "Text content",
-    "目录树": "Folder tree"
+    "目录树": "Folder tree",
+    "文件导航": "File navigation",
+    "快捷入口操作": "Shortcut actions",
+    "降序": "Descending",
+    "升序": "Ascending",
+    "共 {0} 项": "{0} items",
+    "已选择 {0} 项": "{0} selected",
+    "已剪切 {0} 项": "{0} items cut",
+    "已复制 {0} 项": "{0} items copied",
+    "类型": "Kind",
+    "没有匹配的文件": "No matching files",
+    "此文件夹为空": "This folder is empty",
+    "试试其他名称，或搜索子目录。": "Try another name or search subfolders.",
+    "上传文件或新建文件夹。": "Upload files or create a folder.",
+    "回收站为空": "The recycle bin is empty"
   }
 }

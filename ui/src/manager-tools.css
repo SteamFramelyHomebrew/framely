@@ -1,17 +1,17 @@
-.manager-tool{width:100%;min-width:0;display:flex;flex-direction:column;gap:14px}.terminal-sessions,.terminal-toolbar,.file-toolbar,.file-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.terminal-sessions>div{display:flex;border:1px solid var(--line);border-radius:12px;overflow:hidden}.terminal-sessions button{border:0;border-radius:0;background:#222}.terminal-sessions button.active{background:#444}.terminal-toolbar>span{color:var(--muted)}.terminal-toolbar input{flex:1;min-width:100px}.terminal-canvas{height:65vh;min-height:320px;padding:12px;background:#141414;border:1px solid var(--line);border-radius:12px;overflow:hidden}.manager-switcher{overflow-x:auto;max-width:100%;flex-shrink:1}.manager-switcher button{white-space:nowrap}.manager .workspace.tools-workspace{grid-template-columns:1fr}.manager .workspace.tools-workspace>nav{display:none}.file-layout{display:grid;grid-template-columns:240px minmax(0,1fr);gap:18px;min-height:420px}.file-sidebar{border-right:1px solid var(--line);padding-right:12px;overflow:auto;max-height:70vh}.file-sidebar button{width:100%;justify-content:flex-start;text-align:left;background:transparent}.file-main{min-width:0}.file-table{width:100%;border-collapse:collapse}.file-table th,.file-table td{padding:12px 8px;border-bottom:1px solid var(--line);text-align:left}.file-table tr.selected{background:#393939}.file-table .file-name{background:transparent;border:0;padding:0;min-height:32px;justify-content:flex-start;overflow-wrap:anywhere}.file-toolbar input{flex:1;min-width:130px}.file-preview img,.file-preview video{max-width:100%;max-height:60vh;object-fit:contain}.file-editor{width:100%;min-height:45vh;font-family:monospace;font-size:16px;resize:vertical}.file-progress{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.file-progress progress{flex:1}.file-side-entry{display:flex;align-items:center}.file-side-entry>button:first-child{flex:1}.file-side-entry>button:not(:first-child){width:auto;padding:6px}.file-tree{padding-left:12px}.file-breadcrumbs{display:flex;gap:4px;flex-wrap:wrap}.file-breadcrumbs button{background:transparent;border:0;padding:4px;min-height:28px}.file-conflict label{display:flex;gap:8px;align-items:center}.file-details{overflow-wrap:anywhere}.manager-tool .modal footer{display:flex;gap:12px;justify-content:flex-end}.file-preview{display:flex;flex-direction:column;gap:14px}@media(max-width:850px){.file-layout{grid-template-columns:180px minmax(0,1fr)}.file-table .file-time{display:none}}@media(max-width:600px){.file-layout{grid-template-columns:150px minmax(0,1fr);gap:12px}.file-table .file-size{display:none}.terminal-canvas{height:60vh}.shell-header{flex-wrap:wrap}}
-
-.manager-tool .list-heading{margin:0}.manager-tool .list-heading h1{font-size:28px;margin:0 0 6px}.manager-tool .list-heading p{font-size:16px;margin:0}.manager-tool .file-toolbar button,.manager-tool .file-actions button,.manager-tool .file-sidebar button{min-height:40px;font-size:16px;padding:8px 12px}.manager-tool .file-toolbar input{min-height:40px;font-size:16px}.manager-tool .switch-row{padding:8px 0}.file-sidebar h3{font-size:16px;margin:6px 0 10px}.file-sidebar .file-side-entry>button:not(:first-child){padding:6px}.file-sidebar .file-side-entry.active{background:var(--surface)}
-
-/* Keep navigation beside the directory contents, including narrow windows. */
-.manager-tool .file-layout{align-items:start;width:100%}
-.file-sidebar{min-width:0;position:sticky;top:0}
-.file-sidebar section+section{border-top:1px solid var(--line);margin-top:18px;padding-top:18px}
-.file-sidebar button.active{background:#303030;color:#fff}
-.file-sidebar button>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.file-sidebar svg{flex:none}
-.file-sidebar .file-tree-entry>button.file-tree-toggle{flex:none;width:28px;min-width:28px;padding:4px;background:transparent}
-.file-sidebar .file-tree-entry>button:last-child{flex:1;min-width:0;width:auto;gap:8px;padding-left:6px}
-.file-side-entry>button:first-child{min-width:0}
-.file-main{display:flex;flex-direction:column;gap:12px;overflow-x:auto}
-.file-main .file-table{min-width:280px}
-.file-directory-tree .file-tree{padding-left:14px}
+.manager-tool{width:100%;min-width:0;display:flex;flex-direction:column;gap:14px}
+.manager-switcher{overflow-x:auto;max-width:100%;flex-shrink:1}
+.manager-switcher button{white-space:nowrap}
+.manager .workspace.tools-workspace{grid-template-columns:1fr}
+.manager .workspace.tools-workspace>nav{display:none}
+.terminal-sessions,.terminal-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.terminal-sessions>div{display:flex;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.terminal-sessions button{border:0;border-radius:0;background:#222}
+.terminal-sessions button.active{background:#444}
+.terminal-toolbar>span{color:var(--muted)}
+.terminal-toolbar input{flex:1;min-width:100px}
+.terminal-canvas{height:65vh;min-height:320px;padding:12px;background:#141414;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.manager-tool .list-heading{margin:0}
+.manager-tool .list-heading h1{font-size:28px;margin:0 0 6px}
+.manager-tool .list-heading p{font-size:16px;margin:0}
+.manager-tool .modal footer{display:flex;gap:12px;justify-content:flex-end}
+@media(max-width:600px){.terminal-canvas{height:60vh}.shell-header{flex-wrap:wrap}}
