@@ -17,9 +17,12 @@
 .file-manager input::placeholder{color:var(--file-muted);opacity:1}
 .file-manager input[type=checkbox]{width:17px;height:17px;margin:0;accent-color:#aecce0;cursor:pointer}
 .file-manager .file-layout{display:grid;--file-sidebar-size:clamp(132px,var(--file-sidebar-width,var(--file-sidebar-default,224px)),min(480px,40%));position:relative;grid-template-columns:var(--file-sidebar-size) minmax(0,1fr);gap:0;flex:1;min-height:0;border:0;border-radius:0;overflow:hidden;background:var(--file-bg);align-items:stretch}
-.file-manager .file-sidebar{background:var(--file-sidebar);padding:20px 12px;border-right:1px solid var(--file-line);position:static;max-height:100%;overflow:auto;min-width:0;min-height:0;overscroll-behavior:contain}
+.file-manager .file-sidebar{background:var(--file-sidebar);padding:20px 12px;border-right:1px solid var(--file-line);position:static;max-height:100%;overflow:hidden;min-width:0;min-height:0;display:grid;grid-template-rows:min(224px,40%) minmax(0,1fr);gap:20px}
 .file-manager .file-sidebar h3{font-size:12px;font-weight:600;color:var(--file-muted);margin:0 10px 8px;letter-spacing:.02em}
-.file-manager .file-sidebar section+section{border:0;padding-top:0;margin-top:28px}
+.file-manager .file-sidebar section{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.file-manager .file-sidebar section+section{border:0;padding-top:0;margin-top:0}
+.file-manager .file-sidebar h3{flex:none}
+.file-manager .file-quick-access-list,.file-manager .file-tree-scroll{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
 .file-manager .file-sidebar button{width:100%;text-align:left;justify-content:flex-start;border:0;padding:8px 10px;min-height:38px;font-size:14px;gap:10px}
 .file-manager .file-sidebar button.active{background:#3a3a3e;color:#f4f4f6;box-shadow:inset 0 1px 0 #ffffff09}
 .file-manager .file-sidebar button>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}

@@ -28,7 +28,7 @@ Files opens the user's home directory and accesses the filesystem with that user
 
 Use the address bar, breadcrumbs, parent button or expandable folder tree. Quick access includes Home, Downloads, mounted storage, the filesystem root, the recycle bin and your saved folders. Add the current folder using the star button; rename, reorder or remove its shortcut with the adjacent controls. Unavailable folders keep their saved shortcut and display the access error when opened.
 
-Drag the divider between the sidebar and file list to resize it; the width is remembered in this browser and limited automatically on narrow windows. The sidebar scrolls independently. Opening a folder in the file list or address bar expands the tree to its location and highlights it.
+Drag the divider between the sidebar and file list to resize it; the width is remembered in this browser and limited automatically on narrow windows. Quick access stays in a fixed-height upper section. The folder tree fills the remaining sidebar height; both lists scroll independently, with their headings kept visible. Opening a folder in the file list or address bar expands the tree to its location and highlights it.
 
 The file list provides hidden-file visibility, sorting, checkboxes for multiple selection, current-folder filtering and cancellable recursive filename search. Recursive search does not follow directory links. Lists are paged in groups of 200; recursive results are limited to 5,000 matches and 500,000 visited entries. Media contents are never scanned to create thumbnails.
 
