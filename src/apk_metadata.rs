@@ -185,8 +185,37 @@ fn value(typ: u8, v: u32, s: &[String]) -> Result<Val> {
         _ => Val::Int(v),
     })
 }
+fn icon_mime(path: &str) -> Option<&'static str> {
+    if path.ends_with(".png") {
+        Some("image/png")
+    } else if path.ends_with(".webp") {
+        Some("image/webp")
+    } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+        Some("image/jpeg")
+    } else {
+        None
+    }
+}
+fn resource_image_rank(value: &Val, density: u16) -> Option<(bool, u16)> {
+    let raster = match value {
+        Val::Text(path) if path.starts_with("res/") => icon_mime(path).is_some(),
+        Val::Ref(_) => false,
+        _ => return None,
+    };
+    // Any-dpi XML is not a bitmap. Prefer a full raster launcher icon over
+    // unsupported adaptive/vector XML, then the highest packaged density.
+    Some((
+        raster,
+        match density {
+            0 => 160,
+            0xfffe | 0xffff => 0,
+            d => d,
+        },
+    ))
+}
 fn resources(b: &[u8]) -> Result<BTreeMap<u32, Val>> {
     let mut map = BTreeMap::new();
+    let mut image_ranks = BTreeMap::new();
     let mut pool = Vec::new();
     for c in chunks(b, u16at(b, 2)? as usize)? {
         match u16at(c, 0)? {
@@ -214,6 +243,12 @@ fn resources(b: &[u8]) -> Result<BTreeMap<u32, Val>> {
                     let count = u32at(t, 12)? as usize;
                     let start = u32at(t, 16)? as usize;
                     let h = u16at(t, 2)? as usize;
+                    // ResTable_config starts at byte 20; density is byte 14.
+                    let density = if h >= 36 && u32at(t, 20)? >= 16 {
+                        u16at(t, 34)?
+                    } else {
+                        0
+                    };
                     ensure!(count <= 65536, "Too many APK resources");
                     let stride = if flags == 2 { 2 } else { 4 };
                     ensure!(
@@ -254,7 +289,19 @@ fn resources(b: &[u8]) -> Result<BTreeMap<u32, Val>> {
                             ensure!(size >= 8, "Invalid APK resource entry size");
                             val(t, e + size, &pool)?
                         };
-                        map.entry(key).or_insert(v);
+                        if let Some(rank) = resource_image_rank(&v, density) {
+                            if image_ranks
+                                .get(&key)
+                                .is_none_or(|previous| rank > *previous)
+                            {
+                                image_ranks.insert(key, rank);
+                                map.insert(key, v);
+                            }
+                        } else {
+                            // Labels and other text retain their existing fallback;
+                            // selecting a larger icon must not change their language.
+                            map.entry(key).or_insert(v);
+                        }
                     }
                 }
             }
@@ -450,13 +497,7 @@ pub fn read(path: &Path) -> Result<Metadata> {
     let b = entry(&mut z, "AndroidManifest.xml", 8 * 1024 * 1024)?;
     let mut m = xml(&b, &r).context("Cannot parse APK manifest")?;
     if let Some(path) = m.icon.take() {
-        let mime = if path.ends_with(".png") {
-            Some("image/png")
-        } else if path.ends_with(".webp") {
-            Some("image/webp")
-        } else {
-            None
-        };
+        let mime = icon_mime(&path);
         if let Some(mime) = mime {
             if let Ok(b) = entry(&mut z, &path, 2 * 1024 * 1024) {
                 m.icon = Some(format!("data:{mime};base64,{}", STANDARD.encode(b)));
@@ -559,6 +600,56 @@ mod tests {
         let mut pool = utf8_pool(&[(1, b"a")]);
         pool[28..32].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(strings(&pool).is_err());
+    }
+    #[test]
+    fn launcher_icon_uses_high_density_raster_independent_of_table_order() {
+        let names = [
+            "res/mipmap-mdpi/icon.png",
+            "res/mipmap-xxxhdpi/icon.png",
+            "res/mipmap-xhdpi/icon.png",
+            "res/mipmap-anydpi-v26/icon.xml",
+        ];
+        for order in [[0, 1, 2, 3], [3, 2, 1, 0]] {
+            let mut package = vec![0; 288];
+            package[0..2].copy_from_slice(&0x200u16.to_le_bytes());
+            package[2..4].copy_from_slice(&288u16.to_le_bytes());
+            package[8..12].copy_from_slice(&127u32.to_le_bytes());
+            for i in order {
+                let mut table = vec![0; 40];
+                table[0..2].copy_from_slice(&0x201u16.to_le_bytes());
+                table[2..4].copy_from_slice(&40u16.to_le_bytes());
+                table[8] = 1;
+                table[12..16].copy_from_slice(&1u32.to_le_bytes());
+                table[16..20].copy_from_slice(&44u32.to_le_bytes());
+                table[20..24].copy_from_slice(&20u32.to_le_bytes());
+                table[34..36].copy_from_slice(&[160u16, 640, 320, 0xfffe][i].to_le_bytes());
+                table.extend(0u32.to_le_bytes());
+                table.extend(8u16.to_le_bytes());
+                table.extend(0u16.to_le_bytes());
+                table.extend(0u32.to_le_bytes());
+                table.extend([8, 0, 0, 3]);
+                table.extend((i as u32).to_le_bytes());
+                let len = table.len() as u32;
+                table[4..8].copy_from_slice(&len.to_le_bytes());
+                package.extend(table);
+            }
+            let len = package.len() as u32;
+            package[4..8].copy_from_slice(&len.to_le_bytes());
+            let mut resource = vec![0; 12];
+            resource[0..2].copy_from_slice(&2u16.to_le_bytes());
+            resource[2..4].copy_from_slice(&12u16.to_le_bytes());
+            resource.extend(utf8_pool(
+                &names
+                    .iter()
+                    .map(|n| (n.len() as u8, n.as_bytes()))
+                    .collect::<Vec<_>>(),
+            ));
+            resource.extend(package);
+            let len = resource.len() as u32;
+            resource[4..8].copy_from_slice(&len.to_le_bytes());
+            let parsed = resources(&resource).unwrap();
+            assert_eq!(text(parsed.get(&0x7f010000), &parsed), names[1]);
+        }
     }
     #[test]
     fn resource_offsets_and_compact_entries() {
