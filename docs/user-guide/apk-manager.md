@@ -123,7 +123,7 @@ For an installed sideloaded APK, open **Manage → Advanced settings → Launch 
 
 Close an existing running container before its first Steam launch. Framely refuses to reboot a running app just to assign Steam ownership. The wrapper forwards Steam's App ID to a cold Lepton boot, retains the existing data directory, and stays alive while the target app runs. Steam **Stop** ends this wrapper; the user session service stops the exact owned app/container without deleting data. If an old shared container has other live apps, those apps and the container are preserved. A confirmed app-process exit waits 15 seconds; temporary query failures do not count as an exit. Lepton background services may keep the entry running until explicitly stopped.
 
-The same service monitors a killed wrapper and reconnects after a Framely session restart. PID start identity and container boot identity prevent an old wrapper from stopping a newer container. This does not patch Gamescope: whether the window/Dock close buttons are routed through Steam remains subject to the SteamOS version and requires device verification. Disable the switch to remove only Framely's corresponding Steam entry and return to direct launch. Uninstalling its APK or deleting its container also removes that entry; Steam must be available for this cleanup.
+The same service monitors a killed wrapper and reconnects after a Framely session restart. PID start identity and container boot identity prevent an old wrapper from stopping a newer container. This does not patch Gamescope. On the tested Frame system, the window and Dock close buttons still reach Gamescope's unsupported Wayland-close path and do not stop the Steam wrapper. Steam wrapping therefore does not repair these two buttons; use Steam **Stop** or APK management **Stop** instead. Disable the switch to remove only Framely's corresponding Steam entry and return to direct launch. Uninstalling its APK or deleting its container also removes that entry; Steam must be available for this cleanup.
 
 ### Steam 托管启动
 
@@ -131,4 +131,4 @@ The same service monitors a killed wrapper and reconnects after a Framely sessio
 
 首次通过 Steam 启动前，请先关闭运行中的容器。Framely 不会为了绑定 Steam 而强制重启正在运行的应用。包装进程将 Steam App ID 传入冷启动的 Lepton，并保留原数据目录；应用运行期间包装进程保持存活。Steam 的“停止”结束包装进程后，用户会话服务停止准确对应的应用和容器，不删除数据。旧共享容器中如果还有其他应用运行，则保护它们和容器。确认目标进程退出后等待 15 秒；查询失败不视为退出。后台服务可能让 Steam 入口继续保持运行，需要手动停止。
 
-包装进程被强制结束或 Framely 会话服务重启后，也会通过持久记录继续核对。进程启动标识及容器启动标识防止旧进程停止新容器。本功能不修改 Gamescope；窗口下方及 Dock 的关闭按钮能否正确交给 Steam，仍需根据 SteamOS 版本实机验证。关闭开关只移除 Framely 对应该应用的 Steam 入口，并恢复直接启动。卸载 APK 或删除其容器时也会移除对应入口，此清理需要 Steam 可用。
+包装进程被强制结束或 Framely 会话服务重启后，也会通过持久记录继续核对。进程启动标识及容器启动标识防止旧进程停止新容器。本功能不修改 Gamescope。已测试的 Frame 系统中，窗口下方及 Dock 的关闭按钮仍进入 Gamescope 尚未支持的 Wayland 关闭路径，没有停止 Steam 包装进程。因此，Steam 包装不能修复这两个按钮；请使用 Steam 的“停止”或 APK 管理中的“停止”。关闭开关只移除 Framely 对应该应用的 Steam 入口，并恢复直接启动。卸载 APK 或删除其容器时也会移除对应入口，此清理需要 Steam 可用。
