@@ -2,6 +2,7 @@ import React,{useEffect,useRef,useState} from 'react';
 import {IconFolder,IconFile,IconArrowUp,IconRefresh,IconUpload,IconDownload,IconStar,IconTrash,IconChevronRight,IconChevronDown,IconSearch,IconFolderPlus,IconPlus,IconCopy,IconCut,IconClipboard,IconDots,IconPencil,IconX,IconArrowDown,IconHome,IconDeviceSdCard,IconFileText,IconPhoto,IconMovie,IconFileZip,IconExternalLink,IconInfoCircle,IconArrowLeft} from '@tabler/icons-react';
 import {managerApi,ManagerError} from './manager-api';
 import {api} from './api';
+import {uploadFile} from './upload';
 import {Select} from './localized-select';
 import {SwitchRow} from './switch';
 import {t} from './i18n';
@@ -38,7 +39,7 @@ export function FileManager({active=true}:{active?:boolean}){
  useEffect(()=>{if(!active)setMenu(null);},[active]);
  useEffect(()=>{if(!menu)return;const node=menuElement.current;if(!node)return;const bounds=node.getBoundingClientRect();node.style.left=Math.max(8,Math.min(menu.x,window.innerWidth-bounds.width-8))+'px';node.style.top=Math.max(8,Math.min(menu.y,window.innerHeight-bounds.height-8))+'px';node.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();const dismiss=(event:Event)=>{if(!node.contains(event.target as Node))setMenu(null);};window.addEventListener('pointerdown',dismiss,true);window.addEventListener('scroll',dismiss,true);window.addEventListener('resize',dismiss);return()=>{window.removeEventListener('pointerdown',dismiss,true);window.removeEventListener('scroll',dismiss,true);window.removeEventListener('resize',dismiss);};},[menu]);
  function showMenu(event:React.MouseEvent,entry?:Entry){event.preventDefault();event.stopPropagation();setContext(false);if(entry){if(!selected.includes(entry.path))setSelected([entry.path]);}else setSelected([]);setMenu({x:event.clientX,y:event.clientY,blank:!entry});}
- const fileInput=useRef<HTMLInputElement>(null),directoryInput=useRef<HTMLInputElement>(null),sequence=useRef(0),cancelUpload=useRef(false),jobId=useRef('');
+ const fileInput=useRef<HTMLInputElement>(null),directoryInput=useRef<HTMLInputElement>(null),sequence=useRef(0),cancelUpload=useRef<AbortController|null>(null),jobId=useRef('');
  useEffect(()=>{if(!modified)return;const guard=(event:BeforeUnloadEvent)=>{event.preventDefault();event.returnValue='';};window.addEventListener('beforeunload',guard);return()=>window.removeEventListener('beforeunload',guard);},[modified]);
  useEffect(()=>{if(!active)return;const back=(event:Event)=>{if(event instanceof KeyboardEvent&&event.key!=='Escape')return;if(menu){setMenu(null);}else if(dialog){setDialog(null);}else if(preview){setPreview(null);}else if(editor){if(modified)openDialog({title:t('未保存的修改'),kind:'editor.discard'});else setEditor(null);}};window.addEventListener('keydown',back);window.addEventListener('framely.back',back);return()=>{window.removeEventListener('keydown',back);window.removeEventListener('framely.back',back);};},[active,menu,dialog,preview,editor,modified]);
  const refresh=()=>setCounter(n=>n+1);
@@ -54,7 +55,32 @@ export function FileManager({active=true}:{active?:boolean}){
  function download(url:string){const a=document.createElement('a');a.href=url;a.download='';document.body.appendChild(a);a.click();a.remove();}
  async function getDownload(paths=selected){try{if(paths.length===1&&!shown.find(e=>e.path===paths[0])?.directory){const v=await perform({operation:'download',path:paths[0]});download(v.url);}else{const v=await perform({operation:'download.batch',paths});download(v.url);}}catch{}}
  async function open(e:Entry){if(e.directory){navigate(e.path);return;}const ext=e.name.split('.').pop()?.toLowerCase()??'';if(['png','jpg','jpeg','gif','webp','avif','bmp','mp4','webm','mov','m4v'].includes(ext)){try{const v=await perform({operation:'preview',path:e.path});setPreview({entry:e,url:v.url,video:['mp4','webm','mov','m4v'].includes(ext)});}catch{}return;}try{const v=await perform({operation:'read',path:e.path});setEditor({path:e.path,...v});setModified(false);}catch{openDialog({title:t('文件属性'),kind:'properties',entry:e,value:e.mode.toString(8)});}}
- async function uploads(files:File[]){setBusy(true);cancelUpload.current=false;let id='';try{let total=files.reduce((n,f)=>n+f.size,0),received=0;for(const file of files){if(cancelUpload.current)break;const relative=file.webkitRelativePath||file.name;id=(await managerApi('files',{operation:'upload.start',directory:path,name:relative,size:file.size,conflict:policy})).id;setUpload({name:relative,received,total});for(let offset=0;offset<file.size;offset+=1024*1024){if(cancelUpload.current)throw new Error(t('任务已取消'));const chunk=file.slice(offset,offset+1024*1024);const r=await fetch(`/manager-api/file-upload/${id}/${offset}`,{method:'POST',body:chunk});if(r.status===401){location.replace('/manager');throw new Error(t('请重新登录'));}if(!r.ok)throw new Error(t('服务请求失败：{0}',{0:r.status}));const v=await r.json();if(v.error)throw new Error(t(v.error));received+=chunk.size;setUpload({name:relative,received,total});}if(cancelUpload.current)throw new Error(t('任务已取消'));await managerApi('files',{operation:'upload.finish',id,approve:policy==='overwrite'});id='';}}catch(e){setError(String(e));if(id)await managerApi('files',{operation:'upload.cancel',id}).catch(()=>{});}finally{setBusy(false);setUpload(null);refresh();}}
+ useEffect(()=>()=>cancelUpload.current?.abort(),[]);
+ async function uploads(files:File[]){
+  setBusy(true);setError('');const controller=new AbortController();cancelUpload.current=controller;let id='';
+  try{
+   const total=files.reduce((n,f)=>n+f.size,0);let received=0;
+   for(const file of files){
+    controller.signal.throwIfAborted();const relative=file.webkitRelativePath||file.name;
+    setUpload({name:relative,received,total});
+    await uploadFile(file,controller.signal,(_percent,bytes)=>setUpload({name:relative,received:received+bytes,total}),{
+     start:async size=>{const result=await managerApi('files',{operation:'upload.start',directory:path,name:relative,size,conflict:policy});id=result.id;return {upload:id,chunkSize:result.chunkSize};},
+     chunk:async(upload,offset,chunk,signal)=>{
+      const r=await fetch(`/manager-api/file-upload/${encodeURIComponent(upload)}/${offset}`,{method:'POST',body:chunk,signal});
+      if(r.status===401){location.replace('/manager');throw new Error(t('请重新登录'));}
+      if(!r.ok)throw new Error(t('服务请求失败：{0}',{0:r.status}));const v=await r.json();
+      if(v.error)throw new ManagerError(v.error);
+      if(v.result?.received!==offset+chunk.size)throw new Error('Upload offset mismatch');
+     },
+     abort:upload=>managerApi('files',{operation:'upload.cancel',id:upload})
+    });
+    controller.signal.throwIfAborted();
+    await managerApi('files',{operation:'upload.finish',id,approve:policy==='overwrite'});id='';received+=file.size;
+   }
+  }catch(e){setError(controller.signal.aborted?t('任务已取消'):String(e));if(id)await managerApi('files',{operation:'upload.cancel',id}).catch(()=>{});}
+  finally{cancelUpload.current=null;setBusy(false);setUpload(null);refresh();}
+ }
+
  async function submit(){if(!dialog)return;const d=dialog;if(['delete','paste','compress','extract'].includes(d.kind))setDialog(null);try{
   if(d.kind==='bookmark'){const next=[...bookmarks.filter(b=>b.path!==d.path),{name:value,path:d.path!}];await saveBookmarks(next);}
   else if(d.kind==='bookmark.rename'){await saveBookmarks(bookmarks.map(b=>b.path===d.path?{...b,name:value}:b));}
@@ -91,7 +117,7 @@ export function FileManager({active=true}:{active?:boolean}){
  return <section className="manager-tool file-manager">
  <input ref={fileInput} type="file" multiple hidden onChange={e=>{if(e.target.files)openDialog({title:t('上传文件'),kind:'upload',files:Array.from(e.target.files)});e.target.value='';}}/><input ref={directoryInput} type="file" multiple hidden {...{'webkitdirectory':''} as any} onChange={e=>{if(e.target.files)openDialog({title:t('上传文件夹'),kind:'upload',files:Array.from(e.target.files)});e.target.value='';}}/>
  {error&&<div role="alert" className="file-notice file-notice-error"><IconInfoCircle size={20}/><span>{error}</span><button aria-label={t('关闭')} onClick={()=>setError('')}><IconX size={18}/></button></div>}
- {upload&&<div className="file-notice file-progress"><IconUpload size={20}/><span>{upload.name}</span><progress value={upload.received} max={upload.total}/><span>{bytes(upload.received)} / {bytes(upload.total)}</span><button onClick={()=>cancelUpload.current=true}>{t('取消')}</button></div>}
+ {upload&&<div className="file-notice file-progress"><IconUpload size={20}/><span>{upload.name}</span><progress value={upload.received} max={upload.total}/><span>{bytes(upload.received)} / {bytes(upload.total)}</span><button onClick={()=>cancelUpload.current?.abort()}>{t('取消')}</button></div>}
  {job&&<div className="file-notice file-progress"><span>{t(job.phase)}</span>{job.totalBytes?<progress value={job.bytes??0} max={job.totalBytes}/>:<progress/>}<span>{job.total?`${job.completed??0}/${job.total}`:job.visited?`${job.visited} · ${job.matches??0}`:job.bytes?bytes(job.bytes):''}</span>{!['done','failed','cancelled'].includes(job.phase)?<button onClick={()=>void api('job.cancel',{job:job.id}).catch(e=>setError(String(e)))}>{t('取消')}</button>:<button aria-label={t('关闭')} onClick={()=>setJob(null)}><IconX size={18}/></button>}</div>}
  {outcomes.length>0&&<details className="file-outcomes"><summary>{t('逐项结果')} · {outcomes.length}</summary>{outcomes.map((item,index)=><p key={index}>{item.path} · {item.error??t(item.result?.skipped||item.skipped?'已跳过':'已完成')}</p>)}</details>}
  <div className="file-layout" ref={layout}>

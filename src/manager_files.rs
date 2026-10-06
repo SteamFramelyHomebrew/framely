@@ -8,7 +8,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{Read, Write},
-    os::unix::fs::{symlink, MetadataExt, PermissionsExt},
+    os::unix::fs::{symlink, FileExt, MetadataExt, PermissionsExt},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -79,6 +79,8 @@ struct Upload {
     target: PathBuf,
     size: u64,
     received: u64,
+    file: fs::File,
+    ranges: BTreeMap<u64, u64>,
     policy: String,
     created: u64,
 }
@@ -580,12 +582,12 @@ impl Files {
                 ensure!(size<=64*1024*1024*1024,"Upload too large");
                 let id = token();
                 let temp = folder.join(format!(".framely-upload-{id}"));
-                fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
+                let file = fs::OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&temp)?;
                 self.uploads.lock().unwrap().insert(id.clone(), Upload{
-                    temp, target, size, received:0, policy:p["conflict"].as_str().unwrap_or("error").into(), created:now()
+                    temp, target, size, received:0, file, ranges:BTreeMap::new(), policy:p["conflict"].as_str().unwrap_or("error").into(), created:now()
                 });
                 Ok(json!({
-                    "id":id
+                    "id":id,"chunkSize":crate::uploads::CHUNK
                 }))
             },
             "upload.cancel" => {
@@ -597,6 +599,7 @@ impl Files {
                 let mut uploads = self.uploads.lock().unwrap();
                 let u = uploads.get(id).context("Upload expired")?;
                 ensure!(u.size==u.received,"Upload is incomplete");
+                u.file.sync_all()?;
                 let dest = target(&u.target, &u.policy, p["approve"]==true)?;
                 if let Some(dest) = dest{
                     ensure!(!fs::symlink_metadata(&dest).is_ok_and(|m|m.is_dir()),"Cannot overwrite a directory with a file");
@@ -610,19 +613,44 @@ impl Files {
     }
 
     pub fn append(&self, id: &str, offset: u64, bytes: &[u8]) -> Result<Value> {
-        ensure!(bytes.len() <= 1024 * 1024, "Upload chunk too large");
+        ensure!(
+            !bytes.is_empty() && bytes.len() <= crate::uploads::CHUNK,
+            "Invalid upload chunk size"
+        );
         let mut uploads = self.uploads.lock().unwrap();
         let u = uploads.get_mut(id).context("Upload expired")?;
         ensure!(
-            offset == u.received && offset + bytes.len() as u64 <= u.size,
-            "Upload offset mismatch"
+            offset <= u.size && bytes.len() as u64 <= u.size - offset,
+            "Upload exceeds declared size"
         );
-        let mut file = fs::OpenOptions::new().append(true).open(&u.temp)?;
-        file.write_all(bytes)?;
-        u.received += bytes.len() as u64;
+        let end = offset + bytes.len() as u64;
+        if u.ranges.get(&offset) == Some(&end) {
+            let mut existing = vec![0; bytes.len()];
+            u.file.read_exact_at(&mut existing, offset)?;
+            ensure!(existing == bytes, "Upload retry content mismatch");
+        } else {
+            ensure!(
+                u.ranges
+                    .range(..=offset)
+                    .next_back()
+                    .is_none_or(|(_, e)| *e <= offset)
+                    && u.ranges
+                        .range(offset..)
+                        .next()
+                        .is_none_or(|(s, _)| *s >= end),
+                "Overlapping upload chunk"
+            );
+            if let Err(error) = u.file.write_all_at(bytes, offset) {
+                uploads.remove(id);
+                return Err(error.into());
+            }
+            u.ranges.insert(offset, end);
+            u.received += bytes.len() as u64;
+        }
         u.created = now();
-        Ok(json!({"received":u.received,"total":u.size}))
+        Ok(json!({"received":end,"uploadedBytes":u.received,"total":u.size}))
     }
+
     pub fn content(&self, id: &str) -> Result<(PathBuf, bool)> {
         let downloads = self.downloads.lock().unwrap();
         let d = downloads
@@ -1375,8 +1403,12 @@ mod operation_tests {
         fs::write(&file, "original").unwrap();
         let manager = Files::default();
         let id=manager.api(home,&json!({"operation":"upload.start","directory":home,"name":"target","size":6,"conflict":"overwrite"})).unwrap()["id"].as_str().unwrap().to_owned();
-        assert!(manager.append(&id, 1, b"new").is_err());
-        manager.append(&id, 0, b"new").unwrap();
+        assert!(manager.append(&id, 5, b"new").is_err());
+        manager.append(&id, 3, b"est").unwrap();
+        assert_eq!(manager.append(&id, 3, b"est").unwrap()["uploadedBytes"], 3);
+        assert!(manager.append(&id, 3, b"bad").is_err());
+        assert!(manager.append(&id, 2, b"over").is_err());
+        assert!(manager.append(&id, u64::MAX, b"x").is_err());
         assert_eq!(fs::read_to_string(&file).unwrap(), "original");
         assert!(manager
             .api(
@@ -1384,7 +1416,7 @@ mod operation_tests {
                 &json!({"operation":"upload.finish","id":id,"approve":true})
             )
             .is_err());
-        manager.append(&id, 3, b"est").unwrap();
+        manager.append(&id, 0, b"new").unwrap();
         manager
             .api(
                 home,
@@ -1398,6 +1430,69 @@ mod operation_tests {
                 &json!({"operation":"upload.start","directory":home,"name":"../escape","size":0})
             )
             .is_err());
+    }
+    #[test]
+    fn concurrent_file_upload_and_cancellation_preserve_targets() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let manager = Arc::new(Files::default());
+        let start = manager.api(home.path(), &json!({"operation":"upload.start","directory":home.path(),"name":"nested/file.bin","size":4 * crate::uploads::CHUNK,"conflict":"keep"})).unwrap();
+        assert_eq!(start["chunkSize"], crate::uploads::CHUNK);
+        let id = start["id"].as_str().unwrap().to_owned();
+        let barrier = Arc::new(std::sync::Barrier::new(4));
+        let workers: Vec<_> = (0..4)
+            .map(|index| {
+                let manager = manager.clone();
+                let id = id.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    manager
+                        .append(
+                            &id,
+                            (index * crate::uploads::CHUNK) as u64,
+                            &vec![index as u8; crate::uploads::CHUNK],
+                        )
+                        .unwrap();
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let target = home.path().join("nested/file.bin");
+        assert!(!target.exists());
+        manager
+            .api(home.path(), &json!({"operation":"upload.finish","id":id}))
+            .unwrap();
+        let bytes = fs::read(&target).unwrap();
+        for index in 0..4 {
+            assert!(
+                bytes[index * crate::uploads::CHUNK..(index + 1) * crate::uploads::CHUNK]
+                    .iter()
+                    .all(|b| *b == index as u8)
+            );
+        }
+        let start = manager.api(home.path(), &json!({"operation":"upload.start","directory":home.path(),"name":"nested/file.bin","size":6,"conflict":"overwrite"})).unwrap();
+        let id = start["id"].as_str().unwrap();
+        let temp = manager.uploads.lock().unwrap()[id].temp.clone();
+        manager.append(id, 3, b"end").unwrap();
+        manager
+            .api(home.path(), &json!({"operation":"upload.cancel","id":id}))
+            .unwrap();
+        assert!(!temp.exists());
+        assert!(manager.append(id, 0, b"new").is_err());
+        assert_eq!(fs::read(target).unwrap(), bytes);
+        let start = manager.api(home.path(), &json!({"operation":"upload.start","directory":home.path(),"name":"empty","size":0,"conflict":"keep"})).unwrap();
+        manager
+            .api(
+                home.path(),
+                &json!({"operation":"upload.finish","id":start["id"]}),
+            )
+            .unwrap();
+        assert_eq!(fs::metadata(home.path().join("empty")).unwrap().len(), 0);
     }
     #[test]
     fn archive_link_and_absolute_entries_are_rejected() {

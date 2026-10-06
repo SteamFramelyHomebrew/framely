@@ -1,12 +1,13 @@
 use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
+    collections::BTreeMap,
     fs::{File, OpenOptions},
-    io::Write,
+    os::unix::fs::FileExt,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-pub const CHUNK: usize = 512 * 1024;
+pub const CHUNK: usize = 4 * 1024 * 1024;
 #[derive(Clone, Default)]
 pub struct Uploads(Arc<Mutex<Option<Upload>>>);
 struct Upload {
@@ -15,6 +16,7 @@ struct Upload {
     file: File,
     total: u64,
     received: u64,
+    ranges: BTreeMap<u64, u64>,
     touched: Instant,
 }
 impl Uploads {
@@ -36,13 +38,17 @@ impl Uploads {
         ensure!(slot.is_none(), "An upload is already running");
         let id = hex::encode(rand::random::<[u8; 24]>());
         let package = crate::package::Staged::create_in(parent)?;
-        let file = OpenOptions::new().write(true).open(&package.path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&package.path)?;
         *slot = Some(Upload {
             id: id.clone(),
             package,
             file,
             total,
             received: 0,
+            ranges: BTreeMap::new(),
             touched: Instant::now(),
         });
         Ok(json!({"upload":id,"chunkSize":CHUNK}))
@@ -56,20 +62,41 @@ impl Uploads {
         Self::expire(&mut slot);
         let u = slot.as_mut().context("Upload expired")?;
         ensure!(u.id == id, "Unknown upload");
-        ensure!(offset == u.received, "Unexpected upload offset");
         ensure!(
-            bytes.len() as u64 <= u.total - u.received,
+            offset <= u.total && bytes.len() as u64 <= u.total - offset,
             "Upload exceeds declared size"
         );
-        // A failed write invalidates the partial file rather than allowing retry at a stale offset.
-        if let Err(error) = u.file.write_all(bytes) {
-            *slot = None;
-            return Err(error.into());
+        let end = offset + bytes.len() as u64;
+        if u.ranges.get(&offset) == Some(&end) {
+            // A lost acknowledgement may be retried, but cannot change accepted bytes.
+            let mut existing = vec![0; bytes.len()];
+            u.file.read_exact_at(&mut existing, offset)?;
+            ensure!(existing == bytes, "Upload retry content mismatch");
+        } else {
+            ensure!(
+                u.ranges
+                    .range(..=offset)
+                    .next_back()
+                    .is_none_or(|(_, e)| *e <= offset)
+                    && u.ranges
+                        .range(offset..)
+                        .next()
+                        .is_none_or(|(s, _)| *s >= end),
+                "Overlapping upload chunk"
+            );
+            // Serialize writes with cancellation so an aborted upload cannot keep writing.
+            if let Err(error) = u.file.write_all_at(bytes, offset) {
+                *slot = None;
+                return Err(error.into());
+            }
+            u.ranges.insert(offset, end);
+            u.received += bytes.len() as u64;
         }
-        u.received += bytes.len() as u64;
         u.touched = Instant::now();
-        Ok(json!({"received":u.received,"total":u.total}))
+        // received acknowledges this chunk's end (also compatible with sequential clients).
+        Ok(json!({"received":end,"uploadedBytes":u.received,"total":u.total}))
     }
+
     pub fn abort(&self, id: &str) -> Result<Value> {
         let mut slot = self.0.lock().unwrap();
         if slot.as_ref().is_some_and(|u| u.id == id) {
@@ -115,7 +142,7 @@ mod tests {
             .to_owned();
         assert!(uploads.start(1).is_err());
         assert!(uploads.append("wrong", 0, b"a").is_err());
-        assert!(uploads.append(&id, 1, b"a").is_err());
+        assert!(uploads.append(&id, 3, b"a").is_err());
         assert!(uploads.append(&id, 0, b"abcd").is_err());
         uploads.append(&id, 0, b"ab").unwrap();
         assert!(uploads.take(&id).is_err());
@@ -126,6 +153,58 @@ mod tests {
         drop(package);
         assert!(!directory.exists());
         assert!(uploads.take(&id).is_err());
+    }
+    #[test]
+    fn out_of_order_chunks_retries_and_holes() {
+        let uploads = Uploads::default();
+        let start = uploads.start(9).unwrap();
+        let id = start["upload"].as_str().unwrap();
+        let ack = uploads.append(id, 6, b"ghi").unwrap();
+        assert_eq!(ack["received"], 9);
+        assert_eq!(ack["uploadedBytes"], 3);
+        assert!(uploads.take(id).is_err());
+        assert_eq!(uploads.append(id, 6, b"ghi").unwrap()["uploadedBytes"], 3);
+        assert!(uploads.append(id, 6, b"xxx").is_err());
+        assert!(uploads.append(id, 5, b"fg").is_err());
+        assert!(uploads.append(id, u64::MAX, b"x").is_err());
+        uploads.append(id, 0, b"abc").unwrap();
+        assert!(uploads.append(id, 1, b"b").is_err());
+        assert!(uploads.append(id, 0, b"ab").is_err());
+        assert!(uploads.take(id).is_err());
+        uploads.append(id, 3, b"def").unwrap();
+        let staged = uploads.take(id).unwrap();
+        assert_eq!(fs::read(&staged.path).unwrap(), b"abcdefghi");
+        assert_eq!(staged.hash, crate::package::digest(b"abcdefghi"));
+    }
+    #[test]
+    fn simultaneous_chunks_produce_a_complete_file() {
+        let uploads = Uploads::default();
+        let start = uploads.start(4 * CHUNK as u64).unwrap();
+        let id = start["upload"].as_str().unwrap().to_owned();
+        let barrier = Arc::new(std::sync::Barrier::new(4));
+        let workers: Vec<_> = (0..4)
+            .map(|index| {
+                let uploads = uploads.clone();
+                let id = id.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    uploads
+                        .append(&id, (index * CHUNK) as u64, &vec![index as u8; CHUNK])
+                        .unwrap();
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let staged = uploads.take(&id).unwrap();
+        let bytes = fs::read(&staged.path).unwrap();
+        for index in 0..4 {
+            assert!(bytes[index * CHUNK..(index + 1) * CHUNK]
+                .iter()
+                .all(|b| *b == index as u8));
+        }
     }
     #[test]
     fn persistent_uploads_are_private_and_removed_on_cancel_or_drop() {

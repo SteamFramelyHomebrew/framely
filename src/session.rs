@@ -642,7 +642,9 @@ impl Agent {
                 let (id, offset) = upload.split_once('/').context("Invalid upload path")?;
                 let offset: u64 = offset.parse()?;
                 let mut bytes = Vec::new();
-                r.as_reader().take(1048577).read_to_end(&mut bytes)?;
+                r.as_reader()
+                    .take((crate::uploads::CHUNK + 1) as u64)
+                    .read_to_end(&mut bytes)?;
                 let result = self.files.append(id, offset, &bytes);
                 return send_json(
                     r,
@@ -1983,7 +1985,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
-    fn binary_upload_endpoint_requires_auth_origin_and_order() {
+    fn binary_upload_endpoint_requires_auth_origin_and_accepts_out_of_order_chunks() {
         let root = tempfile::tempdir().unwrap();
         let server = Server::http("127.0.0.1:0").unwrap();
         let agent = agent(&server, root.path());
@@ -2023,6 +2025,17 @@ mod tests {
             .set("Origin", "http://evil.test")
             .send_bytes(b"a")
             .is_err());
+        let tail: Value = client
+            .post(&format!("{}/api/upload/{id}/2", agent.origin))
+            .set("Cookie", &cookie)
+            .set("Origin", &agent.origin)
+            .send_bytes(b"c")
+            .unwrap()
+            .into_json()
+            .unwrap();
+        assert_eq!(tail["result"]["received"], 3);
+        assert_eq!(tail["result"]["uploadedBytes"], 1);
+        assert!(agent.jobs.uploads.take(&id).is_err());
         let response: Value = client
             .post(&url)
             .set("Cookie", &cookie)
