@@ -24,9 +24,9 @@ Choose **Install APK**, select an individual `.apk`, and review its name, packag
 
 Inside Frame, file inputs in both management panels use Framely’s built-in file picker, including APKs, plugin packages and language files. It opens Downloads by default, remembers the last selected folder, and provides a lazily loaded folder tree for Home, temporary files and mounted storage, with folder navigation, path entry, search, hidden files and file-type filtering. Select a file and confirm; B/Escape cancels the picker without closing the panel. External browsers continue using their system file picker. The launcher’s **Install APK** shortcut opens APK Manager.
 
-New apps default to independent containers. Existing containers are offered only when they can accept the target package without overwriting another app's shared APK mount. Lepton recommends one application per container because Android apps do not have the usual enforced isolation inside its containers.
+New apps default to independent containers. Existing sideloaded containers with readable application state can be reused, including containers with a single APK mount. Additional apps are installed by Android's package manager into the container's persistent data layer; the original APK mount is preserved. Steam-managed containers are excluded. Lepton recommends one application per container because Android apps do not have the usual enforced isolation inside its containers.
 
-After installation, choose **Open** if desired; installation does not automatically launch the APK. An app with no detected launch entry remains manageable but does not appear in the launcher.
+Installation runs in a headless background container without opening the Android desktop, regardless of the selected display mode. After installation, choose **Open** if desired; installation does not automatically launch the APK. An app with no detected launch entry remains manageable but does not appear in the launcher.
 
 To update, open the app's management dialog and choose **Install newer APK**. Package identity and version are checked; Android enforces signing compatibility during replacement. Downgrades are refused, and signature failures never trigger an uninstall/reinstall workaround. Same-package replacement retains data. Updating may stop the target container, affecting its other applications.
 
@@ -38,7 +38,7 @@ Once a modifying operation starts, cancellation is disabled until its actual out
 
 The launcher uses declared MAIN/LAUNCHER, television launcher and recognized VR entries, plus the running Android package manager's resolved launcher entry. Disabled packages/components are excluded. A launch entry does not guarantee that an app will run successfully.
 
-Launching an APK boots its existing container in the background and reveals the target application after ActivityManager reports success. Framely keeps Lepton’s development-context data handling instead of switching an existing container to APK bake mode. A temporary launch adapter uses the installed Lepton libraries without editing Steam’s installation; an unsupported entry script reports an error before starting a cold container. Container maintenance commands retain their normal behavior.
+Flat apps use Lepton’s full-display boot path to avoid the Gamescope window-creation failure in per-app mode. A headless container from installation, or a closed display, is restarted when needed; this also stops other apps in the same container. VR apps keep background boot. After ActivityManager reports success, Framely checks that the application and Android display service stay alive before reporting completion. Framely keeps Lepton’s development-context data handling instead of switching an existing container to APK bake mode. A temporary launch adapter uses the installed Lepton libraries without editing Steam’s installation; an unsupported entry script reports an error before starting a cold container. Manually choosing **Start container** still opens its desktop.
 
 Window handling is automatic by default. **Advanced settings → Show Android window** is a troubleshooting override, applied on container restart. It does not convert a flat application into VR or a VR application into a flat application. Lepton development contexts may mount their APK at a different path after a restart. Framely re-registers the same signed APK when Android can no longer resolve it, preserving data and reporting failures. Advanced settings also allow selecting an enabled, declared Activity when a nonstandard app needs a different entry.
 
@@ -61,12 +61,12 @@ Use the app's **Logs → Export logs** to save its operation log. Detailed Andro
 As the Steam session user, the installed binary also provides these commands:
 
 ```bash
-/home/.framely/current/bin/framely apk list
-/home/.framely/current/bin/framely apk inspect --file /path/to/app.apk
-/home/.framely/current/bin/framely apk install '{"ticket":"REVIEW_TICKET","approve":true}'
-/home/.framely/current/bin/framely apk launch '{"app":"CONTEXT/PACKAGE"}'
-/home/.framely/current/bin/framely apk logs '{"app":"CONTEXT/PACKAGE"}'
-/home/.framely/current/bin/framely apk cleanup-list
+/var/lib/framely/current/bin/framely apk list
+/var/lib/framely/current/bin/framely apk inspect --file /path/to/app.apk
+/var/lib/framely/current/bin/framely apk install '{"ticket":"REVIEW_TICKET","approve":true}'
+/var/lib/framely/current/bin/framely apk launch '{"app":"CONTEXT/PACKAGE"}'
+/var/lib/framely/current/bin/framely apk logs '{"app":"CONTEXT/PACKAGE"}'
+/var/lib/framely/current/bin/framely apk cleanup-list
 ```
 
 Reviews expire after 15 minutes. APKs, operation records and recovery material are stored in `~/.local/share/framely/apk-manager`; managed Lepton data lives under `~/.local/share/lepton/contexts`. Framely uninstallation retains these user-owned directories. Back them up before removing Framely; the APK CLI requires a compatible Framely binary, while Lepton remains independently installed through Steam.
@@ -82,3 +82,9 @@ Do not invoke Lepton's global cleanup commands as an application-specific uninst
 ## Supported formats
 
 The initial implementation supports individual APKs. Split APK bundles, XAPK/APKM, OBB import, Google Play installation and automatic Steam shortcut creation are outside this version. Unsupported bundles are rejected rather than treated as ordinary APKs.
+
+### Flat window orientation
+
+In **Manage app → Advanced settings → Window orientation**, choose **Automatic**, **Landscape**, or **Portrait**. The choice is saved per app and applied at its next launch. Forced portrait uses a tall window rather than rotating content sideways. Changing orientation may restart the shared container and stop other apps in it. VR apps ignore this setting.
+
+Moonlight V+ 12.12.12’s connection-creation screen currently crashes on the tested Lepton build because Android’s clipboard service is absent. This is distinct from the window-startup failure. Framely does not modify or re-sign the APK; a compatible Lepton runtime or an app-side fallback is required.

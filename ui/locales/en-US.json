@@ -3,6 +3,13 @@
   "locale": "en-US",
   "name": "English",
   "messages": {
+    "备份容器数据": "Backing up container data",
+    "窗口设置将在下次打开应用时应用；必要时自动重启容器。": "Window settings apply the next time you open the app; the container restarts automatically when needed.",
+    "操作进行中，请等待实际结果。": "Operation in progress. Please wait for the result.",
+    "核对应用状态": "Reconcile application state",
+    "保存设置": "Save settings",
+    "添加数据位置": "Add data location",
+    "移除数据位置": "Remove data location",
     "后端内存上限：{0} MiB（含子进程）": "Backend memory limit: {0} MiB (including child processes)",
     "请先阅读并同意使用协议": "Please read and agree to the terms of use first",
     "查看使用协议": "View terms of use",
@@ -561,7 +568,8 @@
     "关闭时保留存档和设置。": "Keep saved data and settings when switched off.",
     "永久删除的数据无法撤销。": "Permanently deleted data cannot be recovered.",
     "正在处理 APK，请等待实际结果。": "Processing APK. Please wait for the actual result.",
-    "安装已提交，等待 Android 完成；此阶段不能安全取消。": "The operation has been submitted. Waiting for Android; cancellation is unavailable at this stage.",
+    "操作已开始，请等待完成；此阶段无法取消。": "The operation is in progress. Please wait; cancellation is unavailable at this stage.",
+    "启动应用": "Launching application",
     "APK 操作进度": "APK operation progress",
     "APK 日志": "APK logs",
     "核对实际安装状态": "Reconcile installed state",
@@ -692,6 +700,9 @@
     "显示方式": "Display mode",
     "平面窗口": "Flat window",
     "VR 应用": "VR app",
-    "平面模式显示二维窗口；VR 模式隐藏二维窗口，应用本身需要支持 VR。": "Flat mode shows a 2D window. VR mode hides it; the app must support VR."
+    "平面模式显示二维窗口；VR 模式隐藏二维窗口，应用本身需要支持 VR。": "Flat mode shows a 2D window. VR mode hides it; the app must support VR.",
+    "窗口方向": "Window orientation",
+    "横屏": "Landscape",
+    "竖屏": "Portrait"
   }
 }

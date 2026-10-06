@@ -26,9 +26,9 @@ APK 管理用于安装和管理 Steam Frame 上的 Lepton 侧载应用，本地�
 
 在 Frame 内，两个管理面板的文件选择入口统一使用 Framely 内置文件选择器，包括 APK、插件包和语言文件。默认打开下载目录，记住上次选择的目录；左侧为按需加载的文件夹树，覆盖主目录、临时目录和已挂载存储，支持逐级展开、收起和当前路径定位，提供目录导航、手动输入路径、搜索、隐藏文件和文件类型筛选。选中文件后确认；B/Escape 只取消选择器，不关闭管理面板。外部浏览器继续使用系统文件选择器。启动台右侧的“安装APK”按钮打开 APK 管理面板。
 
-新应用默认独立容器。现有容器只有在不会覆盖其他应用的共享 APK 挂载层时才可作为目标。Lepton 建议每个应用独立容器，因为容器内没有通常 Android 应用之间的强制隔离。
+新应用默认独立容器。现有侧载容器在应用状态可读取时均可复用，包括带单 APK 挂载层的容器。新增应用通过 Android 包管理器安装到容器持久数据层，保留原有 APK 挂载层；Steam 管理的容器不作为安装目标。Lepton 建议每个应用独立容器，因为容器内没有通常 Android 应用之间的强制隔离。
 
-安装不会自动打开应用，完成后可以点击“打开”。没有检测到启动入口的 APK 仍可管理，但不会放进启动台。
+安装全程使用无显示的后台容器，不打开安卓桌面，不受所选显示方式影响。安装不会自动打开应用，完成后可以点击“打开”。没有检测到启动入口的 APK 仍可管理，但不会放进启动台。
 
 更新时进入应用管理，点击“安装新版 APK”。先核对包名与版本，再由 Android 在覆盖安装时执行签名兼容校验。默认拒绝降级；签名失败不会自动卸载重装。同包覆盖安装保留数据。更新可能停止目标容器，影响其中其他应用。
 
@@ -40,7 +40,7 @@ APK 管理用于安装和管理 Steam Frame 上的 Lepton 侧载应用，本地�
 
 后台识别清单中的 MAIN/LAUNCHER、电视启动入口和已知 VR 入口，并结合运行中的 Android 包管理器解析结果。停用的包与组件排除。有入口不代表一定能正常运行。
 
-启动 APK 时，先在后台启动原有容器，ActivityManager 报告启动成功后再显示目标应用。Framely 保留 Lepton 开发容器的数据处理方式，不把已有容器切换到 APK 烘焙模式。临时启动适配脚本使用设备上已安装的 Lepton 库，不修改 Steam 安装目录；遇到不支持的入口脚本，会在冷启动容器前报错。容器维护操作仍沿用原来的启动行为。
+平面应用使用 Lepton 完整显示窗口的启动路径，避免按应用创建窗口时触发 Gamescope 协议错误。安装留下的无显示容器或已关闭的显示窗口会按需重启；重启也会停止同容器内其他应用。VR 应用继续后台启动。ActivityManager 报告启动成功后，Framely 还会确认应用和安卓显示服务持续运行，再报告操作完成。Framely 保留 Lepton 开发容器的数据处理方式，不把已有容器切换到 APK 烘焙模式。临时启动适配脚本使用设备上已安装的 Lepton 库，不修改 Steam 安装目录；遇到不支持的入口脚本，会在冷启动容器前报错。手动“启动容器”仍保留显示桌面的行为。
 
 默认自动处理窗口显示。“高级设置 → 显示安卓窗口”用于排查，并在重启容器后生效。它不会把二维应用转成 VR，也不会把 VR 应用转成二维。Lepton 开发容器重启后可能改变 APK 挂载路径；Android 无法识别时，Framely 会重新登记同签名 APK，保留数据并报告错误。非标准应用还可从已启用、已声明的 Activity 中指定启动入口。
 
@@ -65,12 +65,12 @@ Android 清除已卸载包的保留状态时可能需要原签名 APK。Framely 
 以 Steam 会话用户执行：
 
 ```bash
-/home/.framely/current/bin/framely apk list
-/home/.framely/current/bin/framely apk inspect --file /path/to/app.apk
-/home/.framely/current/bin/framely apk install '{"ticket":"REVIEW_TICKET","approve":true}'
-/home/.framely/current/bin/framely apk launch '{"app":"CONTEXT/PACKAGE"}'
-/home/.framely/current/bin/framely apk logs '{"app":"CONTEXT/PACKAGE"}'
-/home/.framely/current/bin/framely apk cleanup-list
+/var/lib/framely/current/bin/framely apk list
+/var/lib/framely/current/bin/framely apk inspect --file /path/to/app.apk
+/var/lib/framely/current/bin/framely apk install '{"ticket":"REVIEW_TICKET","approve":true}'
+/var/lib/framely/current/bin/framely apk launch '{"app":"CONTEXT/PACKAGE"}'
+/var/lib/framely/current/bin/framely apk logs '{"app":"CONTEXT/PACKAGE"}'
+/var/lib/framely/current/bin/framely apk cleanup-list
 ```
 
 校验票据有效期为 15 分钟。APK、管理记录和恢复材料位于 `~/.local/share/framely/apk-manager`，托管 Lepton 数据位于 `~/.local/share/lepton/contexts`。卸载 Framely 保留这些用户目录；卸载前应备份。APK 命令仍需兼容的 Framely 二进制，Lepton 本身由 Steam 独立安装。
@@ -86,3 +86,9 @@ LEPTON_NO_CLEANUP=true ~/.local/share/Steam/steamapps/common/Lepton/lepton start
 ## 格式范围
 
 首版支持单个 APK。不包含分包、XAPK/APKM、OBB 导入、Google Play 安装及自动创建 Steam 快捷方式；不支持的包格式会明确拒绝。
+
+### 平面窗口方向
+
+在 **管理应用 → 高级设置 → 窗口方向** 中选择 **自动选择、横屏或竖屏**。每个应用独立保存，下次启动时应用。竖屏使用纵向窗口，而不是让内容侧着显示。切换方向可能重启共享容器，停止其中其他应用；VR 应用忽略此设置。
+
+Moonlight V+ 12.12.12 的创建连接界面在当前测试的 Lepton 版本上会因缺少 Android 剪贴板服务而崩溃，与此前窗口启动失败是两个问题。Framely 不修改或重新签名 APK，需要兼容的 Lepton 运行环境或应用端容错处理。

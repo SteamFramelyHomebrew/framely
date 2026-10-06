@@ -34,6 +34,8 @@ struct Record {
     activity: Option<String>,
     #[serde(default)]
     show_window: Option<bool>,
+    #[serde(default)]
+    orientation: Option<String>,
 }
 #[derive(Default, Serialize, Deserialize)]
 struct Database {
@@ -71,6 +73,7 @@ struct App {
     pending: Option<String>,
     activity: Option<String>,
     show_window: Option<bool>,
+    orientation: Option<String>,
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -598,6 +601,7 @@ fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App
                         pending: rec.and_then(|r| r.pending.clone()),
                         activity,
                         show_window: rec.and_then(|r| r.show_window),
+                        orientation: rec.and_then(|r| r.orientation.clone()),
                     });
                 }
             }
@@ -647,6 +651,7 @@ fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App
                 }),
                 activity: r.activity.clone(),
                 show_window: r.show_window,
+                orientation: r.orientation.clone(),
             });
         }
     }
@@ -690,6 +695,7 @@ fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App
                     pending: None,
                     activity: None,
                     show_window: None,
+                    orientation: None,
                 });
             }
         }
@@ -744,7 +750,7 @@ pub fn list(home: &Path) -> Result<Value> {
         }
     }
     Ok(
-        json!({"apps":apps,"containers":cs.iter().map(|c| { let occupied=apps.iter().any(|a| a.context==c.id&&a.installed); let known=!warnings.iter().any(|w|w.starts_with(&format!("{}:",c.name)))&&!apps.iter().any(|a|a.context==c.id&&!a.state_known); let shared_mount=c.baked.join("app_overlay/base.apk").exists()||c.baked.join("app_lowerdir/base.apk").exists(); let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(!c.steam&&known&&!(occupied&&shared_mount)); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok()}),
+        json!({"apps":apps,"containers":cs.iter().map(|c| { let known=!warnings.iter().any(|w|w.starts_with(&format!("{}:",c.name)))&&!apps.iter().any(|a|a.context==c.id&&!a.state_known); let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(!c.steam&&known); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok()}),
     )
 }
 pub fn launcher(home: &Path) -> Vec<Value> {
@@ -879,10 +885,10 @@ fn direct_launch_script(source: &str) -> Result<String> {
     let include = "source \"${SCRIPT_DIR}/liblepton/liblepton.sh\"";
     ensure!(
         source.matches(directory).count() == 1 && source.matches(include).count() == 1,
-        "Unsupported Lepton entry script; cannot start an APK without showing the desktop"
+        "Unsupported Lepton entry script; cannot safely configure the APK display"
     );
     let hooks = r#"
-# Framely: boot without a desktop window, retaining the original dev context.
+# Framely: configure display visibility and shape, retaining the dev context.
 # Do not use is_app: Lepton's app bake path can reset existing application data.
 eval "$(declare -f setup_props | sed '1s/setup_props/framely_original_setup_props/')"
 function app_wants_flatscreen() {
@@ -890,8 +896,15 @@ function app_wants_flatscreen() {
 }
 function setup_props() {
     framely_original_setup_props "$@"
-    sed -i 's/^waydroid.background_start=false$/waydroid.background_start=true/' "$(props_file)"
-    printf '\nwaydroid.active_apps=none\n' >> "$(props_file)"
+    if [[ "${FRAMELY_BACKGROUND_BOOT:-true}" == true ]]; then
+        sed -i 's/^waydroid.background_start=false$/waydroid.background_start=true/' "$(props_file)"
+        printf '\nwaydroid.active_apps=none\n' >> "$(props_file)"
+    fi
+    case "${FRAMELY_WINDOW_ORIENTATION:-auto}" in
+        portrait) printf '\npersist.waydroid.width=1080\npersist.waydroid.height=1920\n' >> "$(props_file)" ;;
+        landscape) printf '\npersist.waydroid.width=1920\npersist.waydroid.height=1080\n' >> "$(props_file)" ;;
+    esac
+    printf '\nframely.window_orientation=%s\n' "${FRAMELY_WINDOW_ORIENTATION:-auto}" >> "$(props_file)"
 }
 "#;
     Ok(source
@@ -899,7 +912,7 @@ function setup_props() {
         .replace(include, &format!("{include}\n{hooks}")))
 }
 fn start(home: &Path, c: &Container, show: Option<bool>, log: &Path) -> Result<()> {
-    start_container(home, c, show, false, log)
+    start_container(home, c, show, true, log)
 }
 fn start_container(
     home: &Path,
@@ -908,12 +921,26 @@ fn start_container(
     direct: bool,
     log: &Path,
 ) -> Result<()> {
+    start_oriented_container(home, c, show, direct, None, log)
+}
+fn start_oriented_container(
+    home: &Path,
+    c: &Container,
+    show: Option<bool>,
+    direct: bool,
+    orientation: Option<&str>,
+    log: &Path,
+) -> Result<()> {
+    ensure!(
+        orientation.is_none_or(|s| matches!(s, "auto" | "portrait" | "landscape")),
+        "Invalid window orientation"
+    );
     if running(&c.name) {
         return restore_package_mount(home, c, log);
     }
     let runner = runner(home)?;
     let mut temporary = None;
-    let mut cmd = if direct {
+    let mut cmd = if direct || orientation.is_some() {
         let script = direct_launch_script(&fs::read_to_string(&runner)?)?;
         let path = root(home).join("logs").join(format!(
             "lepton-launch-{}.sh",
@@ -936,6 +963,11 @@ fn start_container(
         Command::new(&runner)
     };
     cmd.args(["start", &c.name])
+        .env(
+            "FRAMELY_BACKGROUND_BOOT",
+            if direct { "true" } else { "false" },
+        )
+        .env("FRAMELY_WINDOW_ORIENTATION", orientation.unwrap_or("auto"))
         .env("LEPTON_NO_CLEANUP", "true")
         .env("TERM", "dumb")
         .env(
@@ -1080,6 +1112,7 @@ fn record_app(db: &mut Database, a: &App) {
             pending: None,
             activity: a.activity.clone(),
             show_window: a.show_window,
+            orientation: a.orientation.clone(),
         });
 }
 fn app(home: &Path, db: &Database, id: &str) -> Result<(App, Container)> {
@@ -1326,6 +1359,32 @@ fn launch_component(a: &App) -> Result<String> {
     );
     Ok(format!("{}/{}", a.metadata.package, name))
 }
+fn apply_orientation(c: &Container, orientation: Option<&str>, log: &Path) -> Result<()> {
+    let container = format!("lepton-{}", c.name);
+    podman(&["exec", &container, "wm", "size", "reset"], Some(log))?;
+    let (mode, rotation, fixed) = match orientation {
+        None | Some("auto") => ("free", "0", "disabled"),
+        Some("landscape") => ("lock", "0", "enabled"),
+        Some("portrait") => ("lock", "0", "enabled"),
+        _ => bail!("Invalid window orientation"),
+    };
+    podman(
+        &["exec", &container, "wm", "set-fix-to-user-rotation", fixed],
+        Some(log),
+    )?;
+    podman(
+        &[
+            "exec",
+            &container,
+            "wm",
+            "set-user-rotation",
+            mode,
+            rotation,
+        ],
+        Some(log),
+    )?;
+    Ok(())
+}
 fn launch(c: &Container, a: &App, log: &Path) -> Result<()> {
     let component = launch_component(a)?;
     podman(
@@ -1338,6 +1397,9 @@ fn launch(c: &Container, a: &App, log: &Path) -> Result<()> {
         ],
         Some(log),
     )?;
+    if a.show_window.unwrap_or(!a.metadata.vr) {
+        apply_orientation(c, a.orientation.as_deref(), log)?;
+    }
     let s = podman(
         &[
             "exec",
@@ -1358,10 +1420,12 @@ fn launch(c: &Container, a: &App, log: &Path) -> Result<()> {
             && s.lines().any(|line| line.trim() == "Status: ok"),
         "Application launch failed: {s}"
     );
-    // Reveal the target only after ActivityManager has completed the launch.
-    // The compositor's app mode avoids exposing the Android home screen.
+    // Select the display mode after the requested activity is foreground.
+    // Lepton's per-app HWC mode can create a zero-sized xdg_surface on Gamescope
+    // and abort its display service. Full-display mode avoids that transition;
+    // flat apps retain their original full-display boot window.
     let visible_app = if a.show_window.unwrap_or(!a.metadata.vr) {
-        a.metadata.package.as_str()
+        "Waydroid"
     } else {
         "none"
     };
@@ -1375,6 +1439,69 @@ fn launch(c: &Container, a: &App, log: &Path) -> Result<()> {
         ],
         Some(log),
     )?;
+    // ActivityManager can report success before HWC or the application exits.
+    // Keep the caller's pending state until the initial display handoff settles.
+    #[cfg(not(test))]
+    let samples = 16;
+    #[cfg(test)]
+    let samples = 1;
+    let mut processes = vec![(
+        a.metadata.package.as_str(),
+        "Application exited shortly after launch",
+    )];
+    if a.show_window.unwrap_or(!a.metadata.vr) {
+        processes.insert(
+            0,
+            (
+                "surfaceflinger",
+                "Android display service exited shortly after launch",
+            ),
+        );
+    }
+    for _ in 0..samples {
+        ensure!(
+            running(&c.name),
+            "Lepton exited shortly after launch; inspect the application log"
+        );
+        for (process, error) in &processes {
+            let pid = podman(
+                &["exec", &format!("lepton-{}", c.name), "pidof", process],
+                Some(log),
+            );
+            if *process == a.metadata.package && !pid.as_ref().is_ok_and(|s| !s.trim().is_empty()) {
+                // Apps may declare a custom process name. Android's live
+                // process records associate that process with its package.
+                let dump = podman(
+                    &[
+                        "exec",
+                        &format!("lepton-{}", c.name),
+                        "dumpsys",
+                        "activity",
+                        "processes",
+                    ],
+                    Some(log),
+                )?;
+                if dump.lines().any(|line| {
+                    line.split_once("packageList={")
+                        .and_then(|(_, names)| names.split_once('}'))
+                        .is_some_and(|(names, _)| {
+                            names
+                                .split(',')
+                                .any(|name| name.trim() == a.metadata.package)
+                        })
+                }) {
+                    continue;
+                }
+            }
+            let pid = pid.with_context(|| format!("{error}; inspect the application log"))?;
+            ensure!(
+                !pid.trim().is_empty(),
+                "{error}; inspect the application log"
+            );
+        }
+        #[cfg(not(test))]
+        std::thread::sleep(Duration::from_millis(500));
+    }
     Ok(())
 }
 fn live_installed(c: &Container, package: &str, log: &Path) -> Result<bool> {
@@ -1631,7 +1758,7 @@ pub fn operate(
         hex::encode(rand::random::<[u8; 6]>())
     ));
     fs::write(&log, format!("{kind}\n"))?;
-    progress(json!({"phase":"preparing"}));
+    progress(json!({"phase":"preparing","operation":kind}));
     let result = (|| -> Result<Value> {
         match kind {
             "root.add" => {
@@ -1734,10 +1861,6 @@ pub fn operate(
                         db.owned_contexts.push(context.clone());
                     }
                 }
-                if c.baked.exists() {
-                    let packages = installed(&c)?;
-                    ensure!(packages.iter().all(|(m,_)|m.package==metadata.package)||!(c.baked.join("app_overlay/base.apk").exists()||c.baked.join("app_lowerdir/base.apk").exists()),"This Lepton context uses one shared APK mount; install the new app in an independent container");
-                }
                 let previous = if c.baked.exists() {
                     installed(&c)?
                         .into_iter()
@@ -1781,8 +1904,8 @@ pub fn operate(
                 // Before submission cancellation remains possible. Package-manager submission is a commit.
                 cancel.commit(||{
  progress(json!({"cancellable":false}));
- progress(json!({"phase":"backing-up"}));let mut backup_id=None;if c.baked.exists(){stop(&c,&log)?;backup_id=Some(backup(home,&c,&db,&log)?);}
- progress(json!({"phase":"starting"}));start(home,&c,settings.show_window.or(Some(!metadata.vr)),&log)?;
+ let mut backup_id=None;if c.baked.exists(){progress(json!({"phase":"backing-up"}));stop(&c,&log)?;backup_id=Some(backup(home,&c,&db,&log)?);}
+progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
  let sdk=podman(&["exec",&format!("lepton-{}",c.name),"getprop","ro.build.version.sdk"],Some(&log))?.trim().parse::<u32>()?;ensure!(metadata.min_sdk<=sdk,"APK requires Android SDK {}, container provides {}",metadata.min_sdk,sdk);
  progress(json!({"phase":"installing","cancellable":false}));install_package(&c,&review.join("base.apk"),&log)?;
  progress(json!({"phase":"verifying"}));let path=podman(&["exec",&format!("lepton-{}",c.name),"pm","path",&metadata.package],Some(&log))?;ensure!(path.contains("package:"),"Android did not report the installed APK");let dest=r.join("apks").join(hash(&app_id));store_apk(&review.join("base.apk"),&dest)?;
@@ -1853,6 +1976,14 @@ pub fn operate(
                     ensure!(v.is_boolean() || v.is_null(), "Invalid window setting");
                     rec.show_window = v.as_bool();
                 }
+                if let Some(v) = p.get("orientation") {
+                    ensure!(
+                        v.as_str()
+                            .is_some_and(|s| matches!(s, "auto" | "landscape" | "portrait")),
+                        "Invalid window orientation"
+                    );
+                    rec.orientation = v.as_str().filter(|s| *s != "auto").map(str::to_owned);
+                }
                 cancel.commit(|| save(home, &db))?;
                 Ok(json!(true))
             }
@@ -1881,17 +2012,70 @@ pub fn operate(
                             ensure!(a.installed, "Application is not installed");
                             launch_component(&a)?;
                             progress(json!({"phase":"starting"}));
-                            start_container(
+                            let flat = a.show_window.unwrap_or(!a.metadata.vr);
+                            if flat && running(&c.name) {
+                                let name = format!("lepton-{}", c.name);
+                                let headless = podman(
+                                    &["exec", &name, "getprop", "lepton.headless"],
+                                    Some(&log),
+                                )?;
+                                let visible = podman(
+                                    &["exec", &name, "getprop", "waydroid.active_apps"],
+                                    Some(&log),
+                                )?;
+                                // A background install has no display. Also recreate a
+                                // closed display through normal boot instead of the
+                                // HWC transition that Gamescope rejects.
+                                let orientation = podman(
+                                    &["exec", &name, "getprop", "framely.window_orientation"],
+                                    Some(&log),
+                                )?;
+                                let current = if orientation.trim().is_empty() {
+                                    "auto"
+                                } else {
+                                    orientation.trim()
+                                };
+                                if headless.trim() == "true"
+                                    || visible.trim() == "none"
+                                    || current != a.orientation.as_deref().unwrap_or("auto")
+                                {
+                                    stop(&c, &log)?;
+                                }
+                            }
+                            start_oriented_container(
                                 home,
                                 &c,
-                                a.show_window.or(Some(!a.metadata.vr)),
-                                true,
+                                Some(flat),
+                                !flat,
+                                if flat { a.orientation.as_deref() } else { None },
                                 &log,
                             )?;
+                            progress(json!({"phase":"launching"}));
                             launch(&c, &a, &log)?;
                         }
                         "close" => {
                             if running(&c.name) {
+                                let active = podman(
+                                    &[
+                                        "exec",
+                                        &format!("lepton-{}", c.name),
+                                        "getprop",
+                                        "lepton.active_app_id",
+                                    ],
+                                    Some(&log),
+                                )?;
+                                if active.trim() == a.metadata.package {
+                                    podman(
+                                        &[
+                                            "exec",
+                                            &format!("lepton-{}", c.name),
+                                            "setprop",
+                                            "waydroid.active_apps",
+                                            "none",
+                                        ],
+                                        Some(&log),
+                                    )?;
+                                }
                                 podman(
                                     &[
                                         "exec",
@@ -1994,7 +2178,7 @@ pub fn operate(
                 cancel.commit(|| {
                     progress(json!({"cancellable":false}));
                     match kind {
-                        "container.start" => start(home, &c, None, &log)?,
+                        "container.start" => start_container(home, &c, None, false, &log)?,
                         "container.stop" => stop(&c, &log)?,
                         "container.delete" => {
                             let standard = home.join(".local/share/lepton/contexts").join(&c.name);
@@ -2212,6 +2396,32 @@ setup_props "$@"
             }));
             assert!(!props.contains("waydroid.background_start=false"));
         }
+        for (orientation, dimensions) in [
+            (
+                "portrait",
+                "persist.waydroid.width=1080\npersist.waydroid.height=1920",
+            ),
+            (
+                "landscape",
+                "persist.waydroid.width=1920\npersist.waydroid.height=1080",
+            ),
+        ] {
+            assert!(Command::new("bash")
+                .arg(&entry)
+                .args(["start", "existing-context"])
+                .env("FRAMELY_LEPTON_DIR", library.parent().unwrap())
+                .env("TEST_PROPS", &props)
+                .env("APP_WANTS_FLATSCREEN", "true")
+                .env("FRAMELY_BACKGROUND_BOOT", "false")
+                .env("FRAMELY_WINDOW_ORIENTATION", orientation)
+                .status()
+                .unwrap()
+                .success());
+            let output = fs::read_to_string(&props).unwrap();
+            assert!(output.contains(dimensions));
+            assert!(output.contains("waydroid.background_start=false"));
+            assert!(!output.contains("waydroid.active_apps=none"));
+        }
         assert!(direct_launch_script("unrecognized future entrypoint").is_err());
     }
     static SERIAL: Mutex<()> = Mutex::new(());
@@ -2263,6 +2473,9 @@ case "$1" in
     uninstall) touch '{removed}'; /bin/rm -f '{apk}'; echo '<package-restrictions><pkg name="com.example.app" installed="false"/></package-restrictions>' > '{restrictions}'; if [ "$5" != -k ]; then /bin/rm -rf '{data}'; fi; echo Success;;
     clear) echo Success;;
    esac
+  elif [ "$3" = pidof ]; then
+   if [ -f '{dead}' ] || {{ [ "$4" = com.example.app ] && [ -f '{custom}' ]; }} || {{ [ "$4" = surfaceflinger ] && [ -f '{headless}' ]; }}; then exit 1; else echo 1050; fi;
+  elif [ "$3" = dumpsys ]; then if [ -f '{custom}' ]; then echo 'packageList={{com.example.app}}'; fi;
   elif [ "$3" = getprop ]; then echo 30;
   elif [ "$3" = cmd ]; then echo com.example.app/.Main;
   elif [ "$3" = am ]; then if [ -f '{launch_fail}' ]; then echo 'Error: launch failed'; else echo 'Status: ok'; fi;
@@ -2272,6 +2485,9 @@ esac
                 state = state.display(),
                 commands = dir.path().join("commands").display(),
                 launch_fail = dir.path().join("launch-fail").display(),
+                dead = dir.path().join("dead-process").display(),
+                custom = dir.path().join("custom-process").display(),
+                headless = dir.path().join("headless-display").display(),
                 incoming = dir.path().join("incoming.apk").display(),
                 apk = baked.join("app_overlay/base.apk").display(),
                 fail = dir.path().join("fail").display(),
@@ -2286,10 +2502,19 @@ esac
             fs::set_permissions(tools.join("podman"), fs::Permissions::from_mode(0o755)).unwrap();
             std::os::unix::fs::symlink("/bin/cp", tools.join("cp")).unwrap();
             let lepton = home.join(".local/share/Steam/steamapps/common/Lepton");
-            fs::create_dir_all(&lepton).unwrap();
+            fs::create_dir_all(lepton.join("liblepton")).unwrap();
+            fs::write(lepton.join("liblepton/liblepton.sh"), format!("function setup_props() {{ echo waydroid.background_start=false > '{}'; if app_wants_flatscreen; then echo lepton.headless=false; else echo lepton.headless=true; fi >> '{}'; }}\nfunction app_wants_flatscreen() {{ return 0; }}\nfunction props_file() {{ echo '{}'; }}\n", dir.path().join("props").display(), dir.path().join("props").display(), dir.path().join("props").display())).unwrap();
             fs::write(
                 lepton.join("lepton"),
-                format!("#!/bin/sh\necho true > '{}'\n", state.display()),
+                format!(
+                    r#"#!/bin/bash
+SCRIPT_DIR=$( cd -- "$( dirname -- "${{BASH_SOURCE[0]}}" )" &> /dev/null && pwd )
+source "${{SCRIPT_DIR}}/liblepton/liblepton.sh"
+setup_props
+echo true > '{}'
+"#,
+                    state.display()
+                ),
             )
             .unwrap();
             fs::set_permissions(lepton.join("lepton"), fs::Permissions::from_mode(0o755)).unwrap();
@@ -2338,6 +2563,10 @@ esac
             .unwrap();
             assert_eq!(load(&f.home).unwrap().records[id].show_window, Some(show));
             assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+            let props = fs::read_to_string(f.dir.path().join("props")).unwrap();
+            assert!(props.contains("lepton.headless=true"));
+            assert!(props.contains("waydroid.background_start=true"));
+            assert!(props.contains("waydroid.active_apps=none"));
         }
         let ticket = f.review(45);
         fs::write(f.dir.path().join("fail"), "").unwrap();
@@ -2362,9 +2591,7 @@ esac
         let start = trace
             .find("am start -W --user 0 -n com.example.app/")
             .unwrap();
-        let reveal = trace
-            .find("setprop waydroid.active_apps com.example.app")
-            .unwrap();
+        let reveal = trace.find("setprop waydroid.active_apps Waydroid").unwrap();
         assert!(start < reveal);
         fs::write(&commands, "").unwrap();
         a.show_window = Some(false);
@@ -2380,6 +2607,34 @@ esac
             .unwrap()
             .contains("waydroid.active_apps"));
         assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+    }
+    #[test]
+    fn successful_activity_start_with_dead_display_is_reported_as_failure() {
+        let f = Fixture::new();
+        let db = load(&f.home).unwrap();
+        let (a, c) = app(&f.home, &db, "test/com.example.app").unwrap();
+        fs::write(f.dir.path().join("dead-process"), "").unwrap();
+        let error = launch(&c, &a, &f.dir.path().join("launch.log")).unwrap_err();
+        assert!(format!("{error:#}").contains("Android display service exited"));
+        fs::remove_file(f.dir.path().join("dead-process")).unwrap();
+        fs::write(f.dir.path().join("running"), "false").unwrap();
+        let error = launch(&c, &a, &f.dir.path().join("launch.log")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Lepton exited shortly after launch"));
+    }
+    #[test]
+    fn launch_health_supports_custom_processes_and_headless_vr() {
+        let f = Fixture::new();
+        let db = load(&f.home).unwrap();
+        let (mut a, c) = app(&f.home, &db, "test/com.example.app").unwrap();
+        fs::write(f.dir.path().join("custom-process"), "").unwrap();
+        launch(&c, &a, &f.dir.path().join("launch.log")).unwrap();
+        fs::write(f.dir.path().join("headless-display"), "").unwrap();
+        a.show_window = Some(false);
+        launch(&c, &a, &f.dir.path().join("launch.log")).unwrap();
+        a.show_window = Some(true);
+        assert!(launch(&c, &a, &f.dir.path().join("launch.log")).is_err());
     }
     #[test]
     fn discovery_reads_mount_layer_and_does_not_claim_existing_context() {
@@ -2482,10 +2737,10 @@ esac
         assert!(!load(&f.home).unwrap().records["test/com.example.app"].removed);
     }
     #[test]
-    fn additional_apps_policy_depends_on_shared_mount_not_creator() {
+    fn existing_sideloaded_containers_accept_additional_apps() {
         let f = Fixture::new();
         let data = list(&f.home).unwrap();
-        assert_eq!(data["containers"][0]["acceptsAdditionalApps"], false);
+        assert_eq!(data["containers"][0]["acceptsAdditionalApps"], true);
         let baked = f.home.join(".local/share/lepton/contexts/test/baked");
         let direct = baked.join("data_overlay/app/xyz/com.example.app");
         fs::create_dir_all(&direct).unwrap();
@@ -2494,6 +2749,92 @@ esac
         let data = list(&f.home).unwrap();
         assert_eq!(data["containers"][0]["acceptsAdditionalApps"], true);
         assert_eq!(data["containers"][0]["managed"], false);
+    }
+    #[test]
+    fn additional_install_preserves_mounted_apk_and_survives_restart() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let baked = f.home.join(".local/share/lepton/contexts/test/baked");
+        let mounted = baked.join("app_overlay/base.apk");
+        let original = fs::read(&mounted).unwrap();
+        let second = baked.join("data_overlay/app/extra/base.apk");
+        fs::create_dir_all(second.parent().unwrap()).unwrap();
+        let xml = f.dir.path().join("two-packages.xml");
+        fs::write(&xml, r#"<packages><package name="com.example.app" codePath="/data/app/xyz/com.example.app" version="42"/><package name="com.example.extra" codePath="/data/app/extra" version="1"/></packages>"#).unwrap();
+        let tools = f.dir.path().join("tools");
+        fs::write(tools.join("podman"), format!(r#"#!/bin/sh
+printf '%s\n' "$*" >> '{commands}'
+case "$1" in
+ inspect) cat '{state}';;
+ ps) if [ "$(cat '{state}')" = true ]; then echo lepton-test; fi;;
+ stop) echo false > '{state}';;
+ cp) /bin/cp -f "$2" '{incoming}';;
+ exec)
+  if [ "$3" = pm ]; then
+   case "$4" in
+    list) echo package:com.example.app; if [ -f '{second}' ]; then echo package:com.example.extra; fi;;
+    path) echo package:/data/app/extra/base.apk;;
+    install) /bin/cp -f '{incoming}' '{second}'; /bin/cp '{xml}' '{database}'; echo Success;;
+   esac
+  elif [ "$3" = pidof ]; then echo 1050;
+  elif [ "$3" = getprop ]; then echo 30;
+  elif [ "$3" = cmd ]; then echo com.example.extra/.Main;
+  elif [ "$3" = am ]; then echo 'Status: ok';
+  fi;;
+esac
+"#, commands=f.dir.path().join("commands").display(), state=f.dir.path().join("running").display(),
+            incoming=f.dir.path().join("incoming.apk").display(), second=second.display(),
+            xml=xml.display(), database=baked.join("data_overlay/system/packages.xml").display())).unwrap();
+        let incoming = f.dir.path().join("extra.apk");
+        crate::apk_metadata::fixture_named(&incoming, true, 1, "com.example.extra");
+        let reviewed = inspect(&f.home, &incoming, &Cancellation::default()).unwrap();
+        f.operation(
+            "install",
+            json!({"context":"test","ticket":reviewed["ticket"],"approve":true}),
+        )
+        .unwrap();
+        assert_eq!(fs::read(&mounted).unwrap(), original);
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        assert_eq!(
+            cached_metadata(&second).unwrap().package,
+            "com.example.extra"
+        );
+        let db = load(&f.home).unwrap();
+        let c = containers(&f.home, &db)
+            .into_iter()
+            .find(|c| c.id == "test")
+            .unwrap();
+        let log = f.dir.path().join("restart.log");
+        stop(&c, &log).unwrap();
+        // Stopped containers discover both the mounted APK and the added APK.
+        assert_eq!(
+            installed(&Container {
+                running: false,
+                ..c.clone()
+            })
+            .unwrap()
+            .len(),
+            2
+        );
+        start(&f.home, &c, Some(false), &log).unwrap();
+        let data = list(&f.home).unwrap();
+        for package in ["com.example.app", "com.example.extra"] {
+            assert!(data["apps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["metadata"]["package"] == package
+                    && a["installed"] == true
+                    && a["metadata"]["activities"]
+                        .as_array()
+                        .is_some_and(|a| !a.is_empty())));
+        }
+        f.operation("launch", json!({"app":"test/com.example.extra"}))
+            .unwrap();
+        assert_eq!(fs::read(&mounted).unwrap(), original);
+        assert!(fs::read_to_string(f.dir.path().join("commands"))
+            .unwrap()
+            .contains("am start -W --user 0 -n com.example.extra/com.example.extra.Main"));
     }
     #[test]
     fn review_tampering_expiry_and_cancel_are_rejected() {
@@ -2517,6 +2858,31 @@ esac
         let c = Cancellation::default();
         c.stop();
         assert!(inspect(&f.home, &f.dir.path().join("upload.apk"), &c).is_err());
+    }
+    #[test]
+    fn window_orientation_is_validated_persisted_and_applied() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let id = "test/com.example.app";
+        assert!(f
+            .operation("settings", json!({"app":id,"orientation":"sideways"}))
+            .is_err());
+        assert!(load(&f.home).unwrap().records[id].orientation.is_none());
+        f.operation("settings", json!({"app":id,"orientation":"portrait"}))
+            .unwrap();
+        assert_eq!(
+            load(&f.home).unwrap().records[id].orientation.as_deref(),
+            Some("portrait")
+        );
+        let (a, c) = app(&f.home, &load(&f.home).unwrap(), id).unwrap();
+        assert_eq!(a.orientation.as_deref(), Some("portrait"));
+        apply_orientation(&c, a.orientation.as_deref(), &f.dir.path().join("log")).unwrap();
+        let trace = fs::read_to_string(f.dir.path().join("commands")).unwrap();
+        assert!(trace.contains("wm size reset"));
+        assert!(trace.contains("wm set-user-rotation lock 0"));
+        f.operation("settings", json!({"app":id,"orientation":"auto"}))
+            .unwrap();
+        assert!(load(&f.home).unwrap().records[id].orientation.is_none());
     }
     #[test]
     fn update_failure_and_downgrade_preserve_package_and_data() {
