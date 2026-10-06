@@ -643,10 +643,10 @@ impl Agent {
             }
             let mut bytes = Vec::new();
             r.as_reader()
-                .take(6 * 1024 * 1024 + 1)
+                .take(32 * 1024 * 1024 + 1)
                 .read_to_end(&mut bytes)?;
             ensure!(
-                bytes.len() <= 6 * 1024 * 1024,
+                bytes.len() <= 32 * 1024 * 1024,
                 "File manager request too large"
             );
             let result = (|| -> Result<Value> {
@@ -1574,7 +1574,9 @@ fn serve_user_file(r: Request, path: &Path, inline: bool) -> Result<()> {
         "application/octet-stream"
     };
     let filename = path.file_name().unwrap_or_default().to_string_lossy();
-    let encoded = url::form_urlencoded::byte_serialize(filename.as_bytes()).collect::<String>();
+    let encoded = url::form_urlencoded::byte_serialize(filename.as_bytes())
+        .collect::<String>()
+        .replace('+', "%20");
     let mut headers = vec![
         header("Content-Type", mime),
         header("Accept-Ranges", "bytes"),
@@ -2389,6 +2391,49 @@ mod tests {
     }
 
     #[test]
+    fn editor_http_accepts_five_mib_after_json_escaping() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("generated text.txt");
+        fs::write(&file, b"old").unwrap();
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let agent = agent(&server, root.path());
+        let revision = agent
+            .files
+            .api(root.path(), &json!({"operation":"read","path":file}))
+            .unwrap()["revision"]
+            .clone();
+        let listener = UnixListener::bind(&agent.socket).unwrap();
+        let core = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = ipc::read(&mut stream).unwrap();
+            assert_eq!(request["method"], "agreement.status");
+            ipc::write(&mut stream, &json!({"result":{"accepted":true}})).unwrap();
+        });
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker = http_server(server, agent.clone(), stop.clone());
+        let text = "\"".repeat(5 * 1024 * 1024);
+        let value: Value = ureq::post(&format!("{}/manager-api/files", agent.origin))
+            .set("Cookie", &format!("framely={}", agent.web_key))
+            .set("Origin", &agent.origin)
+            .send_json(json!({"operation":"write","path":file,"text":text,"revision":revision}))
+            .unwrap()
+            .into_json()
+            .unwrap();
+        assert!(value["error"].is_null(), "{value}");
+        assert_eq!(
+            value["result"]["text"].as_str().unwrap().len(),
+            5 * 1024 * 1024
+        );
+        assert_eq!(fs::metadata(file).unwrap().len(), 5 * 1024 * 1024);
+        stop.store(true, Ordering::Relaxed);
+        worker.join().unwrap();
+        core.join().unwrap();
+    }
+
+    #[test]
     fn file_streams_support_range_head_and_safe_download_headers() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("generated sample.mp4");
@@ -2422,7 +2467,7 @@ mod tests {
         assert!(reply
             .header("Content-Disposition")
             .unwrap()
-            .contains("generated+sample.mp4"));
+            .contains("generated%20sample.mp4"));
         assert_eq!(reply.into_string().unwrap(), "0123456789");
         let reply = ureq::head(&origin).call().unwrap();
         assert_eq!(reply.header("Content-Length"), Some("10"));

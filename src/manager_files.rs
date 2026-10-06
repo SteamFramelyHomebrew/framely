@@ -190,6 +190,11 @@ fn list(p: &Value, home: &Path) -> Result<Value> {
 fn fingerprint(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
+fn binary(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .any(|byte| (*byte < 0x20 && !matches!(*byte, b'\t' | b'\r' | b'\n')) || *byte == 0x7f)
+}
 fn read_text(p: &Path) -> Result<Value> {
     let m = fs::metadata(p)?;
     ensure!(
@@ -204,7 +209,7 @@ fn read_text(p: &Path) -> Result<Value> {
         bytes.len() <= 5 * 1024 * 1024,
         "Text editor supports files up to 5 MiB"
     );
-    ensure!(!bytes.contains(&0), "Binary files cannot be edited as text");
+    ensure!(!binary(&bytes), "Binary files cannot be edited as text");
     let text = std::str::from_utf8(&bytes).context("Only UTF-8 text can be edited")?;
     Ok(json!({"text":text,"revision":fingerprint(&bytes)}))
 }
@@ -292,7 +297,7 @@ fn copy(
             .create_new(true)
             .mode(m.mode() & 0o777)
             .open(dest)?;
-        let mut bytes = [0u8; 65536];
+        let mut bytes = vec![0u8; 65536];
         loop {
             cancel.check()?;
             let n = input.read(&mut bytes)?;
@@ -470,7 +475,7 @@ impl Files {
                 let current = read_text(&file)?;
                 ensure!(current["revision"]==p["revision"]||p["approve"]==true,"File changed outside the editor; reload or confirm overwrite");
                 let text = strparam(p,"text")?;
-                ensure!(text.len()<=5*1024*1024&&!text.contains('\0'),"Text is too large or contains binary data");
+                ensure!(text.len()<=5*1024*1024&&!binary(text.as_bytes()),"Text is too large or contains binary data");
                 let temp = file.with_file_name(format!(".framely-write-{}", token()));
                 let _guard = Temporary(temp.clone());
                 let mut f = fs::OpenOptions::new().create_new(true).write(true).mode(0o600).open(&temp)?;
@@ -1139,6 +1144,8 @@ mod tests {
         assert_ne!(original["revision"], read_text(&file).unwrap()["revision"]);
         fs::write(&file, [255, 0]).unwrap();
         assert!(read_text(&file).is_err());
+        fs::write(&file, b"no nul but binary \x01").unwrap();
+        assert!(read_text(&file).is_err());
     }
 }
 fn replace(src: &Path, dest: &Path) -> Result<()> {
@@ -1254,6 +1261,34 @@ mod operation_tests {
                 0o751
             );
         }
+    }
+    #[test]
+    fn deeply_nested_folder_copy_keeps_transfer_buffers_off_the_stack() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        let mut relative = PathBuf::new();
+        for _ in 0..48 {
+            relative.push("nested");
+            fs::create_dir(source.join(&relative)).unwrap();
+        }
+        relative.push("fixture.txt");
+        fs::write(source.join(&relative), "generated data").unwrap();
+        let value = Files::default()
+            .task(
+                root.path(),
+                &json!({"operation":"copy","paths":[source],"destination":destination}),
+                Cancellation::default(),
+                progress(),
+            )
+            .unwrap();
+        assert!(value["items"][0]["error"].is_null());
+        assert_eq!(
+            fs::read_to_string(destination.join("source").join(relative)).unwrap(),
+            "generated data"
+        );
     }
     #[test]
     fn cancellation_does_not_create_archive_or_replace_files() {
