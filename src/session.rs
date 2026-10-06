@@ -544,6 +544,17 @@ impl Agent {
                 let home = crate::steam::home()?;
                 match path.as_str() {
                     "/host/files/list" => crate::file_browser::list(&home, &params),
+                    "/host/files/apk-inspect" => {
+                        let paths = crate::file_browser::selection(&home, &params)?;
+                        ensure!(
+                            paths.len() == 1 && params["directory"] != true,
+                            "Select one APK file"
+                        );
+                        let path = paths.into_iter().next().unwrap();
+                        self.jobs.task("apk:inspect", move |cancel| {
+                            crate::apk::inspect_local(&home, &path, &cancel)
+                        })
+                    }
                     "/host/files/complete" => {
                         let id = params["id"]
                             .as_str()
@@ -2547,7 +2558,11 @@ mod tests {
         assert!(ureq::get(&format!("{origin}/boot/{}", agent.web_key))
             .call()
             .is_err());
-        for path in ["/host/files/list", "/host/files/complete"] {
+        for path in [
+            "/host/files/list",
+            "/host/files/complete",
+            "/host/files/apk-inspect",
+        ] {
             assert!(matches!(
                 ureq::post(&format!("{origin}{path}"))
                     .set("Origin", &origin)

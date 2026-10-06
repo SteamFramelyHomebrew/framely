@@ -810,16 +810,42 @@ pub fn upload_dir(home: &Path, total: u64) -> Result<PathBuf> {
     space(&r, total * 3)?;
     Ok(r.join("uploads"))
 }
+pub fn inspect_local(home: &Path, path: &Path, cancel: &Cancellation) -> Result<Value> {
+    cancel.check()?;
+    let path = crate::file_browser::checked(home, path)?;
+    ensure!(
+        path.extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("apk")),
+        "Select an APK file"
+    );
+    let metadata = fs::metadata(&path)?;
+    ensure!(metadata.is_file(), "Select a regular APK file");
+    ensure!(
+        metadata.len() > 0 && metadata.len() <= 8 * 1024 * 1024 * 1024,
+        "APK must be between 1 byte and 8 GiB"
+    );
+    inspect(home, &path, cancel)
+}
 pub fn inspect(home: &Path, staged: &Path, cancel: &Cancellation) -> Result<Value> {
     let _guard = MUTATION.lock().unwrap();
     cancel.check()?;
     let r = init(home)?;
     space(&r, fs::metadata(staged)?.len() * 3)?;
-    let metadata = apk_metadata::read(staged)?;
     let ticket = hex::encode(rand::random::<[u8; 24]>());
     let d = r.join("reviews").join(&ticket);
     fs::create_dir(&d)?;
-    fs::copy(staged, d.join("base.apk"))?;
+    let snapshot = d.join("base.apk");
+    let metadata = match (|| -> Result<Metadata> {
+        fs::copy(staged, &snapshot)?;
+        cancel.check()?;
+        apk_metadata::read(&snapshot)
+    })() {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&d);
+            return Err(error);
+        }
+    };
     fs::write(d.join("metadata.json"), serde_json::to_vec(&metadata)?)?;
     fs::write(d.join("created"), now().to_string())?;
     fs::write(
@@ -831,7 +857,7 @@ pub fn inspect(home: &Path, staged: &Path, cancel: &Cancellation) -> Result<Valu
         let _ = fs::remove_dir_all(d);
         return Err(e);
     }
-    Ok(json!({"ticket":ticket,"metadata":metadata,"bytes":fs::metadata(staged)?.len()}))
+    Ok(json!({"ticket":ticket,"metadata":metadata,"bytes":fs::metadata(snapshot)?.len()}))
 }
 fn review(home: &Path, ticket: &str) -> Result<(PathBuf, Metadata)> {
     ensure!(
@@ -846,7 +872,7 @@ fn review(home: &Path, ticket: &str) -> Result<(PathBuf, Metadata)> {
     let t: u64 = fs::read_to_string(d.join("created"))?.parse()?;
     ensure!(
         now().saturating_sub(t) < 900,
-        "APK review expired; upload again"
+        "APK review expired; select the APK again"
     );
     ensure!(
         !fs::symlink_metadata(d.join("base.apk"))?
@@ -2804,6 +2830,40 @@ setup_podman_mounts
             compat.join("external")
         );
     }
+    #[test]
+    fn local_apk_review_snapshots_source_and_rejects_invalid_selections() {
+        let home = tempfile::tempdir().unwrap();
+        let source = home.path().join("selected.APK");
+        crate::apk_metadata::fixture(&source, true, 7);
+        let original = fs::read(&source).unwrap();
+        let result = inspect_local(home.path(), &source, &Cancellation::default()).unwrap();
+        let ticket = result["ticket"].as_str().unwrap();
+        assert_eq!(fs::read(&source).unwrap(), original);
+        fs::write(&source, "externally changed after review").unwrap();
+        let (snapshot, metadata) = review(home.path(), ticket).unwrap();
+        assert_eq!(metadata.version_code, 7);
+        assert_eq!(fs::read(snapshot.join("base.apk")).unwrap(), original);
+        let empty = home.path().join("empty.apk");
+        fs::write(&empty, []).unwrap();
+        assert!(inspect_local(home.path(), &empty, &Cancellation::default()).is_err());
+        assert!(inspect_local(home.path(), home.path(), &Cancellation::default()).is_err());
+        assert!(inspect_local(
+            home.path(),
+            Path::new("/etc/passwd"),
+            &Cancellation::default()
+        )
+        .is_err());
+        let invalid = home.path().join("invalid.apk");
+        fs::write(&invalid, b"not an apk").unwrap();
+        assert!(inspect_local(home.path(), &invalid, &Cancellation::default()).is_err());
+        assert_eq!(
+            fs::read_dir(root(home.path()).join("reviews"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
     #[test]
     fn legacy_obb_migration_preserves_resources_without_copying_apk_files() {
         let d = tempfile::tempdir().unwrap();

@@ -5,7 +5,7 @@ import {t} from './i18n';
 import {Switch} from './switch';
 import {FolderTree} from './folder-tree';
 import './file-picker.css';
-type Request={id:string;accept:string[];multiple:boolean;directory:boolean;defaultPath?:string};
+type Request={id:string;accept:string[];multiple:boolean;directory:boolean;defaultPath?:string;localSelect?:(path:string)=>void};
 type Entry={name:string;path:string;directory:boolean;size:number;modified?:number};
 type Listing={path:string;parent:string|null;roots:{name:string;path:string}[];entries:Entry[];total:number;offset:number;skipped:number};
 async function files<T>(operation:string,params:unknown,signal?:AbortSignal):Promise<T>{
@@ -15,9 +15,19 @@ async function files<T>(operation:string,params:unknown,signal?:AbortSignal):Pro
 }
 function extensions(accept:string[]){const mapped:Record<string,string[]>={'application/json':['.json'],'application/vnd.android.package-archive':['.apk']};return [...new Set(accept.flatMap(a=>a.split(/[;,]/)).flatMap(a=>a.startsWith('.')?[a.toLowerCase()]:mapped[a]??[]))];}
 function size(bytes:number){return bytes<1024?`${bytes} B`:bytes<1048576?`${(bytes/1024).toFixed(1)} KiB`:`${(bytes/1048576).toFixed(1)} MiB`;}
+// CEF announces its dialog after input.click(). Only this input opts
+// into a path result; ordinary inputs and external browsers still receive Files.
+let localSelection:((path:string)=>void)|undefined;
+let clearLocalSelection:(()=>void)|undefined;
+export function openLocalFileInput(input:HTMLInputElement,onSelect:(path:string)=>void){
+ clearLocalSelection?.();localSelection=onSelect;
+ const clear=()=>{if(localSelection===onSelect)localSelection=undefined;input.removeEventListener('change',clear);input.removeEventListener('cancel',clear);};
+ clearLocalSelection=clear;input.addEventListener('change',clear);input.addEventListener('cancel',clear);
+ input.value='';input.click();
+}
 export function FrameFilePicker(){
  const [request,setRequest]=useState<Request|null>(null);
- useEffect(()=>{const open=(e:Event)=>{const detail=(e as CustomEvent<Request>).detail;if(detail?.id&&Array.isArray(detail.accept))setRequest(detail);};window.addEventListener('framely.fileDialog',open);return()=>window.removeEventListener('framely.fileDialog',open);},[]);
+ useEffect(()=>{const open=(e:Event)=>{const detail=(e as CustomEvent<Request>).detail;if(detail?.id&&Array.isArray(detail.accept)){const localSelect=localSelection;clearLocalSelection?.();clearLocalSelection=undefined;localSelection=undefined;setRequest({...detail,localSelect});}};window.addEventListener('framely.fileDialog',open);return()=>window.removeEventListener('framely.fileDialog',open);},[]);
  return request?createPortal(<FileDialog key={request.id} request={request} close={()=>setRequest(null)}/>,document.body):null;
 }
 function FileDialog({request,close}:{request:Request;close:()=>void}){
@@ -25,7 +35,7 @@ function FileDialog({request,close}:{request:Request;close:()=>void}){
  const initial=useRef(true),history=useRef<string[]>([]),dialog=useRef<HTMLDivElement>(null),previousFocus=useRef<HTMLElement|null>(null),done=useRef(false),completing=useRef(false),requestSequence=useRef(0),cancelRef=useRef(()=>{});
  const allowed=extensions(request.accept),supported=(entry:Entry)=>!request.directory&&(!allowed.length||allowed.some(ext=>entry.name.toLowerCase().endsWith(ext)));
  const entries=listing?.entries.filter(e=>e.directory||!onlySupported||supported(e))??[];
- async function complete(paths:string[]){if(completing.current)return;completing.current=true;setBusy(true);setError('');try{await files('complete',{id:request.id,paths,directory:request.directory});done.current=true;if(paths.length&&listing){try{sessionStorage.setItem('framely.filePicker.path',listing.path);}catch{}}close();}catch(e){completing.current=false;setError(String(e));setBusy(false);}}
+ async function complete(paths:string[]){if(completing.current)return;completing.current=true;setBusy(true);setError('');try{await files('complete',{id:request.id,paths:request.localSelect?[]:paths,directory:request.directory});done.current=true;if(paths.length&&listing){try{sessionStorage.setItem('framely.filePicker.path',listing.path);}catch{}}close();if(paths.length)request.localSelect?.(paths[0]);}catch(e){completing.current=false;setError(String(e));setBusy(false);}}
  cancelRef.current=()=>{void complete([]);};
  useEffect(()=>{previousFocus.current=document.activeElement as HTMLElement;const root=document.getElementById('root');const wasInert=root?.inert??false;if(root)root.inert=true;dialog.current?.querySelector<HTMLButtonElement>('button')?.focus();const key=(e:Event)=>{if(e instanceof KeyboardEvent){if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();cancelRef.current();}else if(e.key==='Tab'){const nodes=Array.from(dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),[tabindex="0"]')??[]).filter(n=>n.getClientRects().length);if(!nodes.length)return;if(e.shiftKey&&document.activeElement===nodes[0]){e.preventDefault();nodes.at(-1)?.focus();}else if(!e.shiftKey&&document.activeElement===nodes.at(-1)){e.preventDefault();nodes[0].focus();}}}else{e.stopImmediatePropagation();cancelRef.current();}};window.addEventListener('keydown',key,true);window.addEventListener('framely.back',key,true);return()=>{window.removeEventListener('keydown',key,true);window.removeEventListener('framely.back',key,true);if(root)root.inert=wasInert;previousFocus.current?.focus();if(!done.current)void files('complete',{id:request.id,paths:[]}).catch(()=>{});};},[]);
  useEffect(()=>{const timer=setTimeout(()=>{setQuery(search);setOffset(0);},180);return()=>clearTimeout(timer);},[search]);
