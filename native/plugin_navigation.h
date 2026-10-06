@@ -19,3 +19,7 @@ inline bool allow_plugin_navigation(const std::string& url, const std::string& o
     }
     return port > 0;
 }
+
+inline bool manager_navigation_page(const std::string& page) {
+ return page=="installed"||page=="catalog"||page=="sources"||page=="notification-settings"||page=="settings"||page=="launcher-settings"||page=="updates"||page=="about"||page=="terminal"||page=="files"||page=="apk"||page=="apk-containers"||page=="apk-cleanup";
+}

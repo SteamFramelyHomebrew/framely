@@ -3,8 +3,8 @@ mod apk_metadata;
 mod auth;
 mod desktop;
 mod diagnostics;
-mod http;
 mod file_browser;
+mod http;
 mod ipc;
 mod jobs;
 mod launcher_search;
@@ -19,6 +19,7 @@ mod service;
 mod session;
 mod steam;
 mod subscriptions;
+mod terminal;
 #[cfg(test)]
 mod tests;
 mod update;

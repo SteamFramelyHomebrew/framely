@@ -32,6 +32,8 @@ struct Agent {
     events: Mutex<EventLog>,
     jobs: crate::jobs::Jobs,
     launcher_search: Mutex<crate::launcher_search::SearchCache>,
+    terminals: crate::terminal::Terminals,
+
     catalog_cache: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
 }
 #[derive(Default)]
@@ -589,6 +591,81 @@ impl Agent {
             let result = self.jobs.uploads.append(id, offset, &bytes)?;
             return send_json(r, json!({"result":result}));
         }
+        if path == "/manager-api/terminal" || path == "/manager-api/terminal/ws" {
+            ensure!(
+                r.headers()
+                    .iter()
+                    .any(|h| h.field.equiv("Origin") && h.value.as_str() == expected_origin),
+                "Cross-origin manager request denied"
+            );
+            ensure!(
+                self.core("agreement.status", json!({}))?["accepted"] == true,
+                "请先同意用户协议和隐私声明"
+            );
+            if path.ends_with("/ws") {
+                ensure!(r.method() == &Method::Get, "Invalid terminal method");
+                let query = r.url().split_once('?').map(|(_, q)| q).unwrap_or("");
+                let id = url::form_urlencoded::parse(query.as_bytes())
+                    .find(|(k, _)| k == "id")
+                    .map(|(_, v)| v.into_owned())
+                    .context("Missing terminal")?;
+                let key = r
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.equiv("Sec-WebSocket-Key"))
+                    .context("Missing WebSocket key")?
+                    .value
+                    .as_str();
+                ensure!(r.headers().iter().any(|h|h.field.equiv("Sec-WebSocket-Version")&&h.value.as_str()=="13"),"Unsupported WebSocket version");
+                ensure!(
+                    r.headers().iter().any(|h| h.field.equiv("Upgrade")
+                        && h.value.as_str().eq_ignore_ascii_case("websocket")),
+                    "Missing WebSocket upgrade"
+                );
+                ensure!(
+                    r.headers().iter().any(|h| h.field.equiv("Connection")
+                        && h.value
+                            .as_str()
+                            .split(',')
+                            .any(|v| v.trim().eq_ignore_ascii_case("upgrade"))),
+                    "Missing WebSocket connection upgrade"
+                );
+                let accept = tungstenite::handshake::derive_accept_key(key.as_bytes());
+                let key = self.network_key.lock().unwrap().clone();
+                let response =
+                    Response::empty(101).with_header(header("Sec-WebSocket-Accept", &accept));
+                let stream = r.upgrade("websocket", response);
+                let config = tungstenite::protocol::WebSocketConfig::default()
+                    .max_message_size(Some(262144))
+                    .max_frame_size(Some(262144));
+                let socket = tungstenite::WebSocket::from_raw_socket(
+                    stream,
+                    tungstenite::protocol::Role::Server,
+                    Some(config),
+                );
+                let _ = self.terminals.websocket(&id, socket, || {
+                    !remote || *self.network_key.lock().unwrap() == key
+                });
+                return Ok(());
+            }
+            ensure!(r.method() == &Method::Post, "Invalid manager method");
+            let mut bytes = Vec::new();
+            r.as_reader().take(8193).read_to_end(&mut bytes)?;
+            ensure!(bytes.len() <= 8192, "Manager request too large");
+            let result = (|| -> Result<Value> {
+                self.terminals.api(
+                    &crate::steam::home()?,
+                    &serde_json::from_slice::<Value>(&bytes)?,
+                )
+            })();
+            return send_json(
+                r,
+                match result {
+                    Ok(v) => json!({"result":v}),
+                    Err(e) => json!({"error":e.to_string()}),
+                },
+            );
+        }
         if path == "/api" && r.method() == &Method::Post {
             let origin = r
                 .headers()
@@ -637,7 +714,7 @@ impl Agent {
             } else {
                 data
             };
-            let response=Response::from_data(data).with_header(header("Content-Type","text/html; charset=utf-8")).with_header(header("Content-Security-Policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; frame-src 'self' http://localhost:*; connect-src 'self'; base-uri 'none'; form-action 'none'"));
+            let response=Response::from_data(data).with_header(header("Content-Type","text/html; charset=utf-8")).with_header(header("Content-Security-Policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; media-src 'self' blob:; frame-src 'self' http://localhost:*; connect-src 'self'; base-uri 'none'; form-action 'none'"));
             r.respond(response)?;
             return Ok(());
         }
@@ -1386,6 +1463,7 @@ pub fn serve(
         events: Mutex::default(),
         jobs: crate::jobs::Jobs::default(),
         launcher_search: Mutex::default(),
+        terminals: crate::terminal::Terminals::default(),
         catalog_cache: Arc::default(),
     });
     let network_agent = agent.clone();
@@ -1771,6 +1849,7 @@ mod tests {
             events: Mutex::default(),
             jobs: crate::jobs::Jobs::default(),
             launcher_search: Mutex::default(),
+            terminals: crate::terminal::Terminals::default(),
             catalog_cache: Arc::default(),
         })
     }
@@ -2317,6 +2396,26 @@ mod tests {
             .set("Origin", "null")
             .send_json(json!({"method":"ui.events"}))
             .is_err());
+        for route in ["/manager-api/terminal"] {
+            for origin in ["null", "http://other.example", ""] {
+                assert!(ureq::post(&format!("{}{route}", agent.origin))
+                    .set("Cookie", &format!("framely={}", agent.web_key))
+                    .set("Origin", origin)
+                    .send_json(json!({"operation":"list"}))
+                    .is_err());
+            }
+            assert!(ureq::post(&format!("{}{route}", agent.origin))
+                .set("Origin", &agent.origin)
+                .send_json(json!({"operation":"list"}))
+                .is_err());
+        }
+        assert!(
+            ureq::get(&format!("{}/manager-api/terminal/ws?id=x", agent.origin))
+                .set("Cookie", &format!("framely={}", agent.web_key))
+                .set("Origin", "null")
+                .call()
+                .is_err()
+        );
         let v: Value = ureq::post(&url)
             .set("Cookie", &format!("framely={}", agent.web_key))
             .set("Origin", &agent.origin)
@@ -2349,17 +2448,21 @@ mod tests {
             for expected in [
                 "host.ui.visibility",
                 "host.notification.badge",
+                "launcher.gaze.calibration.get",
                 "status",
                 "agreement.status",
             ] {
                 let (mut stream, _) = listener.accept().unwrap();
                 let request = ipc::read(&mut stream).unwrap();
                 assert_eq!(request["method"], expected);
-                ipc::write(
-                    &mut stream,
-                    &json!({"result":core.handle(request["method"].as_str().unwrap(),request["params"].clone()).unwrap()}),
-                )
-                .unwrap();
+                let response = match core.handle(
+                    request["method"].as_str().unwrap(),
+                    request["params"].clone(),
+                ) {
+                    Ok(value) => json!({"result":value}),
+                    Err(error) => json!({"error":error.to_string()}),
+                };
+                ipc::write(&mut stream, &response).unwrap();
             }
             assert_eq!(
                 core.handle("ui.visibility.get", json!({})).unwrap()["captureObscured"],
