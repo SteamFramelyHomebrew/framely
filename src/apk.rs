@@ -1642,7 +1642,11 @@ fn apply_orientation(c: &Container, orientation: Option<&str>, log: &Path) -> Re
     )?;
     Ok(())
 }
+#[cfg(test)]
 fn launch(c: &Container, a: &App, log: &Path) -> Result<()> {
+    launch_with_started(c, a, log, || {})
+}
+fn launch_with_started(c: &Container, a: &App, log: &Path, started: impl FnOnce()) -> Result<()> {
     let component = launch_component(a)?;
     podman(
         &[
@@ -1697,6 +1701,7 @@ fn launch(c: &Container, a: &App, log: &Path) -> Result<()> {
         Some(log),
     )?;
     // ActivityManager can report success before HWC or the application exits.
+    started();
     // Keep the caller's pending state until the initial display handoff settles.
     #[cfg(not(test))]
     let samples = 16;
@@ -2312,14 +2317,9 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                                     &["exec", &name, "getprop", "lepton.headless"],
                                     Some(&log),
                                 )?;
-                                let visible = podman(
-                                    &["exec", &name, "getprop", "waydroid.active_apps"],
-                                    Some(&log),
-                                )?;
-                                // Lepton's hidden/full-display transition can kill
-                                // its display service on Gamescope. These display
-                                // changes require recreation; a visible running
-                                // application reuses its container and input device.
+                                // A hidden window does not mean the display service
+                                // or container needs recreation. Only a headless
+                                // boot or changed orientation needs that transition.
                                 let orientation = podman(
                                     &["exec", &name, "getprop", "framely.window_orientation"],
                                     Some(&log),
@@ -2330,7 +2330,6 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                                     orientation.trim()
                                 };
                                 if headless.trim() == "true"
-                                    || visible.trim() == "none"
                                     || current != a.orientation.as_deref().unwrap_or("auto")
                                 {
                                     stop(&c, &log)?;
@@ -2370,7 +2369,9 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                                     &log,
                                 )?;
                                 progress(json!({"phase":"launching"}));
-                                launch(&c, &a, &log)?;
+                                launch_with_started(&c, &a, &log, || {
+                                    progress(json!({"phase":"started"}))
+                                })?;
                                 if gamepad.is_some() {
                                     crate::gamepad::activate(&c.name, &a.metadata.package)?;
                                 }
@@ -2698,12 +2699,19 @@ fn gamepad_foreground(text: &str, package: &str) -> bool {
     })
 }
 pub fn launch_app(home: &Path, id: &str) -> Result<()> {
+    launch_app_with_progress(home, id, Arc::new(|_| {}))
+}
+pub fn launch_app_with_progress(
+    home: &Path,
+    id: &str,
+    progress: Arc<dyn Fn(Value) + Send + Sync>,
+) -> Result<()> {
     operate(
         home,
         "launch",
         &json!({"app":id}),
         Cancellation::default(),
-        Arc::new(|_| {}),
+        progress,
     )?;
     Ok(())
 }
@@ -3390,6 +3398,42 @@ echo true > '{}'
         );
         assert!(trace.contains("setprop waydroid.active_apps Waydroid"));
         assert_eq!(fs::read_to_string(media).unwrap(), "partial download");
+    }
+    #[test]
+    fn hidden_application_window_reuses_running_container_and_reports_handoff_before_checks() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        fs::write(f.dir.path().join("closed-window"), "").unwrap();
+        let commands = f.dir.path().join("commands");
+        fs::write(&commands, "").unwrap();
+        f.operation("launch", json!({"app":"test/com.example.app"}))
+            .unwrap();
+        let trace = fs::read_to_string(&commands).unwrap();
+        assert!(
+            !trace.lines().any(|line| line.starts_with("stop ")),
+            "{trace}"
+        );
+        assert!(trace.contains("setprop waydroid.active_apps Waydroid"));
+        let (a, c) = app(&f.home, &load(&f.home).unwrap(), "test/com.example.app").unwrap();
+        fs::write(&commands, "").unwrap();
+        let mut handed_off = false;
+        launch_with_started(&c, &a, &f.dir.path().join("launch.log"), || {
+            let trace = fs::read_to_string(&commands).unwrap();
+            assert!(trace.contains("setprop waydroid.active_apps Waydroid"));
+            assert!(!trace.contains("framely-launch-health"));
+            handed_off = true;
+        })
+        .unwrap();
+        assert!(handed_off);
+        assert!(fs::read_to_string(&commands)
+            .unwrap()
+            .contains("framely-launch-health"));
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        fs::write(f.dir.path().join("launch-fail"), "").unwrap();
+        launch_with_started(&c, &a, &f.dir.path().join("launch.log"), || {
+            panic!("Failed launch must not hand off focus")
+        })
+        .unwrap_err();
     }
     #[test]
     fn launch_health_supports_custom_processes_and_headless_vr() {

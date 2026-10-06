@@ -28,7 +28,7 @@ struct Agent {
     network_status: Mutex<Value>,
     frame_access: Mutex<std::collections::BTreeMap<String, FrameAccess>>,
     native_key: String,
-    commands: Mutex<VecDeque<Value>>,
+    commands: Arc<Mutex<VecDeque<Value>>>,
     events: Mutex<EventLog>,
     jobs: crate::jobs::Jobs,
     launcher_search: Mutex<crate::launcher_search::SearchCache>,
@@ -927,8 +927,24 @@ impl Agent {
             "desktop.list" => Ok(json!(crate::desktop::discover(&crate::steam::home()?))),
             "desktop.launch" => {
                 let id = p["app"].as_str().context("Missing desktop app")?;
-                crate::desktop::launch(&crate::steam::home()?, id)?;
-                push(&self.commands, json!({"kind":"launcher.close"}));
+                if let Some(app) = id.strip_prefix("lepton:") {
+                    let commands = self.commands.clone();
+                    crate::apk::launch_app_with_progress(
+                        &crate::steam::home()?,
+                        app,
+                        Arc::new(move |event| {
+                            if event["phase"] == "started" {
+                                push(&commands, json!({"kind":"launcher.close","handoff":true}));
+                            }
+                        }),
+                    )?;
+                } else {
+                    crate::desktop::launch(&crate::steam::home()?, id)?;
+                    push(
+                        &self.commands,
+                        json!({"kind":"launcher.close","handoff":true}),
+                    );
+                }
                 Ok(json!(true))
             }
             "steam.list" => Ok(json!(crate::steam::discover(&crate::steam::home()?))),
@@ -938,7 +954,10 @@ impl Agent {
                     .filter(|v| *v > 0 && *v <= u32::MAX as u64)
                     .context("Invalid Steam app")? as u32;
                 crate::steam::launch(id)?;
-                push(&self.commands, json!({"kind":"launcher.close"}));
+                push(
+                    &self.commands,
+                    json!({"kind":"launcher.close","handoff":true}),
+                );
                 Ok(json!(true))
             }
             "host.launcher.calibration.target" => {
@@ -1657,7 +1676,7 @@ pub fn serve(
         network_status: Mutex::new(json!({"enabled":false})),
         frame_access: Mutex::default(),
         native_key: native_key.clone(),
-        commands: Mutex::default(),
+        commands: Arc::default(),
         events: Mutex::default(),
         jobs: crate::jobs::Jobs::default(),
         launcher_search: Mutex::default(),
@@ -2051,7 +2070,7 @@ mod tests {
             network_status: Mutex::new(json!({"enabled":false})),
             frame_access: Mutex::default(),
             native_key: random_key(),
-            commands: Mutex::default(),
+            commands: Arc::default(),
             events: Mutex::default(),
             jobs: crate::jobs::Jobs::default(),
             launcher_search: Mutex::default(),
