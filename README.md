@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/i
 For a Preview release, specify an actual published tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install --version v0.4.4-preview.1
+curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install --version v0.4.5-preview.1
 ```
 
 Replace the example tag with the published version you want to install. Enter the sudo password when prompted. See the [installation guide](docs/user-guide/installation.md) for updates, repair, and uninstallation.

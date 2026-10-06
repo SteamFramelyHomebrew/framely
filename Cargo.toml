@@ -1,6 +1,6 @@
 [package]
 name = "framely"
-version = "0.4.4-preview.1"
+version = "0.4.5-preview.1"
 edition = "2021"
 license = "AGPL-3.0-only"
 
