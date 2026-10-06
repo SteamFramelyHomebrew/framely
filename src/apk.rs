@@ -246,12 +246,36 @@ fn running(name: &str) -> bool {
         &[
             "inspect",
             "--format",
-            "{{.State.Running}}",
+            "{{.State.Running}}|{{.State.Pid}}",
             &format!("lepton-{name}"),
         ],
         None,
     )
-    .is_ok_and(|s| s.trim() == "true")
+    .is_ok_and(|s| {
+        s.trim()
+            .split_once('|')
+            .is_some_and(|(state, pid)| state == "true" && runtime_pid_alive(pid))
+    })
+}
+// Podman can retain Running=true after both conmon and the OCI init process die.
+// Inspect the host PID as well, without executing anything inside a dead container.
+fn runtime_pid_alive(value: &str) -> bool {
+    let Ok(pid) = value.parse::<u32>() else {
+        return false;
+    };
+    if pid == 0 {
+        return false;
+    }
+    let proc = PathBuf::from(format!("/proc/{pid}"));
+    if !proc.is_dir() {
+        return false;
+    }
+    // A zombie has exited even while its /proc entry remains. An unreadable stat
+    // alone is not evidence of exit: retain the live directory conservatively.
+    !fs::read_to_string(proc.join("stat")).is_ok_and(|s| {
+        s.rsplit_once(')')
+            .is_some_and(|(_, tail)| matches!(tail.split_whitespace().next(), Some("Z" | "X")))
+    })
 }
 fn validate_baked(p: &Path) -> Result<PathBuf> {
     let p = fs::canonicalize(p)?;
@@ -332,8 +356,13 @@ fn containers(home: &Path, db: &Database) -> Vec<Container> {
         }
     }
     // Podman labels locate Steam/custom compatdata directories even outside the default root.
-    if let Ok(s) = podman(&["ps", "--format", "{{.Names}}"], None) {
-        for n in s.lines().filter_map(|s| s.strip_prefix("lepton-")) {
+    if let Ok(s) = podman(&["ps", "--format", "{{.Names}}|{{.Pid}}"], None) {
+        for n in s.lines().filter_map(|s| {
+            let (name, pid) = s.split_once('|')?;
+            runtime_pid_alive(pid)
+                .then(|| name.strip_prefix("lepton-"))
+                .flatten()
+        }) {
             if !safe(n) {
                 continue;
             }
@@ -3243,8 +3272,8 @@ setup_podman_mounts
                 r#"#!/bin/sh
 printf '%s\n' "$*" >> '{commands}'
 case "$1" in
- inspect) case "$3" in *StartedAt*) echo "fixture|{state}|$(cat '{state}')";; *) cat '{state}';; esac;;
- ps) if [ "$(cat '{state}')" = true ]; then echo lepton-test; fi;;
+ inspect) case "$3" in *StartedAt*) echo "fixture|{state}|$(cat '{state}')";; *State.Pid*) echo "$(cat '{state}')|{pid}";; *) cat '{state}';; esac;;
+ ps) if [ "$(cat '{state}')" = true ]; then case "$3" in *Pid*) echo 'lepton-test|{pid}';; *) echo lepton-test;; esac; fi;;
  stop) echo false > '{state}'; echo stopped;;
  cp) /bin/cp -f "$2" '{incoming}';;
  exec)
@@ -3291,6 +3320,7 @@ case "$1" in
   fi;;
 esac
 "#,
+                pid = std::process::id(),
                 bad_probe = dir.path().join("bad-probe").display(),
                 other = dir.path().join("other-process").display(),
                 state = state.display(),
@@ -3382,6 +3412,33 @@ echo true > '{}'
             !trace.lines().any(|line| line.starts_with("inspect ")),
             "{trace}"
         );
+    }
+    #[test]
+    fn stale_podman_running_state_does_not_disable_installed_apps() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let path = f.dir.path().join("tools/podman");
+        let script = fs::read_to_string(&path)
+            .unwrap()
+            .replace(&format!("|{}", std::process::id()), "|0");
+        fs::write(&path, script).unwrap();
+        assert!(!running("test"));
+        let cs = containers(&f.home, &load(&f.home).unwrap());
+        assert!(!cs.iter().find(|c| c.id == "test").unwrap().running);
+        let data = list(&f.home).unwrap();
+        assert_eq!(data["apps"][0]["stateKnown"], true);
+        assert_eq!(data["apps"][0]["installed"], true);
+        assert!(data["warnings"].as_array().unwrap().is_empty());
+        assert!(launcher(&f.home)[0]["launchUnavailable"].is_null());
+        assert!(f.save_file().exists());
+        let log = f.dir.path().join("commands");
+        fs::write(&log, "").unwrap();
+        f.operation("launch", json!({"app":"test/com.example.app"}))
+            .unwrap();
+        // The fake stale runtime stays dead, but launch must attempt boot rather
+        // than waiting for an already-exited Android instance.
+        assert!(f.dir.path().join("props").exists());
+        assert!(f.save_file().exists());
     }
     #[test]
     fn container_discovery_falls_back_if_bulk_status_query_fails() {
@@ -3816,8 +3873,8 @@ echo true > '{}'
         fs::write(tools.join("podman"), format!(r#"#!/bin/sh
 printf '%s\n' "$*" >> '{commands}'
 case "$1" in
- inspect) case "$3" in *StartedAt*) echo "fixture|{state}|$(cat '{state}')";; *) cat '{state}';; esac;;
- ps) if [ "$(cat '{state}')" = true ]; then echo lepton-test; fi;;
+ inspect) case "$3" in *StartedAt*) echo "fixture|{state}|$(cat '{state}')";; *State.Pid*) echo "$(cat '{state}')|{pid}";; *) cat '{state}';; esac;;
+ ps) if [ "$(cat '{state}')" = true ]; then case "$3" in *Pid*) echo 'lepton-test|{pid}';; *) echo lepton-test;; esac; fi;;
  stop) echo false > '{state}';;
  cp) /bin/cp -f "$2" '{incoming}';;
  exec)
@@ -3835,7 +3892,7 @@ case "$1" in
   elif [ "$3" = am ]; then echo 'Status: ok';
   fi;;
 esac
-"#, commands=f.dir.path().join("commands").display(), state=f.dir.path().join("running").display(),
+"#, pid=std::process::id(), commands=f.dir.path().join("commands").display(), state=f.dir.path().join("running").display(),
             incoming=f.dir.path().join("incoming.apk").display(), second=second.display(), mounted=mounted.display(), first=baked.join("data_overlay/app/xyz/com.example.app/base.apk").display(), first_dir=baked.join("data_overlay/app/xyz/com.example.app").display(),
             xml=xml.display(), database=baked.join("data_overlay/system/packages.xml").display())).unwrap();
         // Simulate an older/shared installation without adding a package through

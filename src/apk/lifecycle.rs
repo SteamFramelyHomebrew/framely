@@ -275,13 +275,18 @@ impl Monitor {
         let mut cs = candidates(home, &db);
         let known: BTreeSet<_> = cs.iter().map(|c| c.name.clone()).collect();
         LAUNCHES.lock().unwrap().retain(|n, _| known.contains(n));
-        let Ok(running) = short(&["ps", "--format", "{{.Names}}"]) else {
+        let Ok(running) = short(&["ps", "--format", "{{.Names}}|{{.Pid}}"]) else {
             self.watches.clear();
             return Ok(());
         };
         let running: BTreeSet<_> = running
             .lines()
-            .filter_map(|n| n.strip_prefix("lepton-"))
+            .filter_map(|row| {
+                let (name, pid) = row.split_once('|')?;
+                runtime_pid_alive(pid)
+                    .then(|| name.strip_prefix("lepton-"))
+                    .flatten()
+            })
             .collect();
         cs.retain(|c| running.contains(c.name.as_str()));
         let names: BTreeSet<_> = cs.iter().map(|c| c.name.clone()).collect();
