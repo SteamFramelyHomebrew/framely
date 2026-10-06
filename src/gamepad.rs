@@ -1,6 +1,7 @@
-//! Optional, session-user-only input bridge. One container owns the virtual pad.
+//! Optional, session-user-only input bridges. Each running container retains its pad.
 use anyhow::{ensure, Context, Result};
 use std::{
+    collections::BTreeMap,
     fs,
     io::{BufRead, BufReader, Read, Write},
     os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
@@ -24,7 +25,34 @@ struct Bridge {
     package: Option<String>,
     enabled: bool,
 }
-static BRIDGE: Mutex<Option<Bridge>> = Mutex::new(None);
+#[derive(Default)]
+struct Bridges {
+    contexts: BTreeMap<String, Bridge>,
+    active: Option<String>,
+}
+static BRIDGE: Mutex<Bridges> = Mutex::new(Bridges {
+    contexts: BTreeMap::new(),
+    active: None,
+});
+impl Bridge {
+    fn pause(&mut self) -> Result<()> {
+        writeln!(self.input, "disable")?;
+        self.enabled = false;
+        Ok(())
+    }
+    fn update(&mut self, alive: Option<bool>, focused: bool) -> Result<()> {
+        // Activity/process records can disappear briefly during game updates,
+        // splash-screen handoffs or a query timeout. Keep the mounted device;
+        // only neutralize input until the selected app is foreground again.
+        let enabled = alive != Some(false) && focused && claimed(&self.mount.ready);
+        if self.enabled != enabled {
+            writeln!(self.input, "{}", if enabled { "enable" } else { "disable" })?;
+            self.enabled = enabled;
+        }
+        Ok(())
+    }
+}
+
 static SESSION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub fn session_started() {
     SESSION.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -49,32 +77,42 @@ impl Drop for Bridge {
     }
 }
 pub fn stop() {
-    BRIDGE.lock().unwrap().take();
+    let mut bridges = BRIDGE.lock().unwrap();
+    bridges.active = None;
+    bridges.contexts.clear();
 }
 pub fn stop_context(context: &str) {
-    let mut b = BRIDGE.lock().unwrap();
-    if b.as_ref().is_some_and(|b| b.mount.context == context) {
-        b.take();
+    let mut bridges = BRIDGE.lock().unwrap();
+    if bridges.active.as_deref() == Some(context) {
+        bridges.active = None;
     }
+    bridges.contexts.remove(context);
 }
 pub fn stop_app(context: &str, package: &str) {
-    let mut b = BRIDGE.lock().unwrap();
-    if b.as_ref()
-        .is_some_and(|b| b.mount.context == context && b.package.as_deref() == Some(package))
-    {
-        b.take();
+    let mut bridges = BRIDGE.lock().unwrap();
+    if let Some(bridge) = bridges.contexts.get_mut(context) {
+        if bridge.package.as_deref() == Some(package) {
+            let _ = bridge.pause();
+            bridge.package = None;
+            if bridges.active.as_deref() == Some(context) {
+                bridges.active = None;
+            }
+        }
     }
 }
 pub fn current(context: &str) -> Option<Mount> {
-    let mut b = BRIDGE.lock().unwrap();
-    if let Some(value) = b.as_mut() {
-        if value.child.try_wait().ok().flatten().is_some() {
-            b.take();
+    let mut bridges = BRIDGE.lock().unwrap();
+    if bridges
+        .contexts
+        .get_mut(context)
+        .is_some_and(|b| b.child.try_wait().ok().flatten().is_some())
+    {
+        bridges.contexts.remove(context);
+        if bridges.active.as_deref() == Some(context) {
+            bridges.active = None;
         }
     }
-    b.as_ref()
-        .filter(|b| b.mount.context == context)
-        .map(|b| b.mount.clone())
+    bridges.contexts.get(context).map(|b| b.mount.clone())
 }
 pub fn prepare(storage: &Path, context: &str) -> Result<Mount> {
     ensure!(SESSION.load(std::sync::atomic::Ordering::Relaxed),"Gamepad launch requires the UI session; open the APK from the management panel or launcher");
@@ -82,16 +120,20 @@ pub fn prepare(storage: &Path, context: &str) -> Result<Mount> {
         unsafe { libc::geteuid() } != 0,
         "Gamepad input must run as the Steam session user"
     );
-    if let Some(m) = current(context) {
-        let mut b = BRIDGE.lock().unwrap();
-        if let Some(bridge) = b.as_mut() {
-            writeln!(bridge.input, "disable")?;
-            bridge.package = None;
-            bridge.enabled = false;
+    let current = current(context);
+    {
+        let mut bridges = BRIDGE.lock().unwrap();
+        bridges.active = None;
+        for bridge in bridges.contexts.values_mut() {
+            bridge.pause()?;
         }
-        return Ok(m);
+        if let Some(bridge) = bridges.contexts.get_mut(context) {
+            bridge.package = None;
+        }
     }
-    stop();
+    if let Some(mount) = current {
+        return Ok(mount);
+    }
     let exe = std::env::current_exe()?;
     let distribution = exe
         .parent()
@@ -155,44 +197,53 @@ pub fn prepare(storage: &Path, context: &str) -> Result<Mount> {
     );
     bridge.mount.event = event;
     let mount = bridge.mount.clone();
-    *BRIDGE.lock().unwrap() = Some(bridge);
+    BRIDGE
+        .lock()
+        .unwrap()
+        .contexts
+        .insert(context.into(), bridge);
     WATCHER.get_or_init(|| {
         std::thread::spawn(|| loop {
             std::thread::sleep(Duration::from_millis(700));
             let target = {
-                let b = BRIDGE.lock().unwrap();
-                b.as_ref()
+                let mut bridges = BRIDGE.lock().unwrap();
+                bridges
+                    .contexts
+                    .retain(|_, b| b.child.try_wait().ok().flatten().is_none());
+                if bridges
+                    .active
+                    .as_ref()
+                    .is_some_and(|context| !bridges.contexts.contains_key(context))
+                {
+                    bridges.active = None;
+                }
+                bridges
+                    .active
+                    .as_ref()
+                    .and_then(|context| bridges.contexts.get(context))
                     .and_then(|b| b.package.as_ref().map(|p| (b.mount.clone(), p.clone())))
             };
             let Some((mount, package)) = target else {
                 continue;
             };
             let (alive, focused) = crate::apk::gamepad_health(&mount.context, &package);
-            let mut b = BRIDGE.lock().unwrap();
-            if b.as_ref().is_none_or(|b| b.mount.token != mount.token) {
+            let mut bridges = BRIDGE.lock().unwrap();
+            if bridges.active.as_deref() != Some(&mount.context) {
                 continue;
             }
-            if alive == Some(false)
-                || b.as_mut()
-                    .is_some_and(|b| b.child.try_wait().ok().flatten().is_some())
+            let Some(bridge) = bridges
+                .contexts
+                .get_mut(&mount.context)
+                .filter(|b| b.mount.token == mount.token && b.package.as_deref() == Some(&package))
+            else {
+                continue;
+            };
+            if bridge.child.try_wait().ok().flatten().is_some()
+                || bridge.update(alive, focused).is_err()
             {
-                b.take();
-                continue;
-            }
-            let bridge = b.as_mut().unwrap();
-            let enabled = focused && claimed(&mount.ready);
-            if bridge.enabled != enabled {
-                if writeln!(
-                    bridge.input,
-                    "{}",
-                    if enabled { "enable" } else { "disable" }
-                )
-                .is_err()
-                {
-                    b.take();
-                    continue;
-                }
-                bridge.enabled = enabled;
+                eprintln!("Gamepad bridge exited for container {}", mount.context);
+                bridges.contexts.remove(&mount.context);
+                bridges.active = None;
             }
         });
     });
@@ -208,12 +259,14 @@ pub fn activate(context: &str, package: &str) -> Result<()> {
         claimed(&mount.ready),
         "Android did not claim the virtual gamepad; restart the container and retry"
     );
-    let mut b = BRIDGE.lock().unwrap();
-    let bridge = b
-        .as_mut()
+    let mut bridges = BRIDGE.lock().unwrap();
+    let bridge = bridges
+        .contexts
+        .get_mut(context)
         .filter(|b| b.mount.token == mount.token)
         .context("Gamepad input is no longer running")?;
     bridge.package = Some(package.into());
+    bridges.active = Some(context.into());
     Ok(())
 }
 fn claimed(directory: &Path) -> bool {
@@ -240,6 +293,55 @@ fn valid_node(p: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn temporary_game_handoffs_neutralize_input_without_disconnect() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("ready"), "ready\n").unwrap();
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "while IFS= read -r line; do printf '%s\n' \"$line\"; done",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = child.stdin.take().unwrap();
+        let mut output = BufReader::new(child.stdout.take().unwrap());
+        let id = child.id();
+        let mut bridge = Bridge {
+            mount: Mount {
+                context: "test".into(),
+                token: "same-device".into(),
+                event: PathBuf::from("/dev/input/event999"),
+                grab: PathBuf::new(),
+                ready: directory.path().into(),
+            },
+            child,
+            input,
+            package: Some("com.example.game".into()),
+            enabled: false,
+        };
+        let mut read = || {
+            let mut line = String::new();
+            output.read_line(&mut line).unwrap();
+            line
+        };
+        bridge.update(Some(true), true).unwrap();
+        assert_eq!(read(), "enable\n");
+        bridge.update(Some(false), false).unwrap();
+        assert_eq!(read(), "disable\n");
+        bridge.update(None, false).unwrap();
+        assert!(bridge.child.try_wait().unwrap().is_none());
+        assert!(claimed(&bridge.mount.ready));
+        bridge.update(Some(true), true).unwrap();
+        assert_eq!(read(), "enable\n");
+        bridge.pause().unwrap();
+        assert_eq!(read(), "disable\n");
+        assert_eq!(bridge.child.id(), id);
+        assert_eq!(bridge.mount.token, "same-device");
+        assert!(bridge.child.try_wait().unwrap().is_none());
+    }
     #[test]
     fn readiness_requires_a_regular_acknowledgement() {
         let dir = tempfile::tempdir().unwrap();
