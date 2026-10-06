@@ -3,6 +3,7 @@
   "locale": "en-US",
   "name": "English",
   "messages": {
+    "每个新应用使用独立容器，更新保留原容器。": "Each new app uses its own container. Updates retain the existing container.",
     "备份容器数据": "Backing up container data",
     "窗口设置将在下次打开应用时应用；必要时自动重启容器。": "Window settings apply the next time you open the app; the container restarts automatically when needed.",
     "操作进行中，请等待实际结果。": "Operation in progress. Please wait for the result.",

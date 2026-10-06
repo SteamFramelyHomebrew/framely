@@ -768,7 +768,7 @@ pub fn list(home: &Path) -> Result<Value> {
         }
     }
     Ok(
-        json!({"apps":apps,"containers":cs.iter().map(|c| { let known=!warnings.iter().any(|w|w.starts_with(&format!("{}:",c.name)))&&!apps.iter().any(|a|a.context==c.id&&!a.state_known); let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(!c.steam&&known); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"gamepadEnabled":db.gamepad_enabled}),
+        json!({"apps":apps,"containers":cs.iter().map(|c| { let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(false); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"gamepadEnabled":db.gamepad_enabled}),
     )
 }
 pub fn launcher(home: &Path) -> Vec<Value> {
@@ -2027,13 +2027,23 @@ pub fn operate(
                         db.owned_contexts.push(context.clone());
                     }
                 }
-                let previous = if c.baked.exists() {
+                let packages = if c.baked.exists() {
                     installed(home, &c)?
-                        .into_iter()
-                        .find(|(m, _)| m.package == metadata.package)
                 } else {
-                    None
+                    Vec::new()
                 };
+                let previous = packages
+                    .iter()
+                    .find(|(m, _)| m.package == metadata.package)
+                    .cloned();
+                // Existing shared containers stay readable and updatable. New
+                // package identities cannot reuse another app's context, even
+                // when only its retained data remains. Reject before any stop,
+                // backup, journal write or package-manager call.
+                ensure!(previous.is_some() || (
+                    !packages.iter().any(|(m, _)| m.package != metadata.package)
+                    && !db.records.values().any(|record| record.context == c.id && record.metadata.package != metadata.package)
+                ), "Each new application requires its own container; shared containers only support updates to their existing applications");
                 if let Some((m, _)) = &previous {
                     ensure!(
                         metadata.version_code >= m.version_code,
@@ -3235,17 +3245,17 @@ echo true > '{}'
         assert!(!load(&f.home).unwrap().records["test/com.example.app"].removed);
     }
     #[test]
-    fn existing_sideloaded_containers_accept_additional_apps() {
+    fn existing_sideloaded_containers_do_not_accept_additional_apps() {
         let f = Fixture::new();
         let data = list(&f.home).unwrap();
-        assert_eq!(data["containers"][0]["acceptsAdditionalApps"], true);
+        assert_eq!(data["containers"][0]["acceptsAdditionalApps"], false);
         let baked = f.home.join(".local/share/lepton/contexts/test/baked");
         let direct = baked.join("data_overlay/app/xyz/com.example.app");
         fs::create_dir_all(&direct).unwrap();
         fs::rename(baked.join("app_overlay/base.apk"), direct.join("base.apk")).unwrap();
         fs::write(f.dir.path().join("running"), "false").unwrap();
         let data = list(&f.home).unwrap();
-        assert_eq!(data["containers"][0]["acceptsAdditionalApps"], true);
+        assert_eq!(data["containers"][0]["acceptsAdditionalApps"], false);
         assert_eq!(data["containers"][0]["managed"], false);
     }
     #[test]
@@ -3289,7 +3299,7 @@ echo true > '{}'
             .is_empty());
     }
     #[test]
-    fn additional_install_preserves_mounted_apk_and_survives_restart() {
+    fn legacy_shared_apps_survive_restart_but_new_packages_are_rejected() {
         let f = Fixture::new();
         list(&f.home).unwrap();
         let baked = f.home.join(".local/share/lepton/contexts/test/baked");
@@ -3324,14 +3334,30 @@ esac
 "#, commands=f.dir.path().join("commands").display(), state=f.dir.path().join("running").display(),
             incoming=f.dir.path().join("incoming.apk").display(), second=second.display(), mounted=mounted.display(), first=baked.join("data_overlay/app/xyz/com.example.app/base.apk").display(), first_dir=baked.join("data_overlay/app/xyz/com.example.app").display(),
             xml=xml.display(), database=baked.join("data_overlay/system/packages.xml").display())).unwrap();
-        let incoming = f.dir.path().join("extra.apk");
-        crate::apk_metadata::fixture_named(&incoming, true, 1, "com.example.extra");
+        // Simulate an older/shared installation without adding a package through
+        // the new installer. Both existing apps must remain manageable.
+        crate::apk_metadata::fixture_named(&second, true, 1, "com.example.extra");
+        fs::copy(&xml, baked.join("data_overlay/system/packages.xml")).unwrap();
+        list(&f.home).unwrap();
+        let incoming = f.dir.path().join("third.apk");
+        crate::apk_metadata::fixture_named(&incoming, true, 1, "com.example.third");
         let reviewed = inspect(&f.home, &incoming, &Cancellation::default()).unwrap();
-        f.operation(
-            "install",
-            json!({"context":"test","ticket":reviewed["ticket"],"approve":true}),
-        )
-        .unwrap();
+        let before = fs::read(root(&f.home).join("state.json")).unwrap();
+        let trace_before = fs::read_to_string(f.dir.path().join("commands")).unwrap();
+        let error = f
+            .operation(
+                "install",
+                json!({"context":"test","ticket":reviewed["ticket"],"approve":true}),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("own container"));
+        assert_eq!(fs::read(root(&f.home).join("state.json")).unwrap(), before);
+        let trace_after = fs::read_to_string(f.dir.path().join("commands")).unwrap();
+        let new_calls = &trace_after[trace_before.len()..];
+        assert!(
+            !new_calls.contains("stop ") && !new_calls.contains("package install"),
+            "{new_calls}"
+        );
         assert_eq!(fs::read(&mounted).unwrap(), original);
         assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
         assert_eq!(
