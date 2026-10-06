@@ -102,3 +102,13 @@ Enabling applies on the next application launch. Framely may restart its contain
 The bridge runs as the Steam session user and requires access to `/dev/uinput`, active SteamVR and the supported Lepton startup hooks. It does not modify Steam's installed Lepton files. Only its virtual event node is mounted into the target container, where Android claims it exclusively. If this claim fails, no input is forwarded and the launch reports an error. Disable the option to use the normal launch path. Bridge errors are recorded in `~/.local/share/framely/apk-manager/logs/gamepad.log`; key presses are not logged. The native helper and Android adapter ship in both offline and core update packages.
 
 When this option is enabled, launch APKs through the management panel or launcher. A one-shot CLI launch cannot own the persistent input bridge and reports an error instead.
+
+## Container lifecycle
+
+The APK page provides two persistent switches. **Stop container after app exits** defaults off: after a confirmed launch, all target app processes must remain absent for 15 seconds before the container stops. Background apps and services keep it alive. **Stop container when closing its window** defaults on: a confirmed system window-close signal stops the associated container (normally within a few seconds). Switching windows, minimizing, and opening the launcher do not count as closing.
+
+Monitoring pauses during APK mutations and startup checks. A container restart, uncertain process query, or another active app in a legacy shared container prevents stopping. Steam-managed containers are left to Steam. Shutdown uses normal Podman stop with a 10-second grace period; APKs, saves and downloads are retained. Reopening a stopped container takes a cold Android start; with both switches disabled a healthy running container is reused.
+
+### SteamOS window-close limitation
+
+On Frame Gamescope `3.16.28-76-ge383171f`, both window and Dock close controls log `Closing Wayland windows not supported yet.` for Lepton windows. The close request does not reach Android, so this switch cannot make these controls work on that build. Use the APK panel's **Stop container** action until the system compositor supports Wayland close requests. Framely does not infer close intent from focus changes or this unscoped log message.

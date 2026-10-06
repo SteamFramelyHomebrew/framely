@@ -1655,6 +1655,7 @@ pub fn serve(
         "UI session must not run as root"
     );
     crate::gamepad::session_started();
+    crate::apk::lifecycle_started();
     let server = Server::http("127.0.0.1:0").map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let port = server
         .server_addr()

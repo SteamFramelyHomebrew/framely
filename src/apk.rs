@@ -20,6 +20,10 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+mod lifecycle;
+pub fn lifecycle_started() {
+    lifecycle::start();
+}
 static MUTATION: Mutex<()> = Mutex::new(());
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,8 +43,12 @@ struct Record {
     #[serde(default)]
     orientation: Option<String>,
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct Database {
+    #[serde(default)]
+    auto_stop_container: bool,
+    #[serde(default = "close_container_default")]
+    stop_container_on_close: bool,
     #[serde(default)]
     gamepad_enabled: bool,
     #[serde(default)]
@@ -51,6 +59,19 @@ struct Database {
     roots: Vec<PathBuf>,
     #[serde(default)]
     records: BTreeMap<String, Record>,
+}
+impl Default for Database {
+    fn default() -> Self {
+        Self {
+            auto_stop_container: false,
+            stop_container_on_close: true,
+            gamepad_enabled: false,
+            owned_contexts: Vec::new(),
+            root_contexts: BTreeMap::new(),
+            roots: Vec::new(),
+            records: BTreeMap::new(),
+        }
+    }
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,6 +99,9 @@ struct App {
     activity: Option<String>,
     show_window: Option<bool>,
     orientation: Option<String>,
+}
+fn close_container_default() -> bool {
+    true
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -778,7 +802,7 @@ pub fn list(home: &Path) -> Result<Value> {
         }
     }
     Ok(
-        json!({"apps":apps,"containers":cs.iter().map(|c| { let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(false); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"gamepadEnabled":db.gamepad_enabled}),
+        json!({"apps":apps,"containers":cs.iter().map(|c| { let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(false); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"gamepadEnabled":db.gamepad_enabled,"autoStopContainer":db.auto_stop_container,"stopContainerOnClose":db.stop_container_on_close}),
     )
 }
 pub fn launcher(home: &Path) -> Vec<Value> {
@@ -1702,6 +1726,7 @@ fn launch_with_started(c: &Container, a: &App, log: &Path, started: impl FnOnce(
     )?;
     // ActivityManager can report success before HWC or the application exits.
     started();
+    lifecycle::launched(c, a);
     // Keep the caller's pending state until the initial display handoff settles.
     #[cfg(not(test))]
     let samples = 16;
@@ -2038,6 +2063,20 @@ pub fn operate(
     progress(json!({"phase":"preparing","operation":kind}));
     let result = (|| -> Result<Value> {
         match kind {
+            "lifecycle.settings" => {
+                let auto = p["autoStopContainer"]
+                    .as_bool()
+                    .context("Invalid automatic container stop setting")?;
+                let close = p["stopContainerOnClose"]
+                    .as_bool()
+                    .context("Invalid window close setting")?;
+                cancel.commit(|| {
+                    db.auto_stop_container = auto;
+                    db.stop_container_on_close = close;
+                    save(home, &db)?;
+                    Ok(json!(true))
+                })
+            }
             "gamepad.settings" => {
                 let enabled = p["enabled"].as_bool().context("Invalid gamepad setting")?;
                 cancel.commit(|| {
@@ -2719,6 +2758,126 @@ pub fn launch_app_with_progress(
 mod tests {
     use super::*;
     #[test]
+    fn lifecycle_settings_migrate_persist_and_reject_invalid_values() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path();
+        assert!(!load(home).unwrap().auto_stop_container);
+        assert!(load(home).unwrap().stop_container_on_close);
+        let old: Database = serde_json::from_value(json!({})).unwrap();
+        assert!(old.stop_container_on_close);
+        assert!(!old.auto_stop_container);
+        operate(
+            home,
+            "lifecycle.settings",
+            &json!({"autoStopContainer":true,"stopContainerOnClose":false}),
+            Cancellation::default(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        assert!(load(home).unwrap().auto_stop_container);
+        assert!(!load(home).unwrap().stop_container_on_close);
+        assert!(operate(
+            home,
+            "lifecycle.settings",
+            &json!({"autoStopContainer":"yes","stopContainerOnClose":true}),
+            Cancellation::default(),
+            Arc::new(|_| {})
+        )
+        .is_err());
+        assert!(!load(home).unwrap().stop_container_on_close);
+    }
+    #[test]
+    fn lifecycle_native_close_and_exit_stop_without_changing_application_data() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let mut monitor = lifecycle::Monitor::default();
+        let n = Instant::now();
+        monitor.tick(&f.home, n).unwrap();
+        // A background switch leaves the window property visible and cannot stop it.
+        monitor.tick(&f.home, n + Duration::from_secs(20)).unwrap();
+        assert!(running("test"));
+        fs::write(f.dir.path().join("closed-window"), "").unwrap();
+        monitor.tick(&f.home, n + Duration::from_secs(21)).unwrap();
+        monitor.tick(&f.home, n + Duration::from_secs(23)).unwrap();
+        assert!(!running("test"));
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        // Automatic process-exit cleanup is independent of native window closing.
+        fs::write(f.dir.path().join("running"), "true").unwrap();
+        fs::remove_file(f.dir.path().join("closed-window")).unwrap();
+        f.operation(
+            "lifecycle.settings",
+            json!({"autoStopContainer":true,"stopContainerOnClose":false}),
+        )
+        .unwrap();
+        monitor.tick(&f.home, n + Duration::from_secs(24)).unwrap();
+        fs::write(f.dir.path().join("dead-process"), "").unwrap();
+        monitor.tick(&f.home, n + Duration::from_secs(25)).unwrap();
+        monitor.tick(&f.home, n + Duration::from_secs(39)).unwrap();
+        assert!(running("test"));
+        monitor.tick(&f.home, n + Duration::from_secs(40)).unwrap();
+        assert!(!running("test"));
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+    }
+    #[test]
+    fn lifecycle_handles_close_during_launch_and_rejects_incomplete_queries() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        f.operation("launch", json!({"app":"test/com.example.app"}))
+            .unwrap();
+        fs::write(f.dir.path().join("closed-window"), "").unwrap();
+        let mut monitor = lifecycle::Monitor::default();
+        let n = Instant::now();
+        monitor.tick(&f.home, n).unwrap();
+        monitor.tick(&f.home, n + Duration::from_secs(2)).unwrap();
+        assert!(!running("test"));
+        fs::write(f.dir.path().join("running"), "true").unwrap();
+        fs::remove_file(f.dir.path().join("closed-window")).unwrap();
+        f.operation(
+            "lifecycle.settings",
+            json!({"autoStopContainer":true,"stopContainerOnClose":false}),
+        )
+        .unwrap();
+        monitor.tick(&f.home, n + Duration::from_secs(3)).unwrap();
+        fs::write(f.dir.path().join("dead-process"), "").unwrap();
+        monitor.tick(&f.home, n + Duration::from_secs(4)).unwrap();
+        fs::write(f.dir.path().join("bad-probe"), "").unwrap();
+        monitor.tick(&f.home, n + Duration::from_secs(30)).unwrap();
+        assert!(running("test"));
+        fs::remove_file(f.dir.path().join("bad-probe")).unwrap();
+        monitor.tick(&f.home, n + Duration::from_secs(60)).unwrap();
+        assert!(running("test"));
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+    }
+    #[test]
+    fn lifecycle_shared_container_and_active_operations_are_protected() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let baked = f.home.join(".local/share/lepton/contexts/test/baked");
+        fs::write(baked.join("data_overlay/system/packages.xml"),"<packages><package name=\"com.example.app\" codePath=\"/data/app/a\"/><package name=\"com.example.extra\" codePath=\"/data/app/b\"/></packages>").unwrap();
+        let mut monitor = lifecycle::Monitor::default();
+        let n = Instant::now();
+        monitor.tick(&f.home, n).unwrap();
+        fs::write(f.dir.path().join("closed-window"), "").unwrap();
+        fs::write(f.dir.path().join("other-process"), "").unwrap();
+        monitor.tick(&f.home, n + Duration::from_secs(1)).unwrap();
+        monitor.tick(&f.home, n + Duration::from_secs(30)).unwrap();
+        assert!(running("test"));
+        fs::remove_file(f.dir.path().join("other-process")).unwrap();
+        let lock = fs::OpenOptions::new()
+            .write(true)
+            .open(root(&f.home).join("operation.lock"))
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        monitor.tick(&f.home, n + Duration::from_secs(31)).unwrap();
+        assert!(running("test"));
+        drop(lock);
+        monitor.tick(&f.home, n + Duration::from_secs(32)).unwrap();
+        assert!(running("test"));
+    }
+    #[test]
     fn gamepad_setting_defaults_off_and_round_trips() {
         let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
@@ -3084,7 +3243,7 @@ setup_podman_mounts
                 r#"#!/bin/sh
 printf '%s\n' "$*" >> '{commands}'
 case "$1" in
- inspect) cat '{state}';;
+ inspect) case "$3" in *StartedAt*) echo "fixture|{state}|$(cat '{state}')";; *) cat '{state}';; esac;;
  ps) if [ "$(cat '{state}')" = true ]; then echo lepton-test; fi;;
  stop) echo false > '{state}'; echo stopped;;
  cp) /bin/cp -f "$2" '{incoming}';;
@@ -3099,7 +3258,16 @@ case "$1" in
     clear) echo Success;;
    esac
   elif [ "$3" = sh ]; then
-   if [ "$6" = framely-launch-health ]; then
+   if [ "$6" = framely-lifecycle ]; then
+    echo FRAMELY_ACTIVE=com.example.app
+    if [ -f '{closed}' ]; then echo FRAMELY_WINDOW=none; else echo FRAMELY_WINDOW=Waydroid; fi
+    if [ -f '{bad_probe}' ]; then echo incomplete; exit 0; fi
+    echo FRAMELY_PROCESSES
+    echo 'ACTIVITY MANAGER RUNNING PROCESSES (dumpsys activity processes)'
+    if [ ! -f '{dead}' ]; then echo 'packageList={{com.example.app}}'; fi
+    if [ -f '{other}' ]; then echo 'packageList={{com.example.extra}}'; fi
+    echo FRAMELY_LIFECYCLE_DONE
+   elif [ "$6" = framely-launch-health ]; then
     if [ "$(cat '{state}')" != true ]; then exit 1;
     elif [ "$7" = flat ] && {{ [ -f '{dead}' ] || [ -f '{headless}' ]; }}; then echo FRAMELY_DISPLAY_MISSING;
     elif [ -f '{dead}' ] || [ -f '{custom}' ]; then echo FRAMELY_APP_MISSING;
@@ -3123,6 +3291,8 @@ case "$1" in
   fi;;
 esac
 "#,
+                bad_probe = dir.path().join("bad-probe").display(),
+                other = dir.path().join("other-process").display(),
                 state = state.display(),
                 commands = dir.path().join("commands").display(),
                 not_ready = dir.path().join("boot-not-ready").display(),
@@ -3646,7 +3816,7 @@ echo true > '{}'
         fs::write(tools.join("podman"), format!(r#"#!/bin/sh
 printf '%s\n' "$*" >> '{commands}'
 case "$1" in
- inspect) cat '{state}';;
+ inspect) case "$3" in *StartedAt*) echo "fixture|{state}|$(cat '{state}')";; *) cat '{state}';; esac;;
  ps) if [ "$(cat '{state}')" = true ]; then echo lepton-test; fi;;
  stop) echo false > '{state}';;
  cp) /bin/cp -f "$2" '{incoming}';;
