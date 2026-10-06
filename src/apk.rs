@@ -964,6 +964,12 @@ for framely_mount_hook in setup_mounts setup_podman_mounts; do
     declare -F "$framely_mount_hook" >/dev/null || continue
     framely_mount_body="$(declare -f "$framely_mount_hook")"
     framely_media_remove='rm -rf "$(data_mount_path)/media/0"'
+    # Refuse an unrecognized storage hook before invoking it. A future Lepton
+    # syntax change must never silently bypass resource preservation.
+    if [[ "$framely_mount_hook" == setup_mounts && "$framely_mount_body" == *'$(data_mount_path)/media/0'* && "$framely_mount_body" != *"$framely_media_remove"* ]]; then
+        echo "Unsupported Lepton media setup; refusing to risk downloaded resources" >&2
+        exit 64
+    fi
     if [[ "$framely_mount_body" == *"$framely_media_remove"* ]]; then
         framely_mount_body="${framely_mount_body//"$framely_media_remove"/framely_prepare_media || return}"
         eval "$framely_mount_body"
@@ -2828,8 +2834,14 @@ setup_podman_mounts
             }
             c.status().unwrap()
         };
+        let part = marker.with_file_name("resource.part");
+        let checkpoint = marker.with_file_name("update.checkpoint");
+        fs::write(&part, b"unfinished download").unwrap();
+        fs::write(&checkpoint, b"offset=19").unwrap();
         assert!(run(None).success());
         assert!(run(None).success());
+        assert_eq!(fs::read(&part).unwrap(), b"unfinished download");
+        assert_eq!(fs::read(&checkpoint).unwrap(), b"offset=19");
         assert_eq!(fs::read_to_string(&marker).unwrap(), "downloaded resource");
         let compat = dir.path().join("compat");
         fs::create_dir(&compat).unwrap();
@@ -2840,6 +2852,15 @@ setup_podman_mounts
             fs::read_link(data.join("media/0")).unwrap(),
             compat.join("external")
         );
+        let current = fs::read_to_string(library.join("liblepton.sh")).unwrap();
+        fs::write(
+            library.join("liblepton.sh"),
+            current.replace("rm -rf ", "rm -rf -- "),
+        )
+        .unwrap();
+        assert!(!run(Some(&compat)).success());
+        assert_eq!(fs::read(&part).unwrap(), b"unfinished download");
+        assert_eq!(fs::read(&checkpoint).unwrap(), b"offset=19");
     }
     #[test]
     fn local_apk_review_snapshots_source_and_rejects_invalid_selections() {
