@@ -896,6 +896,12 @@
     "此文件夹为空": "This folder is empty",
     "试试其他名称，或搜索子目录。": "Try another name or search subfolders.",
     "上传文件或新建文件夹。": "Upload files or create a folder.",
-    "回收站为空": "The recycle bin is empty"
+    "回收站为空": "The recycle bin is empty",
+    "终端会话": "Terminal sessions",
+    "关闭会话 {0}": "Close session {0}",
+    "重命名会话": "Rename session",
+    "可使用 sudo 提权": "sudo available",
+    "Ctrl+Shift+C 复制 · Ctrl+Shift+V 粘贴 · Ctrl+C 中断程序": "Ctrl+Shift+C copy · Ctrl+Shift+V paste · Ctrl+C interrupt",
+    "无法复制，请使用浏览器的复制功能。": "Unable to copy. Use the browser copy command."
   }
 }

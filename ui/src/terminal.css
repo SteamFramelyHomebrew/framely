@@ -1,0 +1,51 @@
+/* Terminal fills the shell. Neutral chrome stays separate from ANSI output.
+   Radius: workspace 0, controls 6px, dialogs 12px. No filters on the canvas. */
+.manager .content.terminal-content{padding:0;overflow:hidden;display:flex;flex-direction:column}
+.terminal-manager{--terminal-text:#e8e8ed;--terminal-muted:#b2b2ba;--terminal-line:#38383c;flex:1;min-height:0;height:100%;gap:0;background:#19191b;color:var(--terminal-text);font-size:14px}
+.terminal-manager button{border:1px solid transparent;border-radius:6px;background:transparent;color:var(--terminal-text);padding:7px 10px;min-height:38px;font-size:13px;gap:7px;white-space:nowrap}
+.terminal-manager button:hover:not(:disabled){background:#353538}
+.terminal-manager button:active:not(:disabled){transform:translateY(1px)}
+.terminal-manager button:focus-visible,.terminal-manager input:focus-visible{outline:2px solid #a2c7df;outline-offset:2px}
+.terminal-manager svg{stroke-width:1.6}
+.terminal-manager .terminal-tabbar{display:flex;align-items:center;min-height:50px;background:#232325;border-bottom:1px solid var(--terminal-line);padding:0 10px;gap:12px;flex:none}
+.terminal-manager .terminal-sessions{display:flex;flex:1;min-width:0;gap:2px;flex-wrap:nowrap;overflow-x:auto;align-self:stretch}
+.terminal-manager .terminal-tab{display:flex;align-items:center;position:relative;border:0;border-radius:0;flex:none;max-width:260px;background:transparent;padding:0 4px}
+.terminal-manager .terminal-tab.active{background:#303034;box-shadow:inset 0 -2px 0 #b8bdc6}
+.terminal-manager .terminal-tab>button:first-child{border:0;background:transparent;min-width:0;padding:8px;min-height:44px;border-radius:0;color:var(--terminal-muted)}
+.terminal-manager .terminal-tab.active>button:first-child{color:var(--terminal-text)}
+.terminal-manager .terminal-tab>button>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.terminal-manager .terminal-tab small{font-size:11px;color:var(--terminal-muted)}
+.terminal-manager .terminal-tab-close{min-width:30px;width:30px;min-height:32px;padding:6px;border-radius:6px}
+.terminal-manager .terminal-new{flex:none}
+.terminal-manager .terminal-toolbar{min-height:44px;padding:4px 16px;justify-content:space-between;background:#202022;border-bottom:1px solid var(--terminal-line);gap:10px;flex:none}
+.terminal-manager .terminal-connection{display:flex;align-items:center;gap:8px;color:var(--terminal-muted);font-size:12px}
+.terminal-manager .terminal-controls{display:flex;align-items:center;gap:4px}
+.terminal-manager .terminal-controls button{min-height:34px;padding:5px 8px;font-size:12px}
+.terminal-manager .terminal-takeover{border-color:#66666c;background:#343438}
+.terminal-manager .terminal-canvas{flex:1;min-height:0;height:auto;border:0;border-radius:0;background:#19191b;padding:16px 20px 8px;overflow:hidden}
+.terminal-manager .terminal-canvas .xterm{height:100%}
+.terminal-manager .terminal-status{display:flex;align-items:center;justify-content:space-between;padding:6px 20px;min-height:32px;border-top:1px solid #2d2d30;font-size:11px;color:var(--terminal-muted);flex:none;font-variant-numeric:tabular-nums}
+.terminal-manager .terminal-status small{font-size:11px;color:var(--terminal-muted);margin-left:16px}
+.terminal-manager .terminal-notice{display:flex;align-items:center;gap:10px;border:0;border-bottom:1px solid var(--terminal-line);border-radius:0;margin:0;padding:10px 16px;background:#29292d;font-size:13px;color:var(--terminal-text);flex:none}
+.terminal-manager .terminal-notice>span{flex:1;overflow-wrap:anywhere}
+.terminal-manager .terminal-notice.error{background:#352a2d;color:#edbfc4;border-color:#675052}
+.terminal-manager .terminal-notice button{min-height:28px;padding:4px}
+.terminal-manager .terminal-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:32px;color:var(--terminal-muted);gap:12px}
+.terminal-manager .terminal-empty>svg{color:#92929c;margin-bottom:6px}
+.terminal-manager .terminal-empty h2{font-size:19px;font-weight:500;color:var(--terminal-text);margin:0}
+.terminal-manager .terminal-empty p{font-size:13px;margin:0}
+.terminal-manager .terminal-dialog{left:max(20px,calc((100% - 480px)/2));right:max(20px,calc((100% - 480px)/2));background:#242426;border:1px solid #55555c;border-radius:12px;padding:24px;box-shadow:0 0 0 2000px #05050770,0 24px 80px #08080980}
+.terminal-manager .terminal-dialog h2{font-size:21px;letter-spacing:-.02em;margin:0 0 18px}
+.terminal-manager .terminal-dialog p{font-size:14px;line-height:1.6;margin:12px 0}
+.terminal-manager .terminal-dialog b{font-size:14px;overflow-wrap:anywhere}
+.terminal-manager .terminal-dialog label{font-size:13px;display:flex;flex-direction:column;gap:8px;margin:0}
+.terminal-manager .terminal-dialog input:not([type=checkbox]):not([type=file]){font-size:14px;color:var(--terminal-text);background:#19191b;border:1px solid var(--terminal-line);border-radius:8px;padding:9px 12px;margin:0;min-height:40px;min-width:0;width:100%}
+.terminal-manager .terminal-dialog footer{padding-top:18px;margin-top:20px;border-top:1px solid var(--terminal-line);gap:8px}
+.terminal-manager .terminal-dialog button{margin:0;min-width:76px;background:#353538}
+.terminal-manager .terminal-dialog button.primary{background:#d7dce0;color:#202125}
+.terminal-manager .terminal-dialog button.danger{background:#442f34;color:#f1bec4;border-color:#79545d}
+@media(max-width:768px){.terminal-manager .terminal-tabbar{padding:0 6px;gap:6px}.terminal-manager .terminal-toolbar{padding:4px 10px}.terminal-manager .terminal-canvas{padding:12px 10px 6px}.terminal-manager .terminal-status{padding-inline:10px}.terminal-manager .terminal-status small{display:none}.terminal-manager .terminal-tab{max-width:200px}}
+@media(prefers-reduced-motion:reduce){.terminal-manager *{animation:none!important;transition:none!important}.terminal-manager button:active:not(:disabled){transform:none}}
+
+.terminal-manager .terminal-shortcuts{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:#c3c3cb}
+@media(max-width:900px){.terminal-manager .terminal-status{flex-wrap:wrap;gap:4px 12px}.terminal-manager .terminal-shortcuts{order:3;flex-basis:100%;font-size:10px}}

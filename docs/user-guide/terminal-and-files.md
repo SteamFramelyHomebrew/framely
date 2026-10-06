@@ -20,6 +20,8 @@ Only one connection can type in a session. Other connections are read-only; **Ta
 
 Terminal input, sudo passwords and output are not written to Framely logs. Output is rendered as terminal characters, not HTML; terminal clipboard-write escape sequences are ignored. xterm.js and its fit addon are included with the offline UI, without CDN requests.
 
+Use **Ctrl+Shift+C** to copy selected terminal text and **Ctrl+Shift+V** to paste. **Ctrl+C** still interrupts the running program; it is not the copy shortcut. The footer shows these shortcuts.
+
 ## Browse and organize files
 
 Files opens the user's home directory and accesses the filesystem with that user's permissions. It never automatically elevates privileges. Permission changes are limited to ordinary Unix permission bits; use Terminal and `sudo` for administrator operations.
