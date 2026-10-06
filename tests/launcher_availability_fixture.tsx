@@ -1,0 +1,39 @@
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {Launcher,LauncherSettings} from '../ui/src/launcher';
+import {configureLanguage} from '../ui/src/i18n';
+import '../ui/src/style.css';
+const reason='Application state is temporarily unavailable. Refresh or reconcile it in APK management.';
+let unavailable:string|null=null;
+const calls:{method:string;params:any}[]=[];
+window.fetch=async(_url,init)=>{
+ const {method,params}=JSON.parse(String(init?.body));calls.push({method,params});
+ const result=method==='steam.list'?[]:method==='desktop.list'?[{id:'shared/game1',name:'Game One',kind:'lepton'},{id:'shared/game2',name:'Game Two',kind:'lepton',launchUnavailable:unavailable}]:true;
+ return new Response(JSON.stringify({result}));
+};
+const wait=(ms=40)=>new Promise(r=>setTimeout(r,ms));
+async function until(check:()=>unknown){for(let i=0;i<120;i++){if(check())return;await wait();}throw Error('Timed out');}
+const icon=(name:string)=>document.querySelector<HTMLButtonElement>(`.launch-icon[aria-label="${name}"]`);
+(window as any).runInstallReviewChecks=async()=>{try{
+ await until(()=>icon('Game Two'));
+ icon('Game One')!.click();await until(()=>calls.some(c=>c.method==='desktop.launch'));
+ unavailable=reason;window.dispatchEvent(new Event('framely.launcher.open'));
+ await until(()=>icon('Game Two')?.getAttribute('aria-disabled')==='true');
+ if(!icon('Game One')||!icon('Game Two')!.querySelector('.launch-unavailable-mark'))throw Error('Shared app disappeared or has no unavailable indicator');
+ const launches=calls.filter(c=>c.method==='desktop.launch').length;
+ icon('Game Two')!.click();await wait();
+ if(calls.filter(c=>c.method==='desktop.launch').length!==launches||!document.querySelector('[role=alert]')?.textContent?.includes(reason))throw Error('Unavailable app launched without explanation');
+ icon('Game Two')!.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true}));await until(()=>document.querySelector('[role=menu]'));
+ const menu=document.querySelector('[role=menu]')!;
+ const buttons=[...menu.querySelectorAll<HTMLButtonElement>('button')];
+ if(!buttons.find(b=>b.textContent==='Open')?.disabled||buttons.find(b=>b.textContent==='Manage app')?.disabled)throw Error('Unavailable status disabled app management or allowed launch');
+ unavailable=null;window.dispatchEvent(new Event('framely.launcher.open'));
+ await until(()=>icon('Game Two')?.getAttribute('aria-disabled')==='false');
+ icon('Game Two')!.click();await until(()=>calls.some(c=>c.method==='desktop.launch'&&c.params.app==='lepton:shared/game2'));
+ root.render(<div className="app manager"><LauncherSettings config={{primaryTrigger:true,menuAutoClose:true,menuTimeoutSeconds:10}} refresh={async()=>{}}/></div>);await wait(600);
+ console.log('FRAMELY_BRIDGE_PASS');
+}catch(e){console.error('FRAMELY_BRIDGE_FAIL '+e);}};
+configureLanguage('en-US',[]);
+const root=createRoot(document.getElementById('root')!);
+root.render(<Launcher plugins={{}} safeMode={false} config={{primaryTrigger:true,menuAutoClose:true,menuTimeoutSeconds:10}} favorites={[]} order={[]} refresh={async()=>{}}/>);
+wait(150).then(()=>console.log('FRAMELY_VIEW_READY'));

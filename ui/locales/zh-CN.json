@@ -3,6 +3,8 @@
   "locale": "zh-CN",
   "name": "简体中文",
   "messages": {
+    "Application state is temporarily unavailable. Refresh or reconcile it in APK management.": "暂时无法确认应用状态，请在 APK 管理中刷新或核对。",
+    "No enabled launch activity is currently available. Check the application in APK management.": "当前没有可用的启动入口，请在 APK 管理中检查。",
     "每个新应用使用独立容器，更新保留原容器。": "每个新应用使用独立容器，更新保留原容器。",
     "备份容器数据": "备份容器数据",
     "窗口设置将在下次打开应用时应用；必要时自动重启容器。": "窗口设置将在下次打开应用时应用；必要时自动重启容器。",

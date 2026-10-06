@@ -13,6 +13,7 @@ pub struct App {
     pub name: String,
     pub kind: &'static str,
     pub icon: Option<String>,
+    pub launch_unavailable: Option<String>,
     #[serde(skip)]
     target: Target,
 }
@@ -212,6 +213,7 @@ fn desktop_apps(home: &Path, dirs: &[PathBuf], steam: &BTreeSet<u32>) -> Vec<App
                 name: name.clone(),
                 kind: "desktop",
                 icon: icon(home, get("Icon"), dirs),
+                launch_unavailable: None,
                 target: Target::Desktop(path),
             });
         }
@@ -228,6 +230,7 @@ fn lepton_apps(home: &Path) -> Vec<App> {
                 name: v["name"].as_str()?.into(),
                 kind: "lepton",
                 icon: v["icon"].as_str().map(str::to_owned),
+                launch_unavailable: v["launchUnavailable"].as_str().map(str::to_owned),
                 target: Target::ManagedLepton(id),
             })
         })
@@ -249,6 +252,9 @@ pub fn launch(home: &Path, id: &str) -> Result<()> {
         .into_iter()
         .find(|a| format!("{}:{}", a.kind, a.id) == id)
         .context("Application is no longer installed")?;
+    if let Some(reason) = app.launch_unavailable {
+        anyhow::bail!("{reason}");
+    }
     launch_target(app.target)
 }
 fn launch_target(target: Target) -> Result<()> {

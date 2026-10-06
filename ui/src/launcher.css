@@ -181,3 +181,6 @@
  .launcher-shell :is(.launcher-tools,.launcher-search,.launcher-edit-toolbar button)::after{display:none}
  .launcher-category-active{background:#454545}
 }
+
+.launch-unavailable .launch-disc{opacity:.45}
+.launch-unavailable-mark{position:absolute;right:20px;bottom:12px;display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:#17191de8;color:#eee;pointer-events:none}

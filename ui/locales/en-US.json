@@ -3,6 +3,8 @@
   "locale": "en-US",
   "name": "English",
   "messages": {
+    "Application state is temporarily unavailable. Refresh or reconcile it in APK management.": "Application state is temporarily unavailable. Refresh or reconcile it in APK management.",
+    "No enabled launch activity is currently available. Check the application in APK management.": "No enabled launch activity is currently available. Check the application in APK management.",
     "每个新应用使用独立容器，更新保留原容器。": "Each new app uses its own container. Updates retain the existing container.",
     "备份容器数据": "Backing up container data",
     "窗口设置将在下次打开应用时应用；必要时自动重启容器。": "Window settings apply the next time you open the app; the container restarts automatically when needed.",

@@ -29,6 +29,8 @@ struct Record {
     metadata: Metadata,
     removed: bool,
     #[serde(default)]
+    launcher_seen: bool,
+    #[serde(default)]
     pending: Option<String>,
     #[serde(default)]
     activity: Option<String>,
@@ -776,13 +778,23 @@ pub fn launcher(home: &Path) -> Vec<Value> {
     let cs = containers(home, &db);
     let (apps, _) = apps(home, &db, &cs, false);
     apps.into_iter()
-        .filter(|a| {
-            a.state_known
-                && a.installed
-                && !a.steam
-                && (!a.metadata.activities.is_empty() || a.activity.is_some())
+        .filter_map(|a| {
+            let has_target = !a.metadata.activities.is_empty() || a.activity.is_some();
+            let previously_visible = db.records.get(&a.id).is_some_and(|r| {
+                !r.removed && (r.launcher_seen || !r.metadata.activities.is_empty() || r.activity.is_some())
+            });
+            if !a.installed || a.steam || (!has_target && !previously_visible) {
+                return None;
+            }
+            let unavailable = if !a.state_known {
+                Some("Application state is temporarily unavailable. Refresh or reconcile it in APK management.")
+            } else if !has_target {
+                Some("No enabled launch activity is currently available. Check the application in APK management.")
+            } else {
+                None
+            };
+            Some(json!({"id":a.id,"kind":"lepton","name":a.metadata.name,"icon":a.metadata.icon,"launchUnavailable":unavailable}))
         })
-        .map(|a| json!({"id":a.id,"kind":"lepton","name":a.metadata.name,"icon":a.metadata.icon}))
         .collect()
 }
 fn space(p: &Path, needed: u64) -> Result<()> {
@@ -1217,6 +1229,10 @@ fn record_app(db: &mut Database, a: &App) {
         .entry(a.id.clone())
         .and_modify(|r| {
             if a.installed {
+                r.launcher_seen |= !r.metadata.activities.is_empty()
+                    || r.activity.is_some()
+                    || !a.metadata.activities.is_empty()
+                    || a.activity.is_some();
                 r.metadata = a.metadata.clone();
                 r.removed = false;
             }
@@ -1226,6 +1242,7 @@ fn record_app(db: &mut Database, a: &App) {
             context: a.context.clone(),
             metadata: a.metadata.clone(),
             removed: !a.installed,
+            launcher_seen: !a.metadata.activities.is_empty() || a.activity.is_some(),
             pending: None,
             activity: a.activity.clone(),
             show_window: a.show_window,
@@ -3250,7 +3267,7 @@ echo true > '{}'
         let a = &data["apps"][0];
         assert_eq!(a["stateKnown"], false);
         assert_eq!(a["installed"], true);
-        assert!(launcher(&f.home).is_empty());
+        assert!(launcher(&f.home)[0]["launchUnavailable"].is_string());
         assert!(f
             .operation(
                 "uninstall",
@@ -3265,6 +3282,35 @@ echo true > '{}'
             .is_err());
         assert!(f.save_file().exists());
         assert!(!load(&f.home).unwrap().records["test/com.example.app"].removed);
+    }
+    #[test]
+    fn shared_mount_loss_preserves_launcher_identity_until_confirmed_uninstall() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let baked = f.home.join(".local/share/lepton/contexts/test/baked");
+        // Another app takes the legacy shared APK mount, while the original stays registered.
+        crate::apk_metadata::fixture_named(
+            &baked.join("app_overlay/base.apk"),
+            true,
+            1,
+            "com.example.other",
+        );
+        for _ in 0..2 {
+            list(&f.home).unwrap();
+            let icons = launcher(&f.home);
+            assert_eq!(icons.len(), 1);
+            assert_eq!(icons[0]["id"], "test/com.example.app");
+            assert!(icons[0]["launchUnavailable"].is_string());
+            assert!(f
+                .operation("launch", json!({"app":"test/com.example.app"}))
+                .is_err());
+        }
+        crate::apk_metadata::fixture(&baked.join("app_overlay/base.apk"), true, 42);
+        assert!(launcher(&f.home)[0]["launchUnavailable"].is_null());
+        fs::write(baked.join("data_overlay/system/users/0/package-restrictions.xml"),
+            r#"<package-restrictions><pkg name="com.example.app" installed="false"/></package-restrictions>"#).unwrap();
+        fs::write(f.dir.path().join("running"), "false").unwrap();
+        assert!(launcher(&f.home).is_empty());
     }
     #[test]
     fn existing_sideloaded_containers_do_not_accept_additional_apps() {
@@ -3312,7 +3358,7 @@ echo true > '{}'
         );
         assert_eq!(data["apps"][0]["installed"], true);
         fs::write(baked.join("data_overlay/system/users/0/package-restrictions.xml"), r#"<package-restrictions><pkg name="com.example.app" enabled="3"/></package-restrictions>"#).unwrap();
-        assert!(launcher(&f.home).is_empty());
+        assert!(launcher(&f.home)[0]["launchUnavailable"].is_string());
         // An externally upgraded package must not acquire metadata from an older cache.
         fs::write(baked.join("data_overlay/system/packages.xml"),r#"<packages><package name="com.example.app" codePath="/data/app/missing" version="43"/></packages>"#).unwrap();
         assert!(list(&f.home).unwrap()["apps"][0]["metadata"]["activities"]
@@ -3668,7 +3714,7 @@ esac
         assert!(!parent.join("restore-test").exists());
     }
     #[test]
-    fn disabled_packages_are_hidden_from_launcher_and_symlinks_are_rejected() {
+    fn disabled_packages_remain_visible_but_unavailable_and_symlinks_are_rejected() {
         let f = Fixture::new();
         let b = f.home.join(".local/share/lepton/contexts/test/baked");
         f.operation(
@@ -3677,7 +3723,7 @@ esac
         )
         .unwrap();
         fs::write(b.join("data_overlay/system/users/0/package-restrictions.xml"),"<package-restrictions><pkg name=\"com.example.app\" enabled=\"3\"/></package-restrictions>").unwrap();
-        assert!(launcher(&f.home).is_empty());
+        assert!(launcher(&f.home)[0]["launchUnavailable"].is_string());
         let r = init(&f.home).unwrap();
         fs::remove_dir(r.join("reviews")).unwrap();
         std::os::unix::fs::symlink(f.dir.path(), r.join("reviews")).unwrap();
