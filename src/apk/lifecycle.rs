@@ -4,11 +4,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 #[derive(Clone)]
-struct Sample {
-    instance: String,
-    package: String,
+pub(super) struct Sample {
+    pub(super) instance: String,
+    pub(super) package: String,
     window: Option<bool>,
-    alive: BTreeSet<String>,
+    pub(super) alive: BTreeSet<String>,
 }
 #[derive(Default)]
 struct Watch {
@@ -124,7 +124,7 @@ fn packages(c: &Container) -> Result<BTreeSet<String>> {
     ensure!(!out.is_empty(), "No known application packages");
     Ok(out)
 }
-fn sample(c: &Container) -> Result<Sample> {
+pub(super) fn sample(c: &Container) -> Result<Sample> {
     let identity = instance(c)?;
     let text = short(&[
         "exec",

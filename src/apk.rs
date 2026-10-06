@@ -21,6 +21,17 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 mod lifecycle;
+mod steam_bridge;
+mod steam_shortcuts;
+mod storage;
+pub fn steam_session_started() -> Result<()> {
+    steam_bridge::start_session()?;
+    steam_shortcuts::start_auto_registration();
+    Ok(())
+}
+pub fn steam_wrapper(app: &str, token: &str) -> Result<()> {
+    steam_bridge::run(app, token)
+}
 pub fn lifecycle_started() {
     lifecycle::start();
 }
@@ -28,6 +39,18 @@ static MUTATION: Mutex<()> = Mutex::new(());
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Record {
+    #[serde(default)]
+    steam_launch: bool,
+    #[serde(default)]
+    steam_preference: Option<bool>,
+    #[serde(default)]
+    steam_registration_error: Option<String>,
+    #[serde(default)]
+    steam_app_id: Option<u32>,
+    #[serde(default)]
+    steam_token: Option<String>,
+    #[serde(default)]
+    steam_binding: Option<steam_shortcuts::Binding>,
     id: String,
     context: String,
     metadata: Metadata,
@@ -831,7 +854,7 @@ pub fn list(home: &Path) -> Result<Value> {
         }
     }
     Ok(
-        json!({"apps":apps,"containers":cs.iter().map(|c| { let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(false); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"gamepadEnabled":db.gamepad_enabled,"autoStopContainer":db.auto_stop_container,"stopContainerOnClose":db.stop_container_on_close}),
+        json!({"apps":apps.iter().map(|a| { let mut v=serde_json::to_value(a).unwrap(); v["steamLaunch"]=json!(db.records.get(&a.id).is_none_or(steam_shortcuts::wanted)); v["steamRegistered"]=json!(db.records.get(&a.id).is_some_and(|r|r.steam_launch));v["steamRegistrationError"]=json!(db.records.get(&a.id).and_then(|r|r.steam_registration_error.as_ref())); v }).collect::<Vec<_>>(),"containers":cs.iter().map(|c| { let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(false); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"gamepadEnabled":db.gamepad_enabled,"autoStopContainer":db.auto_stop_container,"stopContainerOnClose":db.stop_container_on_close}),
     )
 }
 pub fn launcher(home: &Path) -> Vec<Value> {
@@ -854,7 +877,7 @@ pub fn launcher(home: &Path) -> Vec<Value> {
             } else {
                 None
             };
-            Some(json!({"id":a.id,"kind":"lepton","name":a.metadata.name,"icon":a.metadata.icon,"launchUnavailable":unavailable}))
+            Some(json!({"id":a.id,"kind":"lepton","name":a.metadata.name,"icon":a.metadata.icon,"launchUnavailable":unavailable,"steamAppId":db.records.get(&a.id).and_then(|r|r.steam_app_id)}))
         })
         .collect()
 }
@@ -1064,6 +1087,10 @@ fn direct_launch_script(source: &str) -> Result<String> {
 # Preserve downloaded Android resources in development contexts. Lepton's
 # single-app launcher deletes media/0 before creating its external-storage link.
 function framely_prepare_media() {
+    if [[ -n "${FRAMELY_EXTERNAL_MEDIA_DIR:-}" ]]; then
+        framely_prepare_external_media
+        return $?
+    fi
     local media="$(data_mount_path)/media/0"
     local external="${STEAM_COMPAT_DATA_PATH:-}/external"
     if [[ -d "${STEAM_COMPAT_DATA_PATH:-}" ]]; then
@@ -1105,6 +1132,21 @@ for framely_mount_hook in setup_mounts setup_podman_mounts; do
     unset framely_mount_body framely_media_remove
 done
 unset framely_mount_hook
+# Bind the resource directory directly, outside Android's /data overlay.
+# Adopted Steam contexts already have their own external-storage mount.
+if [[ -n "${FRAMELY_SHADER_CACHE_DIR:-}${FRAMELY_EXTERNAL_MEDIA_DIR:-}" ]]; then
+    declare -F setup_podman_mounts >/dev/null || { echo "Unsupported Lepton storage mounts" >&2; exit 64; }
+    eval "$(declare -f setup_podman_mounts | sed '1s/setup_podman_mounts/framely_original_storage_mounts/')"
+    function setup_podman_mounts() {
+        framely_original_storage_mounts "$@" || return
+        if [[ -n "${FRAMELY_EXTERNAL_MEDIA_DIR:-}" ]]; then
+            podman_mount_entry "$FRAMELY_EXTERNAL_MEDIA_DIR" "$FRAMELY_EXTERNAL_MEDIA_DIR" rw
+        fi
+        if [[ -n "${FRAMELY_SHADER_CACHE_DIR:-}" ]]; then
+            podman_mount_entry "$FRAMELY_SHADER_CACHE_DIR" /data/shaders rw,U
+        fi
+    }
+fi
 # Optional virtual gamepad: mount only its event node, not host input devices.
 if [[ -n "${FRAMELY_GAMEPAD_EVENT:-}" ]]; then
     for hook in setup_podman_mounts generate_zygote_launch_rc; do
@@ -1125,6 +1167,13 @@ if [[ -n "${FRAMELY_GAMEPAD_EVENT:-}" ]]; then
         sed -i '/^service zygote /a\    setenv LD_PRELOAD /vendor/lib64/libframely_gamepad_grab.so' "$rc"
     }
 fi
+# Inject ownership only after Lepton has selected the existing development
+# context. Setting SteamAppId before its entry script would select a new
+# steamlaunch context and lose access to the user's installed application data.
+if [[ -n "${FRAMELY_STEAM_APP_ID:-}" ]]; then
+    [[ "$FRAMELY_STEAM_APP_ID" =~ ^[0-9]+$ ]] || { echo "Invalid Steam owner" >&2; exit 64; }
+    export SteamAppId="$FRAMELY_STEAM_APP_ID"
+fi
 # Framely: configure display visibility and shape, retaining the dev context.
 # Do not use is_app: Lepton's app bake path can reset existing application data.
 eval "$(declare -f setup_props | sed '1s/setup_props/framely_original_setup_props/')"
@@ -1133,6 +1182,10 @@ function app_wants_flatscreen() {
 }
 function setup_props() {
     framely_original_setup_props "$@"
+    if [[ -n "${FRAMELY_SHADER_CACHE_DIR:-}" ]]; then
+        sed -i '/^mesa\.shader\.cache\.disable=/d; /^mesa\.shader\.cache\.dir=/d' "$(props_file)"
+        printf '\nmesa.shader.cache.disable=false\nmesa.shader.cache.dir=/data/shaders\n' >> "$(props_file)"
+    fi
     if [[ "${FRAMELY_BACKGROUND_BOOT:-true}" == true ]]; then
         sed -i 's/^waydroid.background_start=false$/waydroid.background_start=true/' "$(props_file)"
         printf '\nwaydroid.active_apps=none\n' >> "$(props_file)"
@@ -1147,7 +1200,7 @@ function setup_props() {
 "#;
     Ok(source
         .replace(directory, "SCRIPT_DIR=\"${FRAMELY_LEPTON_DIR:?}\"")
-        .replace(include, &format!("{include}\n{hooks}")))
+        .replace(include, &format!("{include}\n{}\n{hooks}", storage::HOOKS)))
 }
 fn start(home: &Path, c: &Container, show: Option<bool>, log: &Path) -> Result<()> {
     start_container(home, c, show, true, log)
@@ -1159,7 +1212,7 @@ fn start_container(
     direct: bool,
     log: &Path,
 ) -> Result<()> {
-    start_oriented_container(home, c, show, direct, None, None, log)
+    start_oriented_container(home, c, show, direct, None, None, None, log)
 }
 const ANDROID_READY_PROBE: &str = r#"
 [ "$(getprop sys.boot_completed)" = 1 ] &&
@@ -1196,6 +1249,7 @@ fn start_oriented_container(
     direct: bool,
     orientation: Option<&str>,
     gamepad: Option<&crate::gamepad::Mount>,
+    steam_app_id: Option<u32>,
     log: &Path,
 ) -> Result<()> {
     ensure!(
@@ -1207,6 +1261,7 @@ fn start_oriented_container(
         return restore_package_mount(home, c, log);
     }
     let runner = runner(home)?;
+    storage::prepare(&c.baked)?;
     // Manual container startup must use the same resource-preserving adapter.
     let temporary;
     let mut cmd = {
@@ -1245,6 +1300,13 @@ fn start_oriented_container(
                 "false"
             },
         );
+    cmd.env_remove("SteamAppId");
+    storage::configure(&mut cmd, &c.baked, c.id.starts_with("external-"));
+    if let Some(id) = steam_app_id {
+        cmd.env("FRAMELY_STEAM_APP_ID", id.to_string());
+    } else {
+        cmd.env_remove("FRAMELY_STEAM_APP_ID");
+    }
     if let Some(mount) = gamepad {
         cmd.env("FRAMELY_GAMEPAD_EVENT", &mount.event)
             .env("FRAMELY_GAMEPAD_GRAB", &mount.grab)
@@ -1377,6 +1439,7 @@ fn record_app(db: &mut Database, a: &App) {
             activity: a.activity.clone(),
             show_window: a.show_window,
             orientation: a.orientation.clone(),
+            ..Default::default()
         });
 }
 fn app(home: &Path, db: &Database, id: &str) -> Result<(App, Container)> {
@@ -2061,6 +2124,27 @@ pub fn operate(
     cancel: Cancellation,
     progress: Arc<dyn Fn(Value) + Send + Sync>,
 ) -> Result<Value> {
+    if kind == "launch" {
+        if let Some(id) = p["app"].as_str() {
+            if steam_shortcuts::ensure_registered(home, id, false)? {
+                return steam_bridge::request_launch(home, id, progress, &cancel);
+            }
+        }
+    }
+    let result = operate_internal(home, kind, p, cancel, progress, None);
+    if kind == "install" && result.is_ok() {
+        steam_shortcuts::wake_registration();
+    }
+    result
+}
+fn operate_internal(
+    home: &Path,
+    kind: &str,
+    p: &Value,
+    cancel: Cancellation,
+    progress: Arc<dyn Fn(Value) + Send + Sync>,
+    steam_app_id: Option<u32>,
+) -> Result<Value> {
     let _guard = MUTATION
         .try_lock()
         .map_err(|_| anyhow::anyhow!("Another APK operation is running"))?;
@@ -2091,7 +2175,38 @@ pub fn operate(
     fs::write(&log, format!("{kind}\n"))?;
     progress(json!({"phase":"preparing","operation":kind}));
     let result = (|| -> Result<Value> {
+        if let Some(app_id) = steam_app_id {
+            ensure!(kind == "launch", "Invalid Steam wrapper operation");
+            let rec = db.records.get_mut(id).context("Missing Steam APK record")?;
+            ensure!(
+                rec.steam_launch && steam_shortcuts::linked(home, rec),
+                "Steam launch is disabled"
+            );
+            rec.steam_app_id = Some(app_id);
+            save(home, &db)?;
+        }
         match kind {
+            "steam.settings" => {
+                let enabled = p["enabled"]
+                    .as_bool()
+                    .context("Invalid Steam launch setting")?;
+                let (a, _) = app(home, &db, id)?;
+                ensure!(!a.steam, "This app is already managed by Steam");
+                record_app(&mut db, &a);
+                let rec = db.records.get_mut(id).context("Missing APK record")?;
+                if enabled {
+                    steam_shortcuts::register(home, &a, rec)?;
+                } else {
+                    steam_shortcuts::unregister(home, rec)?;
+                    rec.steam_binding = None;
+                    rec.steam_app_id = None;
+                }
+                rec.steam_launch = enabled;
+                rec.steam_preference = Some(enabled);
+                rec.steam_registration_error = None;
+                save(home, &db)?;
+                Ok(json!(true))
+            }
             "lifecycle.settings" => {
                 let auto = p["autoStopContainer"]
                     .as_bool()
@@ -2434,6 +2549,7 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                                     !flat,
                                     if flat { a.orientation.as_deref() } else { None },
                                     gamepad.as_ref(),
+                                    steam_app_id,
                                     &log,
                                 )?;
                                 progress(json!({"phase":"launching"}));
@@ -2513,6 +2629,13 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                                 a.pending.is_none(),
                                 "Reconcile the interrupted operation before deleting data"
                             );
+                            if let Some(rec) = db.records.get_mut(id) {
+                                steam_shortcuts::unregister(home, rec)?;
+                                rec.steam_launch = false;
+                                rec.steam_binding = None;
+                                rec.steam_app_id = None;
+                                save(home, &db)?;
+                            }
                             progress(json!({"phase":"uninstalling"}));
                             start(home, &c, a.show_window, &log)?;
                             if a.installed {
@@ -2582,6 +2705,7 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                             let standard = home.join(".local/share/lepton/contexts").join(&c.name);
                             let default_location = !fs::symlink_metadata(&standard).is_ok_and(|m|m.file_type().is_symlink()) && fs::canonicalize(&standard).is_ok_and(|p| p.join("baked") == c.baked);
                             let target = if default_location { standard } else { c.baked.clone() };
+                            for rec in db.records.values().filter(|r|r.context==context) {steam_shortcuts::unregister(home,rec)?;}
                             // An external compatdata parent can contain unrelated files. Delete only baked.
                             stop(&c, &log)?;
                             ensure!(validate_baked(&c.baked)? == c.baked, "Container data location changed");
@@ -3170,6 +3294,76 @@ setup_podman_mounts
         assert_eq!(fs::read(&checkpoint).unwrap(), b"offset=19");
     }
     #[test]
+    fn direct_boot_binds_resources_and_reuses_shader_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = dir.path().join("lepton/liblepton");
+        fs::create_dir_all(&library).unwrap();
+        fs::write(
+            library.join("liblepton.sh"),
+            r#"
+function data_mount_path() { echo "$TEST_DATA"; }
+function props_file() { echo "$TEST_PROPS"; }
+function setup_props() {
+    printf 'mesa.shader.cache.disable=true\nmesa.shader.cache.dir=/unused\n' > "$(props_file)"
+}
+function podman_mount_entry() { printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$TEST_MOUNTS"; }
+function setup_mounts() {
+    rm -rf "$(data_mount_path)/media/0"
+    mkdir -p "$(data_mount_path)/media/0"
+}
+function setup_podman_mounts() { setup_mounts; }
+"#,
+        )
+        .unwrap();
+        let source = r#"#!/bin/bash
+set -euo pipefail
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+source "${SCRIPT_DIR}/liblepton/liblepton.sh"
+setup_props
+setup_podman_mounts
+"#;
+        let entry = dir.path().join("entry.sh");
+        fs::write(&entry, direct_launch_script(source).unwrap()).unwrap();
+        let baked = dir.path().join("baked");
+        let data = baked.join("data_overlay");
+        let resource = data.join("media/0/Android/data/game/files/download.part");
+        fs::create_dir_all(resource.parent().unwrap()).unwrap();
+        fs::write(&resource, b"partial download").unwrap();
+        storage::prepare(&baked).unwrap();
+        let shader = baked.join("shadercache/compiled");
+        fs::write(&shader, b"compiled shader").unwrap();
+        let props = dir.path().join("props");
+        let mounts = dir.path().join("mounts");
+        for _ in 0..2 {
+            fs::write(&mounts, []).unwrap();
+            let mut command = Command::new("bash");
+            command
+                .arg(&entry)
+                .env("FRAMELY_LEPTON_DIR", library.parent().unwrap())
+                .env("TEST_DATA", &data)
+                .env("TEST_PROPS", &props)
+                .env("TEST_MOUNTS", &mounts);
+            storage::configure(&mut command, &baked, false);
+            assert!(command.status().unwrap().success());
+            assert_eq!(fs::read(&resource).unwrap(), b"partial download");
+            assert_eq!(fs::read(&shader).unwrap(), b"compiled shader");
+            assert_eq!(
+                fs::read_link(data.join("media/0")).unwrap(),
+                baked.join("external")
+            );
+            let mounted = fs::read_to_string(&mounts).unwrap();
+            assert!(mounted.contains(&format!("{0}|{0}|rw\n", baked.join("external").display())));
+            assert!(mounted.contains(&format!(
+                "{}|/data/shaders|rw,U\n",
+                baked.join("shadercache").display()
+            )));
+            let properties = fs::read_to_string(&props).unwrap();
+            assert_eq!(properties.matches("mesa.shader.cache.disable=").count(), 1);
+            assert!(properties.contains("mesa.shader.cache.disable=false\n"));
+            assert!(properties.contains("mesa.shader.cache.dir=/data/shaders\n"));
+        }
+    }
+    #[test]
     fn local_apk_review_snapshots_source_and_rejects_invalid_selections() {
         let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
@@ -3272,7 +3466,7 @@ setup_podman_mounts
                 r#"#!/bin/sh
 printf '%s\n' "$*" >> '{commands}'
 case "$1" in
- inspect) case "$3" in *StartedAt*) echo "fixture|{state}|$(cat '{state}')";; *State.Pid*) echo "$(cat '{state}')|{pid}";; *) cat '{state}';; esac;;
+ inspect) case "$3" in *SteamBridge*) echo "fixture|{state}|$(cat '{state}')|{pid}";; *StartedAt*) echo "fixture|{state}|$(cat '{state}')";; *State.Pid*) echo "$(cat '{state}')|{pid}";; *) cat '{state}';; esac;;
  ps) if [ "$(cat '{state}')" = true ]; then case "$3" in *Pid*) echo 'lepton-test|{pid}';; *) echo lepton-test;; esac; fi;;
  stop) echo false > '{state}'; echo stopped;;
  cp) /bin/cp -f "$2" '{incoming}';;
@@ -3346,7 +3540,7 @@ esac
             std::os::unix::fs::symlink("/bin/cp", tools.join("cp")).unwrap();
             let lepton = home.join(".local/share/Steam/steamapps/common/Lepton");
             fs::create_dir_all(lepton.join("liblepton")).unwrap();
-            fs::write(lepton.join("liblepton/liblepton.sh"), format!("function setup_props() {{ echo waydroid.background_start=false > '{}'; if app_wants_flatscreen; then echo lepton.headless=false; else echo lepton.headless=true; fi >> '{}'; }}\nfunction app_wants_flatscreen() {{ return 0; }}\nfunction props_file() {{ echo '{}'; }}\n", dir.path().join("props").display(), dir.path().join("props").display(), dir.path().join("props").display())).unwrap();
+            fs::write(lepton.join("liblepton/liblepton.sh"), format!("function setup_props() {{ echo waydroid.background_start=false > '{}'; if app_wants_flatscreen; then echo lepton.headless=false; else echo lepton.headless=true; fi >> '{}'; }}\nfunction app_wants_flatscreen() {{ return 0; }}\nfunction props_file() {{ echo '{}'; }}\nfunction setup_podman_mounts() {{ :; }}\nfunction podman_mount_entry() {{ :; }}\n", dir.path().join("props").display(), dir.path().join("props").display(), dir.path().join("props").display())).unwrap();
             fs::write(
                 lepton.join("lepton"),
                 format!(
@@ -3377,17 +3571,329 @@ echo true > '{}'
                 .into()
         }
         fn operation(&self, kind: &str, p: Value) -> Result<Value> {
-            operate(
+            operate_internal(
                 &self.home,
                 kind,
                 &p,
                 Cancellation::default(),
                 Arc::new(|_| {}),
+                None,
             )
         }
         fn save_file(&self) -> PathBuf {
             self.home.join(".local/share/lepton/contexts/test/baked/data_overlay/data/com.example.app/files/save")
         }
+    }
+    #[test]
+    fn steam_adapter_preserves_context_while_forwarding_ownership() {
+        let t = tempfile::tempdir().unwrap();
+        let lib = t.path().join("liblepton");
+        fs::create_dir_all(&lib).unwrap();
+        fs::write(lib.join("liblepton.sh"),r#"function setup_props() { printf 'context=%s\nowner=%s\n' "$LEPTON_CONTEXT" "${SteamAppId:-}" > "$TEST_PROPS"; }
+function props_file() { echo "$TEST_PROPS"; }
+"#).unwrap();
+        let source = r#"#!/bin/bash
+set -euo pipefail
+LEPTON_CONTEXT="${2:-}"
+if [[ -n "${SteamAppId:-}" ]]; then LEPTON_CONTEXT="steamlaunch-${SteamAppId}"; fi
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+source "${SCRIPT_DIR}/liblepton/liblepton.sh"
+setup_props
+"#;
+        let entry = t.path().join("entry.sh");
+        fs::write(&entry, direct_launch_script(source).unwrap()).unwrap();
+        let props = t.path().join("props");
+        assert!(Command::new("bash")
+            .arg(entry)
+            .args(["start", "existing-context"])
+            .env_remove("SteamAppId")
+            .env("FRAMELY_STEAM_APP_ID", "2452903544")
+            .env("FRAMELY_LEPTON_DIR", t.path())
+            .env("TEST_PROPS", &props)
+            .status()
+            .unwrap()
+            .success());
+        let text = fs::read_to_string(props).unwrap();
+        assert!(text.contains("context=existing-context"));
+        assert!(text.contains("owner=2452903544"));
+        assert!(!text.contains("steamlaunch-"));
+    }
+    fn fake_steam_registry(
+        f: &Fixture,
+        requests: usize,
+        fail_first: bool,
+    ) -> std::thread::JoinHandle<Vec<String>> {
+        use std::io::BufRead;
+        let steam = f.home.join(".steam");
+        fs::create_dir_all(&steam).unwrap();
+        fs::write(steam.join("steam.pid"), std::process::id().to_string()).unwrap();
+        fs::write(steam.join("steam.token"), "abcdef0123456789").unwrap();
+        let path = steam.join("steam.pipe");
+        let c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let fifo = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .unwrap();
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(fifo);
+            let mut registered = std::collections::BTreeSet::<String>::new();
+            let mut calls = Vec::new();
+            let mut fail = fail_first;
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while calls.len() < requests {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "Missing Steam registry request");
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    r => {
+                        r.unwrap();
+                    }
+                }
+                let u = url::Url::parse(line.trim().strip_prefix("devkit-1 ").unwrap()).unwrap();
+                let q: BTreeMap<_, _> = u.query_pairs().into_owned().collect();
+                let command = u.path().trim_end_matches('/').rsplit('/').next().unwrap();
+                calls.push(command.to_owned());
+                let response = PathBuf::from(&q["response"]);
+                match command {
+                    "create-shortcut" if fail => {
+                        fail = false;
+                        fs::write(response.with_extension("error"), "Steam is busy").unwrap();
+                    }
+                    "create-shortcut" => {
+                        registered.insert(q["gameid"].clone());
+                        fs::write(response, "").unwrap();
+                    }
+                    "delete-shortcut" => {
+                        registered.remove(&q["gameid"]);
+                        fs::write(response, "").unwrap();
+                    }
+                    "list-shortcuts" => fs::write(
+                        response,
+                        serde_json::to_vec(&json!({"version":2,"gameids":registered})).unwrap(),
+                    )
+                    .unwrap(),
+                    _ => panic!("Unexpected Devkit operation"),
+                }
+            }
+            calls
+        })
+    }
+    #[test]
+    fn automatic_steam_wrapping_defaults_on_is_idempotent_and_preserves_opt_out() {
+        let f = Fixture::new();
+        let id = "test/com.example.app";
+        let commands = f.dir.path().join("commands");
+        fs::write(&commands, "").unwrap();
+        let server = fake_steam_registry(&f, 6, false);
+        steam_shortcuts::synchronize(&f.home).unwrap();
+        let db = load(&f.home).unwrap();
+        assert!(db.records[id].steam_launch);
+        assert_eq!(db.records[id].steam_preference, Some(true));
+        let token = db.records[id].steam_token.clone();
+        steam_shortcuts::synchronize(&f.home).unwrap();
+        assert_eq!(load(&f.home).unwrap().records[id].steam_token, token);
+        f.operation("steam.settings", json!({"app":id,"enabled":false}))
+            .unwrap();
+        steam_shortcuts::synchronize(&f.home).unwrap();
+        assert!(!steam_shortcuts::ensure_registered(&f.home, id, false).unwrap());
+        let calls = server.join().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|s| s.as_str() == "create-shortcut")
+                .count(),
+            1
+        );
+        let db = load(&f.home).unwrap();
+        assert_eq!(db.records[id].steam_preference, Some(false));
+        assert!(!db.records[id].steam_launch);
+        assert!(db.records[id].steam_binding.is_none());
+        assert_eq!(list(&f.home).unwrap()["apps"][0]["steamLaunch"], false);
+        let text = fs::read_to_string(commands).unwrap();
+        assert!(!text.contains("am start") && !text.contains("stop "));
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        assert!(running("test"));
+    }
+    #[test]
+    fn automatic_steam_registration_failure_retries_without_losing_preference_or_data() {
+        let f = Fixture::new();
+        let id = "test/com.example.app";
+        let server = fake_steam_registry(&f, 5, true);
+        steam_shortcuts::synchronize(&f.home).unwrap();
+        let db = load(&f.home).unwrap();
+        assert_eq!(db.records[id].steam_preference, Some(true));
+        assert!(!db.records[id].steam_launch);
+        assert!(db.records[id].steam_registration_error.is_some());
+        let token = db.records[id].steam_token.clone();
+        steam_shortcuts::synchronize(&f.home).unwrap();
+        server.join().unwrap();
+        let db = load(&f.home).unwrap();
+        assert!(db.records[id].steam_launch);
+        assert!(db.records[id].steam_registration_error.is_none());
+        assert_eq!(db.records[id].steam_token, token);
+        assert!(running("test"));
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+    }
+    #[test]
+    fn steam_registration_uses_devkit_ipc_and_preserves_existing_context() {
+        use std::io::BufRead;
+        let f = Fixture::new();
+        let id = "test/com.example.app";
+        let mut db = load(&f.home).unwrap();
+        let (a, _) = app(&f.home, &db, id).unwrap();
+        record_app(&mut db, &a);
+        let steam = f.home.join(".steam");
+        fs::create_dir_all(&steam).unwrap();
+        fs::write(steam.join("steam.pid"), std::process::id().to_string()).unwrap();
+        fs::write(steam.join("steam.token"), "abcdef0123456789").unwrap();
+        let pipe = steam.join("steam.pipe");
+        let c = std::ffi::CString::new(pipe.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let fifo = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&pipe)
+            .unwrap();
+        let expected = steam_shortcuts::game_id(id);
+        let expected2 = expected.clone();
+        let thread = std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(fifo);
+            for _ in 0..5 {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let url = url::Url::parse(line.trim().strip_prefix("devkit-1 ").unwrap()).unwrap();
+                let q: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+                let response = &q["response"];
+                if url.path().contains("create-shortcut") || url.path().contains("delete-shortcut")
+                {
+                    assert_eq!(q["gameid"], expected2);
+                    fs::write(response, "").unwrap();
+                } else {
+                    fs::write(
+                        response,
+                        serde_json::to_vec(&json!({"version":2,"gameids":[expected2]})).unwrap(),
+                    )
+                    .unwrap();
+                }
+            }
+        });
+        let rec = db.records.get_mut(id).unwrap();
+        steam_shortcuts::register(&f.home, &a, rec).unwrap();
+        let token = rec.steam_token.clone();
+        steam_shortcuts::register(&f.home, &a, rec).unwrap();
+        steam_shortcuts::unregister(&f.home, rec).unwrap();
+        thread.join().unwrap();
+        assert!(!f
+            .home
+            .join("devkit-game")
+            .join(format!("{expected}-argv.json"))
+            .exists());
+        assert_eq!(token, rec.steam_token);
+        assert_eq!(rec.steam_binding.as_ref().unwrap().game_id, expected);
+        assert_eq!(rec.context, "test");
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        assert!(!f.home.join(".local/share/applications").exists());
+    }
+    #[test]
+    fn steam_wrapper_launch_and_stop_preserve_data_and_reject_unowned_requests() {
+        let f = Fixture::new();
+        let id = "test/com.example.app";
+        let mut db = load(&f.home).unwrap();
+        let (a, _) = app(&f.home, &db, id).unwrap();
+        record_app(&mut db, &a);
+        let rec = db.records.get_mut(id).unwrap();
+        rec.steam_launch = true;
+        rec.steam_token = Some("test-token".into());
+        rec.steam_binding = Some(steam_shortcuts::Binding {
+            game_id: steam_shortcuts::game_id(id),
+        });
+        save(&f.home, &db).unwrap();
+        let path = steam_shortcuts::wrapper(&f.home, id);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "fixture").unwrap();
+        assert!(steam_bridge::test_request(&f.home, id, "wrong", "start").is_err());
+        // A direct-running container must never be restarted to obtain Steam ownership.
+        assert!(steam_bridge::test_request(&f.home, id, "test-token", "start").is_err());
+        fs::write(f.dir.path().join("running"), "false").unwrap();
+        assert_eq!(
+            steam_bridge::test_request(&f.home, id, "test-token", "start").unwrap()["started"],
+            true
+        );
+        assert_eq!(
+            load(&f.home).unwrap().records[id].steam_app_id,
+            Some(0x92345678)
+        );
+        assert_eq!(
+            steam_bridge::test_request(&f.home, id, "test-token", "status").unwrap()["owned"],
+            true
+        );
+        assert!(steam_bridge::test_request(&f.home, id, "test-token", "start").is_err());
+        fs::write(f.dir.path().join("commands"), "").unwrap();
+        assert_eq!(
+            steam_bridge::test_request(&f.home, id, "test-token", "focus").unwrap()["reused"],
+            true
+        );
+        assert!(!fs::read_to_string(f.dir.path().join("commands"))
+            .unwrap()
+            .contains("stop "));
+        // Unknown lifecycle output refuses a destructive stop.
+        fs::write(f.dir.path().join("bad-probe"), "").unwrap();
+        assert!(steam_bridge::test_request(&f.home, id, "test-token", "stop").is_err());
+        assert!(running("test"));
+        fs::remove_file(f.dir.path().join("bad-probe")).unwrap();
+        fs::write(f.dir.path().join("dead-process"), "").unwrap();
+        steam_bridge::test_request(&f.home, id, "test-token", "stop").unwrap();
+        assert!(!running("test"));
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        assert!(f
+            .home
+            .join(".local/share/lepton/contexts/test/baked/app_overlay/base.apk")
+            .exists());
+    }
+    #[test]
+    fn steam_stop_protects_shared_apps_and_ignores_a_new_container_instance() {
+        let f = Fixture::new();
+        let id = "test/com.example.app";
+        let mut db = load(&f.home).unwrap();
+        let (a, _) = app(&f.home, &db, id).unwrap();
+        record_app(&mut db, &a);
+        db.records.get_mut(id).unwrap().steam_token = Some("token".into());
+        save(&f.home, &db).unwrap();
+        steam_bridge::test_adopt(&f.home, id, "token").unwrap();
+        let xml = f
+            .home
+            .join(".local/share/lepton/contexts/test/baked/data_overlay/system/packages.xml");
+        let text = fs::read_to_string(&xml).unwrap().replace(
+            "</packages>",
+            "<package name=\"com.example.extra\" codePath=\"/data/app/extra\"/></packages>",
+        );
+        fs::write(xml, text).unwrap();
+        fs::write(f.dir.path().join("other-process"), "").unwrap();
+        fs::write(f.dir.path().join("dead-process"), "").unwrap();
+        steam_bridge::test_request(&f.home, id, "token", "stop").unwrap();
+        assert!(running("test"));
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        steam_bridge::test_adopt(&f.home, id, "token").unwrap();
+        let tool = f.dir.path().join("tools/podman");
+        let script = fs::read_to_string(&tool)
+            .unwrap()
+            .replace("fixture|", "new-instance|");
+        fs::write(&tool, script).unwrap();
+        let commands = f.dir.path().join("commands");
+        fs::write(&commands, "").unwrap();
+        assert_eq!(
+            steam_bridge::test_request(&f.home, id, "token", "status").unwrap()["owned"],
+            false
+        );
+        steam_bridge::test_request(&f.home, id, "token", "stop").unwrap();
+        assert!(running("test"));
+        assert!(!fs::read_to_string(commands).unwrap().contains("force-stop"));
     }
     #[test]
     fn application_lookup_does_not_query_other_containers() {
@@ -3873,7 +4379,7 @@ echo true > '{}'
         fs::write(tools.join("podman"), format!(r#"#!/bin/sh
 printf '%s\n' "$*" >> '{commands}'
 case "$1" in
- inspect) case "$3" in *StartedAt*) echo "fixture|{state}|$(cat '{state}')";; *State.Pid*) echo "$(cat '{state}')|{pid}";; *) cat '{state}';; esac;;
+ inspect) case "$3" in *SteamBridge*) echo "fixture|{state}|$(cat '{state}')|{pid}";; *StartedAt*) echo "fixture|{state}|$(cat '{state}')";; *State.Pid*) echo "$(cat '{state}')|{pid}";; *) cat '{state}';; esac;;
  ps) if [ "$(cat '{state}')" = true ]; then case "$3" in *Pid*) echo 'lepton-test|{pid}';; *) echo lepton-test;; esac; fi;;
  stop) echo false > '{state}';;
  cp) /bin/cp -f "$2" '{incoming}';;
@@ -4116,12 +4622,28 @@ esac
         let _socket =
             std::os::unix::net::UnixListener::bind(c.baked.join("data_overlay/transient.sock"))
                 .unwrap();
+        let resource = c
+            .baked
+            .join("external/Android/data/com.example.app/files/update.part");
+        fs::create_dir_all(resource.parent().unwrap()).unwrap();
+        fs::write(&resource, b"unfinished download").unwrap();
+        storage::prepare(&c.baked).unwrap();
+        let shader = c.baked.join("shadercache/compiled");
+        fs::write(&shader, b"compiled shader").unwrap();
+        fs::create_dir_all(c.baked.join("data_overlay/media")).unwrap();
+        std::os::unix::fs::symlink(
+            c.baked.join("external"),
+            c.baked.join("data_overlay/media/0"),
+        )
+        .unwrap();
         let id = backup(&f.home, &c, &db, &f.dir.path().join("test.log")).unwrap();
         assert!(clean_candidates(&f.home, &db)
             .unwrap()
             .iter()
             .any(|v| v["name"] == id && v["restorable"] == true));
         fs::write(f.save_file(), "changed progress").unwrap();
+        fs::write(&resource, b"changed download").unwrap();
+        fs::write(&shader, b"changed shader").unwrap();
         let scratch = c.baked.join("data_workdir/work");
         fs::create_dir_all(&scratch).unwrap();
         fs::set_permissions(&scratch, fs::Permissions::from_mode(0)).unwrap();
@@ -4133,6 +4655,16 @@ esac
             .unwrap();
         assert_eq!(result["verificationRequired"], true);
         assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        assert_eq!(fs::read(&resource).unwrap(), b"unfinished download");
+        assert_eq!(fs::read(&shader).unwrap(), b"compiled shader");
+        assert_eq!(
+            fs::read(
+                c.baked
+                    .join("data_overlay/media/0/Android/data/com.example.app/files/update.part")
+            )
+            .unwrap(),
+            b"unfinished download"
+        );
         let original = root(&f.home)
             .join("backups")
             .join(&id)

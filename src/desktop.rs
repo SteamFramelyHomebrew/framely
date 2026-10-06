@@ -13,6 +13,7 @@ pub struct App {
     pub name: String,
     pub kind: &'static str,
     pub icon: Option<String>,
+    pub steam_app_id: Option<u32>,
     pub launch_unavailable: Option<String>,
     #[serde(skip)]
     target: Target,
@@ -213,6 +214,7 @@ fn desktop_apps(home: &Path, dirs: &[PathBuf], steam: &BTreeSet<u32>) -> Vec<App
                 name: name.clone(),
                 kind: "desktop",
                 icon: icon(home, get("Icon"), dirs),
+                steam_app_id: None,
                 launch_unavailable: None,
                 target: Target::Desktop(path),
             });
@@ -230,6 +232,7 @@ fn lepton_apps(home: &Path) -> Vec<App> {
                 name: v["name"].as_str()?.into(),
                 kind: "lepton",
                 icon: v["icon"].as_str().map(str::to_owned),
+                steam_app_id: v["steamAppId"].as_u64().and_then(|v| u32::try_from(v).ok()),
                 launch_unavailable: v["launchUnavailable"].as_str().map(str::to_owned),
                 target: Target::ManagedLepton(id),
             })

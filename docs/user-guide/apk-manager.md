@@ -77,11 +77,13 @@ As the Steam session user, the installed binary also provides these commands:
 
 Reviews expire after 15 minutes. APKs, operation records and recovery material are stored in `~/.local/share/framely/apk-manager`; managed Lepton data lives under `~/.local/share/lepton/contexts`. Framely uninstallation retains these user-owned directories. Back them up before removing Framely; the APK CLI requires a compatible Framely binary, while Lepton remains independently installed through Steam.
 
-For a Framely-managed context, a manual Lepton launch must preserve data:
+Start Framely-managed contexts through the APK panel or the `framely apk launch` command above. These launch paths preserve downloaded resources and attach persistent storage; a raw Lepton launch does not apply Framely's storage hooks.
 
-```bash
-LEPTON_NO_CLEANUP=true ~/.local/share/Steam/steamapps/common/Lepton/lepton start CONTEXT
-```
+### Downloaded resources and shader cache
+
+On the next container start after upgrading, Framely moves existing Android shared storage to `baked/external` inside the context and mounts it directly, outside the Android data overlay. The move preserves partial downloads and checkpoints without copying their contents. If both storage locations already contain data or an unexpected link exists, startup stops and retains both locations for recovery. Already-running containers use the new layout after stopping and launching again. Registered Steam compatibility contexts retain their existing external-storage layout.
+
+Each context also stores Mesa's shader cache in `baked/shadercache`, mounted at `/data/shaders`. Cache entries survive container restarts, allowing compatible shaders to be reused; first-time compilation still occurs. Managed context backups include both directories and restore downloaded resources and cache entries together with application data.
 
 Do not invoke Lepton's global cleanup commands as an application-specific uninstall.
 
@@ -114,3 +116,19 @@ Monitoring pauses during APK mutations and startup checks. A container restart, 
 ### SteamOS window-close limitation
 
 On Frame Gamescope `3.16.28-76-ge383171f`, both window and Dock close controls log `Closing Wayland windows not supported yet.` for Lepton windows. The close request does not reach Android, so this switch cannot make these controls work on that build. Use the APK panel's **Stop container** action until the system compositor supports Wayland close requests. Framely does not infer close intent from focus changes or this unscoped log message.
+
+## Steam-owned launches
+
+For an installed sideloaded APK, open **Manage → Advanced settings → Launch through Steam**. This switch defaults to on. On startup and after installation, Framely automatically wraps existing and newly installed launchable sideloaded APKs; explicit opt-outs and Steam-managed apps are preserved. Registration does not start apps or restart their containers. If Steam is unavailable, registration retries in the background when it becomes ready. Framely automatically registers its own Devkit entry using Valve's authenticated local Steam IPC; Steam must be running. No manual shortcut addition, Steam restart, APK reinstallation or new container is required. The original Lepton launcher icon, order and favorites remain; registered wrappers are not added as desktop icons. Once Steam supplies an App ID, that explicit mapping also excludes its duplicate from the launcher Steam list.
+
+Close an existing running container before its first Steam launch. Framely refuses to reboot a running app just to assign Steam ownership. The wrapper forwards Steam's App ID to a cold Lepton boot, retains the existing data directory, and stays alive while the target app runs. Steam **Stop** ends this wrapper; the user session service stops the exact owned app/container without deleting data. If an old shared container has other live apps, those apps and the container are preserved. A confirmed app-process exit waits 15 seconds; temporary query failures do not count as an exit. Lepton background services may keep the entry running until explicitly stopped.
+
+The same service monitors a killed wrapper and reconnects after a Framely session restart. PID start identity and container boot identity prevent an old wrapper from stopping a newer container. This does not patch Gamescope: whether the window/Dock close buttons are routed through Steam remains subject to the SteamOS version and requires device verification. Disable the switch to remove only Framely's corresponding Steam entry and return to direct launch. Uninstalling its APK or deleting its container also removes that entry; Steam must be available for this cleanup.
+
+### Steam 托管启动
+
+已安装的侧载 APK 可以在 **管理 → 高级设置 → 通过 Steam 启动** 中控制此功能，默认开启。本体启动及安装完成后，会自动包装已有和新安装的可启动侧载 APK，跳过 Steam 已管理的应用，并保留用户主动关闭的选择。注册不启动应用或重启容器；Steam 暂不可用时，会在后台等待并自动重试。Framely 通过 Valve 的本地认证 IPC 自动注册 Devkit 入口，需要 Steam 正在运行；无需手动添加快捷方式、重启 Steam、重装 APK 或新建容器。启动台保留原来的 Lepton 图标、排序和收藏，不生成额外桌面图标；首次取得 Steam App ID 后，根据明确绑定从 Steam 分类中过滤重复入口。
+
+首次通过 Steam 启动前，请先关闭运行中的容器。Framely 不会为了绑定 Steam 而强制重启正在运行的应用。包装进程将 Steam App ID 传入冷启动的 Lepton，并保留原数据目录；应用运行期间包装进程保持存活。Steam 的“停止”结束包装进程后，用户会话服务停止准确对应的应用和容器，不删除数据。旧共享容器中如果还有其他应用运行，则保护它们和容器。确认目标进程退出后等待 15 秒；查询失败不视为退出。后台服务可能让 Steam 入口继续保持运行，需要手动停止。
+
+包装进程被强制结束或 Framely 会话服务重启后，也会通过持久记录继续核对。进程启动标识及容器启动标识防止旧进程停止新容器。本功能不修改 Gamescope；窗口下方及 Dock 的关闭按钮能否正确交给 Steam，仍需根据 SteamOS 版本实机验证。关闭开关只移除 Framely 对应该应用的 Steam 入口，并恢复直接启动。卸载 APK 或删除其容器时也会移除对应入口，此清理需要 Steam 可用。

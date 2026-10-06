@@ -41,6 +41,13 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Cmd {
+    /// Internal long-lived Steam APK wrapper.
+    ApkSteam {
+        #[arg(long)]
+        app: String,
+        #[arg(long)]
+        token: String,
+    },
     /// Manage sideloaded APKs as the Steam session user (also works without the panel).
     Apk {
         operation: String,
@@ -155,6 +162,7 @@ enum Cmd {
 }
 fn run() -> Result<()> {
     match Cli::parse().command {
+        Cmd::ApkSteam { app, token } => apk::steam_wrapper(&app, &token),
         Cmd::Apk {
             operation,
             params,

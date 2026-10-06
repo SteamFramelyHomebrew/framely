@@ -8,14 +8,15 @@ let unavailable:string|null=null;
 const calls:{method:string;params:any}[]=[];
 window.fetch=async(_url,init)=>{
  const {method,params}=JSON.parse(String(init?.body));calls.push({method,params});
- const result=method==='steam.list'?[]:method==='desktop.list'?[{id:'shared/game1',name:'Game One',kind:'lepton'},{id:'shared/game2',name:'Game Two',kind:'lepton',launchUnavailable:unavailable}]:true;
+ const result=method==='steam.list'?[{id:0x92345678,name:'Wrapper duplicate'},{id:44,name:'Game Two'}]:method==='desktop.list'?[{id:'shared/game1',name:'Game One',kind:'lepton',steamAppId:0x92345678},{id:'shared/game2',name:'Game Two',kind:'lepton',launchUnavailable:unavailable}]:true;
  return new Response(JSON.stringify({result}));
 };
 const wait=(ms=40)=>new Promise(r=>setTimeout(r,ms));
 async function until(check:()=>unknown){for(let i=0;i<120;i++){if(check())return;await wait();}throw Error('Timed out');}
-const icon=(name:string)=>document.querySelector<HTMLButtonElement>(`.launch-icon[aria-label="${name}"]`);
+const icon=(name:string)=>document.querySelector<HTMLButtonElement>(`${name==='Game Two'?'[data-launch-key="lepton:shared/game2"] ':''}.launch-icon[aria-label="${name}"]`);
 (window as any).runInstallReviewChecks=async()=>{try{
  await until(()=>icon('Game Two'));
+ if(icon('Wrapper duplicate')||document.querySelectorAll('.launch-icon[aria-label="Game Two"]').length!==2)throw Error('Explicit Steam binding was not deduplicated, or a same-name unrelated Steam app was removed');
  icon('Game One')!.click();await until(()=>calls.some(c=>c.method==='desktop.launch'));
  unavailable=reason;window.dispatchEvent(new Event('framely.launcher.open'));
  await until(()=>icon('Game Two')?.getAttribute('aria-disabled')==='true');

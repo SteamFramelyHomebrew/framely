@@ -83,11 +83,13 @@ Android 清除已卸载包的保留状态时可能需要原签名 APK。Framely 
 
 校验票据有效期为 15 分钟。APK、管理记录和恢复材料位于 `~/.local/share/framely/apk-manager`，托管 Lepton 数据位于 `~/.local/share/lepton/contexts`。卸载 Framely 保留这些用户目录；卸载前应备份。APK 命令仍需兼容的 Framely 二进制，Lepton 本身由 Steam 独立安装。
 
-手动启动 Framely 托管容器时，必须保留数据：
+请通过 APK 面板或上面的 `framely apk launch` 命令启动 Framely 托管容器。这些入口会保留下载资源并挂载持久存储；直接调用 Lepton 不会应用 Framely 的存储适配。
 
-```bash
-LEPTON_NO_CLEANUP=true ~/.local/share/Steam/steamapps/common/Lepton/lepton start CONTEXT
-```
+### 下载资源与 shader 缓存
+
+升级后的下一次容器启动会把已有 Android 共享存储移动到容器内的 `baked/external`，直接挂载，绕开 Android 数据的 OverlayFS 层。迁移只移动目录，保留未完成下载和断点记录，不复制资源内容。若两处目录均已有数据或发现未知链接，会停止启动并保留数据供恢复。已经运行的容器需停止后再次启动才应用新布局；登记的 Steam 兼容数据容器保留原有独立资源布局。
+
+每个容器的 Mesa shader 缓存保存在 `baked/shadercache`，挂载到 `/data/shaders`，重启后仍保留，可复用兼容的已编译 shader；首次使用仍需编译。托管容器备份包含这两个目录，恢复时会随应用数据一起恢复下载资源和缓存。
 
 不要将 Lepton 的全局清理命令用作单应用卸载。
 

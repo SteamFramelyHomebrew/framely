@@ -918,6 +918,10 @@
     "默认关闭。应用进程连续消失 15 秒后停止容器；切到后台不会停止。": "Off by default. Stop the container after app processes are absent for 15 seconds; moving to the background does not stop it.",
     "关闭窗口时停止容器": "Stop container when closing its window",
     "收到系统窗口关闭信号后停止容器并保留数据。部分 SteamOS 版本不支持关闭 Lepton 窗口；切到后台不会停止，共享容器中的其他应用会受到保护。": "Stops the container after a confirmed system window-close signal and retains data. Some SteamOS versions cannot close Lepton windows. Background and other shared apps are protected.",
-    "应用已启动，正在检查": "App started; checking health"
+    "应用已启动，正在检查": "App started; checking health",
+    "通过 Steam 启动": "Launch through Steam",
+    "保存 Steam 启动设置": "Save Steam launch settings",
+    "默认开启，自动包装已有和新安装的侧载应用。注册不启动应用或重启容器；首次通过 Steam 启动前请先关闭运行中的容器。": "Enabled by default. Existing and newly installed sideloaded apps are wrapped automatically. Registration does not start apps or restart containers. Close a running container before its first Steam launch.",
+    "等待 Steam 注册，Steam 就绪后会自动重试。": "Waiting for Steam registration. It will retry automatically when Steam is ready."
   }
 }
