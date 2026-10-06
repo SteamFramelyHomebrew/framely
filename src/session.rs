@@ -33,7 +33,7 @@ struct Agent {
     jobs: crate::jobs::Jobs,
     launcher_search: Mutex<crate::launcher_search::SearchCache>,
     terminals: crate::terminal::Terminals,
-
+    files: Arc<crate::manager_files::Files>,
     catalog_cache: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
 }
 #[derive(Default)]
@@ -590,6 +590,94 @@ impl Agent {
                 .read_to_end(&mut bytes)?;
             let result = self.jobs.uploads.append(id, offset, &bytes)?;
             return send_json(r, json!({"result":result}));
+        }
+        if let Some(id) = path.strip_prefix("/manager-api/file-content/") {
+            ensure!(
+                matches!(r.method(), Method::Get | Method::Head),
+                "Invalid download method"
+            );
+            ensure!(
+                !r.headers()
+                    .iter()
+                    .any(|h| h.field.equiv("Sec-Fetch-Site") && h.value.as_str() == "cross-site"),
+                "Cross-origin download denied"
+            );
+            ensure!(
+                !r.headers()
+                    .iter()
+                    .any(|h| h.field.equiv("Origin") && h.value.as_str() != expected_origin),
+                "Cross-origin download denied"
+            );
+            ensure!(
+                self.core("agreement.status", json!({}))?["accepted"] == true,
+                "请先同意用户协议和隐私声明"
+            );
+            let (file, inline) = self.files.content(id)?;
+            return serve_user_file(r, &file, inline);
+        }
+        if path == "/manager-api/files" || path.starts_with("/manager-api/file-upload/") {
+            ensure!(r.method() == &Method::Post, "Invalid file manager method");
+            ensure!(
+                r.headers()
+                    .iter()
+                    .any(|h| h.field.equiv("Origin") && h.value.as_str() == expected_origin),
+                "Cross-origin manager request denied"
+            );
+            ensure!(
+                self.core("agreement.status", json!({}))?["accepted"] == true,
+                "请先同意用户协议和隐私声明"
+            );
+            if let Some(upload) = path.strip_prefix("/manager-api/file-upload/") {
+                let (id, offset) = upload.split_once('/').context("Invalid upload path")?;
+                let offset: u64 = offset.parse()?;
+                let mut bytes = Vec::new();
+                r.as_reader().take(1048577).read_to_end(&mut bytes)?;
+                let result = self.files.append(id, offset, &bytes);
+                return send_json(
+                    r,
+                    match result {
+                        Ok(v) => json!({"result":v}),
+                        Err(e) => json!({"error":e.to_string()}),
+                    },
+                );
+            }
+            let mut bytes = Vec::new();
+            r.as_reader()
+                .take(6 * 1024 * 1024 + 1)
+                .read_to_end(&mut bytes)?;
+            ensure!(
+                bytes.len() <= 6 * 1024 * 1024,
+                "File manager request too large"
+            );
+            let result = (|| -> Result<Value> {
+                let p: Value = serde_json::from_slice(&bytes)?;
+                let operation = p["operation"].as_str().unwrap_or("list");
+                if matches!(
+                    operation,
+                    "copy"
+                        | "move"
+                        | "delete"
+                        | "search"
+                        | "compress"
+                        | "extract"
+                        | "download.batch"
+                ) {
+                    let files = self.files.clone();
+                    let home = crate::steam::home()?;
+                    return self.jobs.task_progress(
+                        &format!("files:{operation}:{}", crate::manager_files::token()),
+                        move |cancel, progress| files.task(&home, &p, cancel, progress),
+                    );
+                }
+                self.files.api(&crate::steam::home()?, &p)
+            })();
+            return send_json(
+                r,
+                match result {
+                    Ok(v) => json!({"result":v}),
+                    Err(e) => json!({"error":e.to_string()}),
+                },
+            );
         }
         if path == "/manager-api/terminal" || path == "/manager-api/terminal/ws" {
             ensure!(
@@ -1422,6 +1510,102 @@ fn send_file(r: Request, p: &Path, cors: bool) -> Result<()> {
     Ok(())
 }
 
+fn serve_user_file(r: Request, path: &Path, inline: bool) -> Result<()> {
+    use std::io::{Seek, SeekFrom};
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
+    ensure!(file.metadata()?.is_file(), "Select a regular file");
+    let length = file.metadata()?.len();
+    let range = r
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Range"))
+        .map(|h| h.value.as_str());
+    let mut start = 0;
+    let mut end = length.saturating_sub(1);
+    let mut partial = false;
+    if let Some(range) = range {
+        let parsed = (|| -> Result<(u64, u64)> {
+            let value = range.strip_prefix("bytes=").context("Invalid range")?;
+            ensure!(!value.contains(','), "Multiple ranges are not supported");
+            let (first, last) = value.split_once('-').context("Invalid range")?;
+            let (first, last) = if first.is_empty() {
+                let size: u64 = last.parse()?;
+                ensure!(size > 0, "Invalid range");
+                (length.saturating_sub(size), length.saturating_sub(1))
+            } else {
+                let first: u64 = first.parse()?;
+                let last = if last.is_empty() {
+                    length.saturating_sub(1)
+                } else {
+                    last.parse::<u64>()?.min(length.saturating_sub(1))
+                };
+                (first, last)
+            };
+            ensure!(
+                length > 0 && first < length && first <= last,
+                "Range is outside the file"
+            );
+            Ok((first, last))
+        })();
+        match parsed {
+            Ok((a, b)) => {
+                start = a;
+                end = b;
+                partial = true;
+            }
+            Err(_) => {
+                r.respond(
+                    Response::empty(416)
+                        .with_header(header("Content-Range", &format!("bytes */{length}"))),
+                )?;
+                return Ok(());
+            }
+        }
+    }
+    let size = if length == 0 { 0 } else { end - start + 1 };
+    file.seek(SeekFrom::Start(start))?;
+    let mime = if inline {
+        crate::manager_files::media_type(path).unwrap_or("application/octet-stream")
+    } else {
+        "application/octet-stream"
+    };
+    let filename = path.file_name().unwrap_or_default().to_string_lossy();
+    let encoded = url::form_urlencoded::byte_serialize(filename.as_bytes()).collect::<String>();
+    let mut headers = vec![
+        header("Content-Type", mime),
+        header("Accept-Ranges", "bytes"),
+        header("X-Content-Type-Options", "nosniff"),
+        header("Cache-Control", "no-store"),
+        header("Content-Security-Policy", "default-src 'none'; sandbox"),
+        header(
+            "Content-Disposition",
+            &format!(
+                "{}; filename*=UTF-8''{encoded}",
+                if inline { "inline" } else { "attachment" }
+            ),
+        ),
+    ];
+    if partial {
+        headers.push(header(
+            "Content-Range",
+            &format!("bytes {start}-{end}/{length}"),
+        ));
+    }
+    let response = Response::new(
+        StatusCode(if partial { 206 } else { 200 }),
+        headers,
+        file.take(size),
+        Some(size as usize),
+        None,
+    );
+    r.respond(response)?;
+    Ok(())
+}
+
 pub fn serve(
     socket: PathBuf,
     state: PathBuf,
@@ -1464,7 +1648,15 @@ pub fn serve(
         jobs: crate::jobs::Jobs::default(),
         launcher_search: Mutex::default(),
         terminals: crate::terminal::Terminals::default(),
+        files: Arc::default(),
         catalog_cache: Arc::default(),
+    });
+    let file_agent = agent.clone();
+    std::thread::spawn(move || loop {
+        if let Ok(home) = crate::steam::home() {
+            let _ = file_agent.files.maintain(&home);
+        }
+        std::thread::sleep(Duration::from_secs(3600));
     });
     let network_agent = agent.clone();
     std::thread::spawn(move || network_listener(network_agent, || true));
@@ -1850,6 +2042,7 @@ mod tests {
             jobs: crate::jobs::Jobs::default(),
             launcher_search: Mutex::default(),
             terminals: crate::terminal::Terminals::default(),
+            files: Arc::default(),
             catalog_cache: Arc::default(),
         })
     }
@@ -2196,6 +2389,48 @@ mod tests {
     }
 
     #[test]
+    fn file_streams_support_range_head_and_safe_download_headers() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("generated sample.mp4");
+        fs::write(&path, b"0123456789").unwrap();
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", server.server_addr());
+        let thread = std::thread::spawn(move || {
+            for _ in 0..7 {
+                serve_user_file(server.recv().unwrap(), &path, true).unwrap();
+            }
+        });
+        for (range, expected) in [
+            ("bytes=2-5", "2345"),
+            ("bytes=-3", "789"),
+            ("bytes=8-", "89"),
+        ] {
+            let reply = ureq::get(&origin).set("Range", range).call().unwrap();
+            assert_eq!(reply.status(), 206);
+            assert_eq!(reply.header("Accept-Ranges"), Some("bytes"));
+            assert_eq!(reply.header("X-Content-Type-Options"), Some("nosniff"));
+            assert_eq!(reply.into_string().unwrap(), expected);
+        }
+        for range in ["bytes=10-", "bytes=1-2,4-5"] {
+            assert!(matches!(
+                ureq::get(&origin).set("Range", range).call(),
+                Err(ureq::Error::Status(416, _))
+            ));
+        }
+        let reply = ureq::get(&origin).call().unwrap();
+        assert_eq!(reply.header("Content-Type"), Some("video/mp4"));
+        assert!(reply
+            .header("Content-Disposition")
+            .unwrap()
+            .contains("generated+sample.mp4"));
+        assert_eq!(reply.into_string().unwrap(), "0123456789");
+        let reply = ureq::head(&origin).call().unwrap();
+        assert_eq!(reply.header("Content-Length"), Some("10"));
+        assert!(reply.into_string().unwrap().is_empty());
+        thread.join().unwrap();
+    }
+
+    #[test]
     fn network_panel_requires_login_and_same_origin_and_blocks_native_routes() {
         let password = "密码".repeat(70);
         let root = tempfile::tempdir().unwrap();
@@ -2396,7 +2631,11 @@ mod tests {
             .set("Origin", "null")
             .send_json(json!({"method":"ui.events"}))
             .is_err());
-        for route in ["/manager-api/terminal"] {
+        for route in [
+            "/manager-api/files",
+            "/manager-api/terminal",
+            "/manager-api/file-upload/id/0",
+        ] {
             for origin in ["null", "http://other.example", ""] {
                 assert!(ureq::post(&format!("{}{route}", agent.origin))
                     .set("Cookie", &format!("framely={}", agent.web_key))

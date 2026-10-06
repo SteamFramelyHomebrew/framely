@@ -9,6 +9,7 @@ mod ipc;
 mod jobs;
 mod launcher_search;
 mod localization;
+mod manager_files;
 mod model;
 mod package;
 mod planner;

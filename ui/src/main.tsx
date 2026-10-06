@@ -1,3 +1,4 @@
+import {FileManager} from './file-manager';
 import {TerminalManager} from './terminal';
 import {FrameFilePicker} from './file-picker';
 import {ManagerSwitcher,managerTab,sectionFor,type ManagerSection} from './manager-switcher';
@@ -34,6 +35,8 @@ function App(){
  useEffect(()=>{const ticket=install?.ticket;return()=>{if(ticket)void api('job.cancel',{job:ticket}).catch(()=>{});};},[install?.ticket]);
  const localePacks=useRef<LanguagePack[]|null>(null);const localePreference=useRef<string|null>(null);
  const readError=useReadInbox(!managerMode&&tab==='notifications'&&!page&&!!status.agreement?.accepted,status.inbox??[],refresh);
+ const [filesVisited,setFilesVisited]=useState(tab==='files');
+ useEffect(()=>{if(tab==='files')setFilesVisited(true);},[tab]);
  const apkPanel=managerMode&&tab.startsWith('apk');
  const managerSection=sectionFor(tab);
  useEffect(()=>{if(managerMode){try{localStorage.setItem('framely.manager.'+sectionFor(tab),tab);if(!location.hash.startsWith('#plugin:'))history.replaceState(null,'',location.pathname+location.search+'#'+tab);}catch{}}},[tab]);
@@ -101,6 +104,7 @@ function App(){
  {listedPlugins.length===0&&<div className="empty-state"><span className="empty-symbol"><Icon name={tab==='favorites'?'star':'plugins'} size={46}/></span><h2>{query?t("未找到插件"):tab==='favorites'?t("没有收藏的插件"):onlyDisabledInstalled?t("没有已启用的插件"):t("还没有安装插件")}</h2><p>{query?t("换一个关键词再试。"):tab==='favorites'?t("点击插件旁的星标，将它加入常用。"):onlyDisabledInstalled?t("打开插件管理以启用插件。"):t("打开插件管理以安装插件。")}</p><button className="primary" onClick={()=>query?setQuery(''):tab==='favorites'?setTab('installed'):managerMode?setImporting(true):void api('host.manager.open')}>{query?t("清除搜索"):tab==='favorites'?t("查看已安装"):managerMode?t("安装插件"):t("打开插件管理")}</button></div>}
  </>}
  {tab==='notifications'&&!managerMode&&<><NotificationCenter inbox items={status.inbox??[]} plugins={status.database.plugins} safeMode={status.database.safeMode} refresh={refresh} controls={<PopupPermission config={status.database.notificationSettings??defaultNotificationConfig} refresh={refresh}/>}/>{readError&&<p className="error" role="alert">{readError}</p>}</>}
+ {managerMode&&(filesVisited||tab==='files')&&<div hidden={tab!=='files'}><FileManager active={tab==='files'}/></div>}
  {tab==='terminal'&&managerMode&&<TerminalManager/>}
  {apkPanel&&<ApkManager view={tab==='apk-containers'?'containers':tab==='apk-cleanup'?'cleanup':'apps'} onViewChange={view=>setTab(view==='apps'?'apk':'apk-'+view)}/>}
  {tab==='launcher-settings'&&managerMode&&<><div className="list-heading"><div><h1>{t('启动台')}</h1><p>{t('启动方式、菜单与分类。')}</p></div></div><LauncherSettings config={status.database.launcher} refresh={refresh}/></>}
