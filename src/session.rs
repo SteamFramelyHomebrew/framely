@@ -1619,6 +1619,7 @@ pub fn serve(
         unsafe { libc::geteuid() } != 0,
         "UI session must not run as root"
     );
+    crate::gamepad::session_started();
     let server = Server::http("127.0.0.1:0").map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let port = server
         .server_addr()

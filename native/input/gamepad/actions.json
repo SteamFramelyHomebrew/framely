@@ -1,0 +1,88 @@
+{
+  "action_sets": [
+    {
+      "name": "/actions/framely_gamepad",
+      "usage": "leftright"
+    }
+  ],
+  "actions": [
+    {
+      "name": "/actions/framely_gamepad/in/left_dpad_up",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/left_dpad_down",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/left_dpad_left",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/left_dpad_right",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/left_bumper",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/left_menu",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/left_thumbstick",
+      "type": "vector2"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/left_trigger",
+      "type": "vector1"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/left_stickclick",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/right_a",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/right_b",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/right_x",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/right_y",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/right_bumper",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/right_menu",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/right_thumbstick",
+      "type": "vector2"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/right_trigger",
+      "type": "vector1"
+    },
+    {
+      "name": "/actions/framely_gamepad/in/right_stickclick",
+      "type": "boolean"
+    }
+  ],
+  "default_bindings": [
+    {
+      "controller_type": "frame_controller",
+      "binding_url": "bindings.json"
+    }
+  ]
+}

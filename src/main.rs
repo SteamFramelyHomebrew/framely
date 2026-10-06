@@ -4,6 +4,7 @@ mod auth;
 mod desktop;
 mod diagnostics;
 mod file_browser;
+mod gamepad;
 mod http;
 mod ipc;
 mod jobs;

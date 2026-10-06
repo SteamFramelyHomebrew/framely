@@ -904,6 +904,9 @@
     "调整侧栏宽度": "Resize sidebar",
     "文件操作": "File actions",
     "Ctrl+Shift+C 复制 · Ctrl+Shift+V 粘贴 · Ctrl+C 中断程序": "Ctrl+Shift+C copy · Ctrl+Shift+V paste · Ctrl+C interrupt",
-    "无法复制，请使用浏览器的复制功能。": "Unable to copy. Use the browser copy command."
+    "无法复制，请使用浏览器的复制功能。": "Unable to copy. Use the browser copy command.",
+    "保存手柄设置": "Save gamepad settings",
+    "Frame 手柄输入": "Frame gamepad input",
+    "默认关闭。将 Frame 手柄用作标准游戏手柄；开启后下次打开 APK 生效，必要时重启容器。关闭立即停止输入。": "Off by default. Use Frame controllers as a standard gamepad. Enabling takes effect at the next APK launch and may restart its container. Disabling stops input immediately."
   }
 }

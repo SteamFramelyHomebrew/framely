@@ -23,6 +23,7 @@ rm -f "$stage/lib/cef/framely-probe" "$stage/lib/cef/framely-browser-probe"
 # Remove distribution debug information; browser functionality is unchanged.
 strip --strip-debug "$stage/lib/cef/libcef.so"
 cp native/vendor/openvr/lib/linuxarm64/libopenvr_api.so "$stage/lib/openvr/"
+cp target/native/framely-gamepad target/native/libframely-gamepad-grab.so "$stage/lib/openvr/"
 cp -a ui/dist/. "$stage/share/ui/"
 cp -a assets/search "$stage/share/"
 cp assets/search/COPYING "$stage/share/licenses/ipadic.txt"

@@ -88,3 +88,13 @@ The initial implementation supports individual APKs. Split APK bundles, XAPK/APK
 In **Manage app → Advanced settings → Window orientation**, choose **Automatic**, **Landscape**, or **Portrait**. The choice is saved per app and applied at its next launch. Forced portrait uses a tall window rather than rotating content sideways. Changing orientation may restart the shared container and stop other apps in it. VR apps ignore this setting.
 
 Moonlight V+ 12.12.12’s connection-creation screen currently crashes on the tested Lepton build because Android’s clipboard service is absent. This is distinct from the window-startup failure. Framely does not modify or re-sign the APK; a compatible Lepton runtime or an app-side fallback is required.
+
+### Optional Frame gamepad input
+
+**APK → Apps → Frame gamepad input** is off by default, including after upgrading an existing installation. Enable it to use the two Frame controllers as one standard Android gamepad for APKs opened through Framely. It includes ABXY, the D-pad and diagonals, both sticks and stick clicks, shoulder buttons, analog triggers, Select and Start. Applications must support Android gamepad input; this does not map controls to touchscreen gestures or provide Android VR controller tracking or vibration.
+
+Enabling applies on the next application launch. Framely may restart its container to attach the input device, stopping other apps in that container. Disabling stops forwarding immediately. Only one Framely-launched APK owns the bridge at a time; switching containers releases the previous pad. Input pauses when another Android activity is foreground, and releases on controller disconnect, application exit, container stop or session-service restart. After a service restart, launch the APK again to reconnect. Keep the intended Android window selected in Dock; the bridge does not change Steam's physical-controller bindings.
+
+The bridge runs as the Steam session user and requires access to `/dev/uinput`, active SteamVR and the supported Lepton startup hooks. It does not modify Steam's installed Lepton files. Only its virtual event node is mounted into the target container, where Android claims it exclusively. If this claim fails, no input is forwarded and the launch reports an error. Disable the option to use the normal launch path. Bridge errors are recorded in `~/.local/share/framely/apk-manager/logs/gamepad.log`; key presses are not logged. The native helper and Android adapter ship in both offline and core update packages.
+
+When this option is enabled, launch APKs through the management panel or launcher. A one-shot CLI launch cannot own the persistent input bridge and reports an error instead.

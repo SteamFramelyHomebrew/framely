@@ -1,0 +1,69 @@
+// Session-owned OpenVR -> Android gamepad. No CEF dependency or timed test limit.
+#include "openvr.h"
+#include <linux/uinput.h>
+#include <sys/prctl.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <poll.h>
+#include <signal.h>
+#include <filesystem>
+#include <cstdio>
+#include <cstring>
+#include <cerrno>
+#include <cmath>
+#include <algorithm>
+#include <string>
+#include <chrono>
+#include <thread>
+static volatile sig_atomic_t stopped=0;
+static void stop(int){stopped=1;}
+static const int keys[]={BTN_SOUTH,BTN_EAST,BTN_WEST,BTN_NORTH,BTN_TL,BTN_TR,BTN_SELECT,BTN_START,BTN_THUMBL,BTN_THUMBR};
+static const int axes[]={ABS_X,ABS_Y,ABS_RX,ABS_RY,ABS_Z,ABS_RZ,ABS_HAT0X,ABS_HAT0Y};
+static bool event(int fd,int type,int code,int value){input_event e{};e.type=type;e.code=code;e.value=value;return write(fd,&e,sizeof e)==sizeof e;}
+static bool send(int fd,const int* state){bool ok=true;for(int k=0;k<10;k++)ok=event(fd,EV_KEY,keys[k],state[k])&&ok;for(int k=0;k<8;k++)ok=event(fd,EV_ABS,axes[k],state[10+k])&&ok;return event(fd,EV_SYN,SYN_REPORT,0)&&ok;}
+int main(int argc,char**argv){
+ if(argc!=2||geteuid()==0){fprintf(stderr,"Run gamepad bridge as the Steam session user with an action manifest.\n");return 1;}
+ auto parent=getppid();prctl(PR_SET_PDEATHSIG,SIGTERM);if(getppid()!=parent)return 1;
+ signal(SIGTERM,stop);signal(SIGINT,stop);signal(SIGPIPE,SIG_IGN);
+ vr::EVRInitError error;vr::VR_Init(&error,vr::VRApplication_Overlay);if(error){fprintf(stderr,"SteamVR gamepad input unavailable: %d\n",error);return 1;}
+ auto*input=vr::VRInput();vr::VRActiveActionSet_t set{};
+ bool valid=input->SetActionManifestPath(argv[1])==vr::VRInputError_None&&input->GetActionSetHandle("/actions/framely_gamepad",&set.ulActionSet)==vr::VRInputError_None;
+ const char*names[]={"right_a","right_b","right_x","right_y","left_bumper","right_bumper","left_menu","right_menu","left_stickclick","right_stickclick","left_thumbstick","right_thumbstick","left_trigger","right_trigger","left_dpad_left","left_dpad_right","left_dpad_up","left_dpad_down"};
+ vr::VRActionHandle_t handles[18]{};
+ for(int k=0;k<18;k++)valid= input->GetActionHandle((std::string("/actions/framely_gamepad/in/")+names[k]).c_str(),&handles[k])==vr::VRInputError_None&&valid;
+ if(!valid){fprintf(stderr,"Invalid gamepad action bindings.\n");vr::VR_Shutdown();return 1;}
+ int fd=open("/dev/uinput",O_WRONLY|O_NONBLOCK|O_CLOEXEC);if(fd<0){perror("Gamepad /dev/uinput");vr::VR_Shutdown();return 1;}
+ bool ok=ioctl(fd,UI_SET_EVBIT,EV_KEY)==0&&ioctl(fd,UI_SET_EVBIT,EV_ABS)==0;
+ for(auto key:keys)ok=ioctl(fd,UI_SET_KEYBIT,key)==0&&ok;
+ for(int k=0;k<8;k++){ok=ioctl(fd,UI_SET_ABSBIT,axes[k])==0&&ok;uinput_abs_setup a{};a.code=axes[k];a.absinfo.minimum=k<4?-32768:(k<6?0:-1);a.absinfo.maximum=k<4?32767:(k<6?255:1);a.absinfo.flat=k<4?1024:0;ok=ioctl(fd,UI_ABS_SETUP,&a)==0&&ok;}
+ uinput_setup device{};device.id={BUS_USB,0x045e,0x028e,0x0114};strcpy(device.name,"Framely Frame gamepad");
+ ok=ioctl(fd,UI_DEV_SETUP,&device)==0&&ioctl(fd,UI_DEV_CREATE)==0&&ok;
+ char sysname[128]{};ok=ioctl(fd,UI_GET_SYSNAME(sizeof sysname),sysname)>=0&&ok;
+ std::string node;
+ for(int tries=0;ok&&tries<100&&node.empty();tries++){std::error_code ec;for(auto&entry:std::filesystem::directory_iterator(std::string("/sys/class/input/")+sysname,ec)){auto name=entry.path().filename().string();if(name.rfind("event",0)==0)node="/dev/input/"+name;}if(node.empty())std::this_thread::sleep_for(std::chrono::milliseconds(20));}
+ if(!ok||node.empty()){fprintf(stderr,"Could not create the virtual gamepad.\n");ioctl(fd,UI_DEV_DESTROY);close(fd);vr::VR_Shutdown();return 1;}
+ int witness=-1;for(int tries=0;tries<100&&witness<0;tries++){witness=open(node.c_str(),O_RDONLY|O_NONBLOCK|O_CLOEXEC);if(witness<0)std::this_thread::sleep_for(std::chrono::milliseconds(20));}
+ if(witness<0){perror("Gamepad event access");ioctl(fd,UI_DEV_DESTROY);close(fd);vr::VR_Shutdown();return 1;}
+ printf("%s\n",node.c_str());fflush(stdout);
+ // Parent owns routing. Start neutral; EOF, disconnect or disabled actions release input.
+ bool enabled=false;std::string commands;int previous[18]{};
+ while(!stopped){pollfd p{STDIN_FILENO,POLLIN,0};if(poll(&p,1,0)>0){char buffer[128];auto count=read(0,buffer,sizeof buffer);if(count<=0)break;commands.append(buffer,count);size_t at;while((at=commands.find('\n'))!=std::string::npos){auto command=commands.substr(0,at);commands.erase(0,at+1);enabled=command=="enable";}if(commands.size()>128)break;}
+  int state[18]{};
+  // If Android releases its exclusive claim (e.g. InputReader restart),
+  // pause until it claims the node again. Do not feed other host consumers.
+  bool claimed=false;if(enabled){if(ioctl(witness,EVIOCGRAB,1)==0)ioctl(witness,EVIOCGRAB,0);else claimed=errno==EBUSY;}
+  if(enabled&&claimed&&input->UpdateActionState(&set,sizeof set,1)==vr::VRInputError_None){
+   const auto leftIndex=vr::VRSystem()->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_LeftHand);
+   const auto rightIndex=vr::VRSystem()->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_RightHand);
+   const bool left=leftIndex!=vr::k_unTrackedDeviceIndexInvalid&&vr::VRSystem()->IsTrackedDeviceConnected(leftIndex);
+   const bool right=rightIndex!=vr::k_unTrackedDeviceIndexInvalid&&vr::VRSystem()->IsTrackedDeviceConnected(rightIndex);
+   bool buttons[18]{};for(int k=0;k<18;k++){if(k>=10&&k<=13)continue;vr::InputDigitalActionData_t data{};if(input->GetDigitalActionData(handles[k],&data,sizeof data,vr::k_ulInvalidInputValueHandle)==vr::VRInputError_None)buttons[k]=(k==4||k==6||k==8||k>=14?left:right)&&data.bActive&&data.bState;}
+   for(int k=0;k<10;k++)state[k]=buttons[k];
+   for(int k=10;k<=13;k++){if(!(k==10||k==12?left:right))continue;vr::InputAnalogActionData_t data{};if(input->GetAnalogActionData(handles[k],&data,sizeof data,vr::k_ulInvalidInputValueHandle)!=vr::VRInputError_None||!data.bActive||!std::isfinite(data.x)||!std::isfinite(data.y))continue;if(k<=11){state[10+(k-10)*2]=std::lround(std::clamp(data.x,-1.f,1.f)*32767);state[11+(k-10)*2]=std::lround(std::clamp(-data.y,-1.f,1.f)*32767);}else state[14+k-12]=std::lround(std::clamp(data.x,0.f,1.f)*255);}
+   state[16]=int(buttons[15])-int(buttons[14]);state[17]=int(buttons[17])-int(buttons[16]);
+  }
+  if(memcmp(previous,state,sizeof state)){if(!send(fd,state))break;memcpy(previous,state,sizeof state);}
+  std::this_thread::sleep_for(std::chrono::milliseconds(8));
+ }
+ int neutral[18]{};send(fd,neutral);close(witness);ioctl(fd,UI_DEV_DESTROY);close(fd);vr::VR_Shutdown();return 0;
+}

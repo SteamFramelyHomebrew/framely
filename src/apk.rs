@@ -40,6 +40,8 @@ struct Record {
 #[derive(Default, Serialize, Deserialize)]
 struct Database {
     #[serde(default)]
+    gamepad_enabled: bool,
+    #[serde(default)]
     owned_contexts: Vec<String>,
     #[serde(default)]
     root_contexts: BTreeMap<PathBuf, String>,
@@ -750,7 +752,7 @@ pub fn list(home: &Path) -> Result<Value> {
         }
     }
     Ok(
-        json!({"apps":apps,"containers":cs.iter().map(|c| { let known=!warnings.iter().any(|w|w.starts_with(&format!("{}:",c.name)))&&!apps.iter().any(|a|a.context==c.id&&!a.state_known); let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(!c.steam&&known); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok()}),
+        json!({"apps":apps,"containers":cs.iter().map(|c| { let known=!warnings.iter().any(|w|w.starts_with(&format!("{}:",c.name)))&&!apps.iter().any(|a|a.context==c.id&&!a.state_known); let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(!c.steam&&known); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"gamepadEnabled":db.gamepad_enabled}),
     )
 }
 pub fn launcher(home: &Path) -> Vec<Value> {
@@ -888,6 +890,26 @@ fn direct_launch_script(source: &str) -> Result<String> {
         "Unsupported Lepton entry script; cannot safely configure the APK display"
     );
     let hooks = r#"
+# Optional virtual gamepad: mount only its event node, not host input devices.
+if [[ -n "${FRAMELY_GAMEPAD_EVENT:-}" ]]; then
+    for hook in setup_podman_mounts generate_zygote_launch_rc; do
+        declare -F "$hook" >/dev/null || { echo "Unsupported Lepton gamepad hooks" >&2; exit 64; }
+    done
+    eval "$(declare -f setup_podman_mounts | sed '1s/setup_podman_mounts/framely_original_gamepad_mounts/')"
+    function setup_podman_mounts() {
+        framely_original_gamepad_mounts "$@"
+        podman_mount_entry "${FRAMELY_GAMEPAD_EVENT:?}" /dev/input/event250 rw
+        podman_mount_entry "${FRAMELY_GAMEPAD_GRAB:?}" /vendor/lib64/libframely_gamepad_grab.so ro
+        podman_mount_entry "${FRAMELY_GAMEPAD_READY:?}" /framely-gamepad-ready rw
+    }
+    eval "$(declare -f generate_zygote_launch_rc | sed '1s/generate_zygote_launch_rc/framely_original_gamepad_zygote/')"
+    function generate_zygote_launch_rc() {
+        framely_original_gamepad_zygote "$@"
+        local rc="$(prefix)/init.zygote64.rc"
+        [[ "$(grep -c '^service zygote ' "$rc")" == 1 ]] && ! grep -q 'setenv LD_PRELOAD' "$rc" || { echo "Unsupported Lepton gamepad zygote" >&2; return 64; }
+        sed -i '/^service zygote /a\    setenv LD_PRELOAD /vendor/lib64/libframely_gamepad_grab.so' "$rc"
+    }
+fi
 # Framely: configure display visibility and shape, retaining the dev context.
 # Do not use is_app: Lepton's app bake path can reset existing application data.
 eval "$(declare -f setup_props | sed '1s/setup_props/framely_original_setup_props/')"
@@ -905,6 +927,7 @@ function setup_props() {
         landscape) printf '\npersist.waydroid.width=1920\npersist.waydroid.height=1080\n' >> "$(props_file)" ;;
     esac
     printf '\nframely.window_orientation=%s\n' "${FRAMELY_WINDOW_ORIENTATION:-auto}" >> "$(props_file)"
+    printf '\nframely.gamepad.bridge=%s\n' "${FRAMELY_GAMEPAD_TOKEN:-}" >> "$(props_file)"
 }
 "#;
     Ok(source
@@ -921,7 +944,7 @@ fn start_container(
     direct: bool,
     log: &Path,
 ) -> Result<()> {
-    start_oriented_container(home, c, show, direct, None, log)
+    start_oriented_container(home, c, show, direct, None, None, log)
 }
 fn start_oriented_container(
     home: &Path,
@@ -929,6 +952,7 @@ fn start_oriented_container(
     show: Option<bool>,
     direct: bool,
     orientation: Option<&str>,
+    gamepad: Option<&crate::gamepad::Mount>,
     log: &Path,
 ) -> Result<()> {
     ensure!(
@@ -940,7 +964,7 @@ fn start_oriented_container(
     }
     let runner = runner(home)?;
     let mut temporary = None;
-    let mut cmd = if direct || orientation.is_some() {
+    let mut cmd = if direct || orientation.is_some() || gamepad.is_some() {
         let script = direct_launch_script(&fs::read_to_string(&runner)?)?;
         let path = root(home).join("logs").join(format!(
             "lepton-launch-{}.sh",
@@ -978,6 +1002,12 @@ fn start_oriented_container(
                 "false"
             },
         );
+    if let Some(mount) = gamepad {
+        cmd.env("FRAMELY_GAMEPAD_EVENT", &mount.event)
+            .env("FRAMELY_GAMEPAD_GRAB", &mount.grab)
+            .env("FRAMELY_GAMEPAD_READY", &mount.ready)
+            .env("FRAMELY_GAMEPAD_TOKEN", &mount.token);
+    }
     if c.id.starts_with("external-") {
         cmd.env(
             "STEAM_COMPAT_DATA_PATH",
@@ -1056,6 +1086,7 @@ fn wrapper_active(name: &str) -> bool {
         })
 }
 fn stop(c: &Container, log: &Path) -> Result<()> {
+    crate::gamepad::stop_context(&c.name);
     if running(&c.name) {
         podman(
             &["stop", "--time", "10", &format!("lepton-{}", c.name)],
@@ -1761,6 +1792,17 @@ pub fn operate(
     progress(json!({"phase":"preparing","operation":kind}));
     let result = (|| -> Result<Value> {
         match kind {
+            "gamepad.settings" => {
+                let enabled = p["enabled"].as_bool().context("Invalid gamepad setting")?;
+                cancel.commit(|| {
+                    db.gamepad_enabled = enabled;
+                    save(home, &db)?;
+                    if !enabled {
+                        crate::gamepad::stop();
+                    }
+                    Ok(json!(true))
+                })
+            }
             "root.add" => {
                 let cs = containers(home, &db);
                 let path = p["path"].as_str().context("Missing data directory")?;
@@ -2042,18 +2084,53 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                                     stop(&c, &log)?;
                                 }
                             }
-                            start_oriented_container(
-                                home,
-                                &c,
-                                Some(flat),
-                                !flat,
-                                if flat { a.orientation.as_deref() } else { None },
-                                &log,
-                            )?;
-                            progress(json!({"phase":"launching"}));
-                            launch(&c, &a, &log)?;
+                            // A running container cannot acquire a new bind-mounted
+                            // input node. Reboot only if its bridge identity differs.
+                            if running(&c.name) && db.gamepad_enabled {
+                                let token = podman(
+                                    &[
+                                        "exec",
+                                        &format!("lepton-{}", c.name),
+                                        "getprop",
+                                        "framely.gamepad.bridge",
+                                    ],
+                                    Some(&log),
+                                )?;
+                                if crate::gamepad::current(&c.name)
+                                    .is_none_or(|m| m.token != token.trim())
+                                {
+                                    stop(&c, &log)?;
+                                }
+                            }
+                            let gamepad = if db.gamepad_enabled {
+                                Some(crate::gamepad::prepare(&root(home), &c.name)?)
+                            } else {
+                                None
+                            };
+                            let launch_result = (|| -> Result<()> {
+                                start_oriented_container(
+                                    home,
+                                    &c,
+                                    Some(flat),
+                                    !flat,
+                                    if flat { a.orientation.as_deref() } else { None },
+                                    gamepad.as_ref(),
+                                    &log,
+                                )?;
+                                progress(json!({"phase":"launching"}));
+                                launch(&c, &a, &log)?;
+                                if gamepad.is_some() {
+                                    crate::gamepad::activate(&c.name, &a.metadata.package)?;
+                                }
+                                Ok(())
+                            })();
+                            if launch_result.is_err() {
+                                crate::gamepad::stop_context(&c.name);
+                            }
+                            launch_result?;
                         }
                         "close" => {
+                            crate::gamepad::stop_app(&c.name, &a.metadata.package);
                             if running(&c.name) {
                                 let active = podman(
                                     &[
@@ -2329,6 +2406,45 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
 fn backup_fn(home: &Path, c: &Container, db: &Database, log: &Path) -> Result<String> {
     backup(home, c, db, log)
 }
+pub(crate) fn gamepad_health(context: &str, package: &str) -> (Option<bool>, bool) {
+    if !safe(context) || !apk_metadata::valid_package(package) {
+        return (Some(false), false);
+    }
+    let mut cmd = crate::process::tool("podman");
+    cmd.args([
+        "exec",
+        &format!("lepton-{context}"),
+        "sh",
+        "-c",
+        "dumpsys activity processes && dumpsys activity activities",
+        "framely-gamepad",
+        package,
+    ]);
+    match output(cmd, Duration::from_secs(3), None) {
+        Ok(text) => (
+            Some(gamepad_present(&text, package)),
+            gamepad_foreground(&text, package),
+        ),
+        Err(_) => (None, false),
+    }
+}
+fn gamepad_present(text: &str, package: &str) -> bool {
+    gamepad_foreground(text, package)
+        || text.lines().any(|line| {
+            line.split_once("packageList={")
+                .and_then(|(_, names)| names.split_once('}'))
+                .is_some_and(|(names, _)| names.split(',').any(|name| name.trim() == package))
+        })
+}
+fn gamepad_foreground(text: &str, package: &str) -> bool {
+    text.lines().any(|line| {
+        (line.contains("mResumedActivity:") || line.contains("topResumedActivity="))
+            && line.split_whitespace().any(|word| {
+                word.strip_prefix(package)
+                    .is_some_and(|rest| rest.starts_with('/'))
+            })
+    })
+}
 pub fn launch_app(home: &Path, id: &str) -> Result<()> {
     operate(
         home,
@@ -2342,6 +2458,117 @@ pub fn launch_app(home: &Path, id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gamepad_setting_defaults_off_and_round_trips() {
+        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        assert!(!load(home).unwrap().gamepad_enabled);
+        for enabled in [true, false] {
+            operate(
+                home,
+                "gamepad.settings",
+                &json!({"enabled":enabled}),
+                Cancellation::default(),
+                Arc::new(|_| {}),
+            )
+            .unwrap();
+            assert_eq!(load(home).unwrap().gamepad_enabled, enabled);
+        }
+        assert!(operate(
+            home,
+            "gamepad.settings",
+            &json!({"enabled":"true"}),
+            Cancellation::default(),
+            Arc::new(|_| {})
+        )
+        .is_err());
+        assert!(!load(home).unwrap().gamepad_enabled);
+        fs::write(root(home).join("state.json"), "{\"records\":{}}").unwrap();
+        assert!(!load(home).unwrap().gamepad_enabled);
+    }
+    #[test]
+    fn gamepad_foreground_does_not_match_another_package() {
+        assert!(gamepad_foreground(
+            "mResumedActivity: ActivityRecord{abc u0 com.example.game/.Main t12}",
+            "com.example.game"
+        ));
+        assert!(gamepad_foreground(
+            "topResumedActivity=ActivityRecord{abc u0 com.example.game/.Main t12}",
+            "com.example.game"
+        ));
+        assert!(!gamepad_foreground(
+            "mResumedActivity: ActivityRecord{abc u0 com.example.game.other/.Main t12}",
+            "com.example.game"
+        ));
+        assert!(!gamepad_foreground(
+            "mLastPausedActivity: ActivityRecord{abc u0 com.example.game/.Main t12}",
+            "com.example.game"
+        ));
+    }
+    #[test]
+    fn gamepad_tracks_custom_processes_by_package() {
+        assert!(gamepad_present(
+            "packageList={com.example.other, com.example.game}",
+            "com.example.game"
+        ));
+        assert!(!gamepad_present(
+            "packageList={com.example.game.other}",
+            "com.example.game"
+        ));
+        assert!(!gamepad_present("No running processes", "com.example.game"));
+    }
+    #[test]
+    fn gamepad_boot_mounts_only_its_node_and_injects_android_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = dir.path().join("vendor/liblepton");
+        fs::create_dir_all(&library).unwrap();
+        fs::write(library.join("liblepton.sh"),r#"
+function props_file() { echo "$TEST_PROPS"; }
+function prefix() { echo "$TEST_PREFIX"; }
+function app_wants_flatscreen() { return 0; }
+function setup_props() { echo waydroid.background_start=false > "$(props_file)"; }
+function setup_podman_mounts() { :; }
+function podman_mount_entry() { printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$TEST_MOUNTS"; }
+function generate_zygote_launch_rc() { printf 'service zygote /system/bin/app_process64\n    class main\n' > "$(prefix)/init.zygote64.rc"; }
+"#).unwrap();
+        let script = direct_launch_script(
+            r#"#!/bin/bash
+set -euo pipefail
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+source "${SCRIPT_DIR}/liblepton/liblepton.sh"
+setup_podman_mounts
+generate_zygote_launch_rc
+setup_props
+"#,
+        )
+        .unwrap();
+        let path = dir.path().join("start.sh");
+        fs::write(&path, script).unwrap();
+        let status = Command::new("bash")
+            .arg(&path)
+            .env("FRAMELY_LEPTON_DIR", library.parent().unwrap())
+            .env("TEST_PROPS", dir.path().join("props"))
+            .env("TEST_PREFIX", dir.path())
+            .env("TEST_MOUNTS", dir.path().join("mounts"))
+            .env("FRAMELY_GAMEPAD_EVENT", "/dev/input/event17")
+            .env("FRAMELY_GAMEPAD_GRAB", "/runtime/grab.so")
+            .env("FRAMELY_GAMEPAD_READY", "/private/gamepad")
+            .env("FRAMELY_GAMEPAD_TOKEN", "token")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let mounts = fs::read_to_string(dir.path().join("mounts")).unwrap();
+        assert_eq!(mounts.lines().count(), 3);
+        assert!(mounts.contains("/dev/input/event17|/dev/input/event250|rw"));
+        assert!(!mounts.contains("/dev/input|"));
+        assert!(fs::read_to_string(dir.path().join("init.zygote64.rc"))
+            .unwrap()
+            .contains("setenv LD_PRELOAD /vendor/lib64/libframely_gamepad_grab.so"));
+        assert!(fs::read_to_string(dir.path().join("props"))
+            .unwrap()
+            .contains("framely.gamepad.bridge=token"));
+    }
     #[test]
     fn direct_boot_preserves_context_and_controls_window_visibility() {
         let dir = tempfile::tempdir().unwrap();
