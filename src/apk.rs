@@ -428,7 +428,7 @@ fn restriction(c: &Container, package: &str) -> Option<(bool, bool, Vec<String>)
     }
     None
 }
-fn installed(c: &Container) -> Result<Vec<(Metadata, PathBuf)>> {
+fn installed(home: &Path, c: &Container) -> Result<Vec<(Metadata, PathBuf)>> {
     let p = c.baked.join("data_overlay/system/packages.xml");
     let bytes = fs::read(&p)?;
     ensure!(
@@ -494,10 +494,26 @@ fn installed(c: &Container) -> Result<Vec<(Metadata, PathBuf)>> {
                     && fs::canonicalize(p).is_ok_and(|p| p.starts_with(&c.baked))
                     && cached_metadata(p).is_ok_and(|m| m.package == package)
             })
+            .or_else(|| {
+                let cached = root(home)
+                    .join("apks")
+                    .join(hash(&format!("{}/{}", c.id, package)))
+                    .join("base.apk");
+                let canonical = fs::canonicalize(&cached).ok()?;
+                let cache_root = fs::canonicalize(root(home).join("apks")).ok()?;
+                (canonical.starts_with(&cache_root)
+                    && cached_metadata(&cached).is_ok_and(|m| {
+                        m.package == package
+                            && Some(m.version_code)
+                                == attr(tag, "version").and_then(|v| v.parse().ok())
+                    }))
+                .then_some(cached)
+            })
             .unwrap_or(direct);
         if apk.exists() {
             ensure!(
-                fs::canonicalize(&apk)?.starts_with(&c.baked),
+                fs::canonicalize(&apk)?.starts_with(&c.baked)
+                    || apk.starts_with(root(home).join("apks")),
                 "APK path escapes container"
             );
         }
@@ -563,7 +579,7 @@ fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App
     let mut warnings = Vec::new();
     let mut failed_contexts = std::collections::BTreeSet::new();
     for c in cs {
-        match installed(c) {
+        match installed(home, c) {
             Ok(packages) => {
                 for (mut metadata, apk) in packages {
                     let id = format!("{}/{}", c.id, metadata.package);
@@ -847,35 +863,36 @@ fn review(home: &Path, ticket: &str) -> Result<(PathBuf, Metadata)> {
     Ok((d, meta))
 }
 fn restore_package_mount(home: &Path, c: &Container, log: &Path) -> Result<()> {
-    // A development context mounts its single APK at /data/steam_app on each boot.
-    // Android's remembered randomized /data/app path then has no mounted APK.
-    // Re-register the same signed APK with replacement enabled, preserving all data.
-    let apk = [
-        c.baked.join("app_overlay/base.apk"),
-        c.baked.join("app_lowerdir/base.apk"),
-    ]
-    .into_iter()
-    .find(|p| p.is_file());
-    let Some(apk) = apk else {
-        return Ok(());
-    };
-    let metadata = cached_metadata(&apk)?;
-    if load(home)?
-        .records
-        .get(&format!("{}/{}", c.id, metadata.package))
-        .is_some_and(|r| r.removed)
-    {
-        return Ok(());
-    }
-    if restriction(c, &metadata.package).is_some_and(|r| !r.0) {
-        return Ok(());
-    }
-    if !live_installed(c, &metadata.package, log)? {
-        install_package(c, &apk, log)?;
-        ensure!(
-            live_installed(c, &metadata.package, log)?,
-            "Android package registration did not recover"
-        );
+    // Lepton's cmd wrapper moves every installation into the same steam_app
+    // mount. Migrate old registrations, and repair every cached package rather
+    // than only whichever APK last occupied that mount.
+    let db = load(home)?;
+    for (metadata, apk) in installed(
+        home,
+        &Container {
+            running: false,
+            ..c.clone()
+        },
+    )? {
+        if db
+            .records
+            .get(&format!("{}/{}", c.id, metadata.package))
+            .is_some_and(|r| r.removed)
+            || restriction(c, &metadata.package).is_some_and(|r| !r.0)
+        {
+            continue;
+        }
+        if !apk.is_file() {
+            continue;
+        }
+        let persistent = apk.starts_with(c.baked.join("data_overlay/app"));
+        if !persistent || !live_installed(c, &metadata.package, log)? {
+            install_package(c, &apk, log)?;
+            ensure!(
+                live_installed(c, &metadata.package, log)?,
+                "Android package registration did not recover"
+            );
+        }
     }
     Ok(())
 }
@@ -890,6 +907,44 @@ fn direct_launch_script(source: &str) -> Result<String> {
         "Unsupported Lepton entry script; cannot safely configure the APK display"
     );
     let hooks = r#"
+# Preserve downloaded Android resources in development contexts. Lepton's
+# single-app launcher deletes media/0 before creating its external-storage link.
+function framely_prepare_media() {
+    local media="$(data_mount_path)/media/0"
+    local external="${STEAM_COMPAT_DATA_PATH:-}/external"
+    if [[ -d "${STEAM_COMPAT_DATA_PATH:-}" ]]; then
+        if [[ -L "$media" ]]; then
+            [[ "$(readlink "$media")" == "$external" ]] || { echo "Unexpected Android media link; refusing to replace it" >&2; return 64; }
+            rm -f -- "$media"
+        elif [[ -d "$media" ]]; then
+            if [[ -z "$(find "$media" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+                rmdir -- "$media"
+            elif [[ -z "$(find "$external" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+                rmdir -- "$external"
+                mv -- "$media" "$external"
+            else
+                echo "Both Android media locations contain data; refusing to discard either" >&2
+                return 64
+            fi
+        elif [[ -e "$media" ]]; then
+            echo "Invalid Android media location" >&2; return 64
+        fi
+    else
+        [[ ! -L "$media" ]] || { echo "Unexpected Android media link" >&2; return 64; }
+        mkdir -p -- "$media"
+    fi
+}
+for framely_mount_hook in setup_mounts setup_podman_mounts; do
+    declare -F "$framely_mount_hook" >/dev/null || continue
+    framely_mount_body="$(declare -f "$framely_mount_hook")"
+    framely_media_remove='rm -rf "$(data_mount_path)/media/0"'
+    if [[ "$framely_mount_body" == *"$framely_media_remove"* ]]; then
+        framely_mount_body="${framely_mount_body//"$framely_media_remove"/framely_prepare_media || return}"
+        eval "$framely_mount_body"
+    fi
+    unset framely_mount_body framely_media_remove
+done
+unset framely_mount_hook
 # Optional virtual gamepad: mount only its event node, not host input devices.
 if [[ -n "${FRAMELY_GAMEPAD_EVENT:-}" ]]; then
     for hook in setup_podman_mounts generate_zygote_launch_rc; do
@@ -963,8 +1018,9 @@ fn start_oriented_container(
         return restore_package_mount(home, c, log);
     }
     let runner = runner(home)?;
-    let mut temporary = None;
-    let mut cmd = if direct || orientation.is_some() || gamepad.is_some() {
+    // Manual container startup must use the same resource-preserving adapter.
+    let temporary;
+    let mut cmd = {
         let script = direct_launch_script(&fs::read_to_string(&runner)?)?;
         let path = root(home).join("logs").join(format!(
             "lepton-launch-{}.sh",
@@ -983,8 +1039,6 @@ fn start_oriented_container(
         );
         temporary = Some(path);
         command
-    } else {
-        Command::new(&runner)
     };
     cmd.args(["start", &c.name])
         .env(
@@ -1340,7 +1394,48 @@ fn backup(home: &Path, c: &Container, db: &Database, log: &Path) -> Result<Strin
     fs::File::open(&d)?.sync_all()?;
     Ok(id)
 }
+const PRESERVE_OBB: &str = r#"
+set -eu
+package="$1"
+obb="/data/media/0/Android/obb/$package"
+if [ -L "$obb" ]; then
+    source="$(readlink "$obb")"
+    case "$source" in /data/app/*) ;; *) echo "Unexpected OBB resource link; refusing to replace it" >&2; exit 64 ;; esac
+    case "$source" in *'/../'*|*'/./'*) echo "Invalid OBB resource link" >&2; exit 64 ;; esac
+    stage="${obb}.framely-preserve-$2"
+    mkdir -p "$stage"
+    if [ -d "$source" ]; then
+        for entry in "$source"/* "$source"/.[!.]* "$source"/..?*; do
+            [ -e "$entry" ] || [ -L "$entry" ] || continue
+            name="${entry##*/}"
+            # Lepton may link OBB to the whole APK directory. Its Android-managed
+            # files are not downloaded game resources and must not be copied.
+            if [ "${source##*/}" != obb ]; then
+                case "$name" in *.apk|lib|oat|steam_appid.txt|UECommandLine.txt) continue ;; esac
+            fi
+            cp -a "$entry" "$stage/"
+        done
+    fi
+    # Keep the old link as recovery evidence; never follow or delete its target.
+    mv "$obb" "${stage}.legacy-link"
+    mv "$stage" "$obb"
+fi
+"#;
 fn install_package(c: &Container, apk: &Path, log: &Path) -> Result<()> {
+    let metadata = cached_metadata(apk)?;
+    podman(
+        &[
+            "exec",
+            &format!("lepton-{}", c.name),
+            "sh",
+            "-c",
+            PRESERVE_OBB,
+            "framely-preserve-obb",
+            &metadata.package,
+            &hex::encode(rand::random::<[u8; 12]>()),
+        ],
+        Some(log),
+    )?;
     let remote = format!(
         "/data/local/tmp/framely-{}.apk",
         hex::encode(rand::random::<[u8; 12]>())
@@ -1353,11 +1448,14 @@ fn install_package(c: &Container, apk: &Path, log: &Path) -> Result<()> {
         ],
         Some(log),
     )?;
+    // Bypass Lepton's single-app wrapper: it relocates every APK to the same
+    // mount and rebuilds OBB links. Keep Android's independent package paths.
     let result = podman(
         &[
             "exec",
             &format!("lepton-{}", c.name),
-            "pm",
+            "cmd_real",
+            "package",
             "install",
             "-r",
             "--user",
@@ -1904,7 +2002,7 @@ pub fn operate(
                     }
                 }
                 let previous = if c.baked.exists() {
-                    installed(&c)?
+                    installed(home, &c)?
                         .into_iter()
                         .find(|(m, _)| m.package == metadata.package)
                 } else {
@@ -2195,7 +2293,7 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                             progress(json!({"phase":"uninstalling"}));
                             start(home, &c, a.show_window, &log)?;
                             if a.installed {
-                                if let Some((_, apk)) = installed(&c)?
+                                if let Some((_, apk)) = installed(home, &c)?
                                     .into_iter()
                                     .find(|(m, _)| m.package == a.metadata.package)
                                 {
@@ -2285,7 +2383,7 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                             );
                             ensure!(
                                 snapshot["records"].as_array().is_some_and(|v| v.len() == 1)
-                                    && installed(&c)?.len() <= 1,
+                                    && installed(home, &c)?.len() <= 1,
                                 "Shared container backups cannot be restored automatically"
                             );
                             stop(&c, &log)?;
@@ -2651,6 +2749,93 @@ setup_props "$@"
         }
         assert!(direct_launch_script("unrecognized future entrypoint").is_err());
     }
+    #[test]
+    fn direct_boot_preserves_downloaded_media_and_migrates_external_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = dir.path().join("lepton/liblepton");
+        fs::create_dir_all(&library).unwrap();
+        fs::write(library.join("liblepton.sh"),r#"
+function data_mount_path() { echo "$TEST_DATA"; }
+function app_wants_flatscreen() { return 0; }
+function setup_props() { :; }
+function props_file() { echo "$TEST_PROPS"; }
+function setup_mounts() {
+    if [[ -d "${STEAM_COMPAT_DATA_PATH:-}" ]]; then mkdir -p "$STEAM_COMPAT_DATA_PATH/external"; fi
+    rm -rf "$(data_mount_path)/media/0"
+    mkdir -p "$(data_mount_path)/media"
+    if [[ -d "${STEAM_COMPAT_DATA_PATH:-}" ]]; then ln -s "$STEAM_COMPAT_DATA_PATH/external" "$(data_mount_path)/media/0"; else mkdir -p "$(data_mount_path)/media/0"; fi
+}
+function setup_podman_mounts() { setup_mounts; }
+"#).unwrap();
+        let source = r#"#!/bin/bash
+set -euo pipefail
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+source "${SCRIPT_DIR}/liblepton/liblepton.sh"
+setup_podman_mounts
+"#;
+        let entry = dir.path().join("entry.sh");
+        fs::write(&entry, direct_launch_script(source).unwrap()).unwrap();
+        let data = dir.path().join("data");
+        let marker = data.join("media/0/Android/data/test/files/resource");
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        fs::write(&marker, "downloaded resource").unwrap();
+        let run = |compat: Option<&Path>| {
+            let mut c = Command::new("bash");
+            c.arg(&entry)
+                .env("FRAMELY_LEPTON_DIR", library.parent().unwrap())
+                .env("TEST_DATA", &data)
+                .env("TEST_PROPS", dir.path().join("props"))
+                .env_remove("STEAM_COMPAT_DATA_PATH");
+            if let Some(p) = compat {
+                c.env("STEAM_COMPAT_DATA_PATH", p);
+            }
+            c.status().unwrap()
+        };
+        assert!(run(None).success());
+        assert!(run(None).success());
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "downloaded resource");
+        let compat = dir.path().join("compat");
+        fs::create_dir(&compat).unwrap();
+        assert!(run(Some(&compat)).success());
+        assert!(run(Some(&compat)).success());
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "downloaded resource");
+        assert_eq!(
+            fs::read_link(data.join("media/0")).unwrap(),
+            compat.join("external")
+        );
+    }
+    #[test]
+    fn legacy_obb_migration_preserves_resources_without_copying_apk_files() {
+        let d = tempfile::tempdir().unwrap();
+        let app = d.path().join("app/pkg");
+        let obb = d.path().join("media/Android/obb");
+        fs::create_dir_all(&app).unwrap();
+        fs::create_dir_all(&obb).unwrap();
+        fs::write(app.join("resource.obb"), "downloaded").unwrap();
+        fs::write(app.join("base.apk"), "apk").unwrap();
+        fs::create_dir(app.join("lib")).unwrap();
+        std::os::unix::fs::symlink(&app, obb.join("com.example.app")).unwrap();
+        let script = PRESERVE_OBB
+            .replace("/data/media/0/", &format!("{}/media/", d.path().display()))
+            .replace("/data/app/", &format!("{}/app/", d.path().display()));
+        assert!(Command::new("bash")
+            .args(["-c", &script, "test", "com.example.app", "token"])
+            .status()
+            .unwrap()
+            .success());
+        let result = obb.join("com.example.app");
+        assert!(!result.is_symlink());
+        assert_eq!(
+            fs::read_to_string(result.join("resource.obb")).unwrap(),
+            "downloaded"
+        );
+        assert!(!result.join("base.apk").exists());
+        assert!(!result.join("lib").exists());
+        assert!(app.join("base.apk").exists());
+        assert!(obb
+            .join("com.example.app.framely-preserve-token.legacy-link")
+            .is_symlink());
+    }
     static SERIAL: Mutex<()> = Mutex::new(());
     struct Fixture {
         dir: tempfile::TempDir,
@@ -2692,6 +2877,7 @@ case "$1" in
  stop) echo false > '{state}'; echo stopped;;
  cp) /bin/cp -f "$2" '{incoming}';;
  exec)
+  if [ "$3" = cmd_real ] && [ "$4" = package ]; then shift; set -- "$1" "$2" pm "$4" "$5" "$6" "$7" "$8"; elif [ "$3" = pm ] && [ "$4" = install ]; then echo 'Failure [LEPTON_SINGLE_APP_WRAPPER]'; exit 1; fi
   if [ "$3" = pm ]; then
    case "$4" in
     list) if [ -f '{apk}' ] && [ ! -f '{broken}' ] && [ ! -f '{removed}' ]; then echo package:com.example.app; fi;;
@@ -2978,6 +3164,46 @@ echo true > '{}'
         assert_eq!(data["containers"][0]["managed"], false);
     }
     #[test]
+    fn shared_mount_replacement_recovers_metadata_from_matching_cached_apk() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let baked = f.home.join(".local/share/lepton/contexts/test/baked");
+        let apk = baked.join("app_overlay/base.apk");
+        let cache = root(&f.home)
+            .join("apks")
+            .join(hash("test/com.example.app"));
+        store_apk(&apk, &cache).unwrap();
+        crate::apk_metadata::fixture_named(&apk, true, 1, "com.example.other");
+        let mut db = load(&f.home).unwrap();
+        db.records
+            .get_mut("test/com.example.app")
+            .unwrap()
+            .metadata
+            .activities
+            .clear();
+        db.records
+            .get_mut("test/com.example.app")
+            .unwrap()
+            .metadata
+            .declared_activities
+            .clear();
+        save(&f.home, &db).unwrap();
+        let data = list(&f.home).unwrap();
+        assert_eq!(
+            data["apps"][0]["metadata"]["activities"][0],
+            "com.example.app.Main"
+        );
+        assert_eq!(data["apps"][0]["installed"], true);
+        fs::write(baked.join("data_overlay/system/users/0/package-restrictions.xml"), r#"<package-restrictions><pkg name="com.example.app" enabled="3"/></package-restrictions>"#).unwrap();
+        assert!(launcher(&f.home).is_empty());
+        // An externally upgraded package must not acquire metadata from an older cache.
+        fs::write(baked.join("data_overlay/system/packages.xml"),r#"<packages><package name="com.example.app" codePath="/data/app/missing" version="43"/></packages>"#).unwrap();
+        assert!(list(&f.home).unwrap()["apps"][0]["metadata"]["activities"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+    #[test]
     fn additional_install_preserves_mounted_apk_and_survives_restart() {
         let f = Fixture::new();
         list(&f.home).unwrap();
@@ -2997,11 +3223,12 @@ case "$1" in
  stop) echo false > '{state}';;
  cp) /bin/cp -f "$2" '{incoming}';;
  exec)
+  if [ "$3" = cmd_real ] && [ "$4" = package ]; then shift; set -- "$1" "$2" pm "$4" "$5" "$6" "$7" "$8"; elif [ "$3" = pm ] && [ "$4" = install ]; then echo 'Failure [LEPTON_SINGLE_APP_WRAPPER]'; exit 1; fi
   if [ "$3" = pm ]; then
    case "$4" in
     list) echo package:com.example.app; if [ -f '{second}' ]; then echo package:com.example.extra; fi;;
     path) echo package:/data/app/extra/base.apk;;
-    install) /bin/cp -f '{incoming}' '{second}'; /bin/cp '{xml}' '{database}'; echo Success;;
+    install) if /bin/cmp -s '{incoming}' '{mounted}'; then /bin/mkdir -p '{first_dir}'; /bin/cp -f '{incoming}' '{first}'; else /bin/cp -f '{incoming}' '{second}'; fi; /bin/cp '{xml}' '{database}'; echo Success;;
    esac
   elif [ "$3" = pidof ]; then echo 1050;
   elif [ "$3" = getprop ]; then echo 30;
@@ -3010,7 +3237,7 @@ case "$1" in
   fi;;
 esac
 "#, commands=f.dir.path().join("commands").display(), state=f.dir.path().join("running").display(),
-            incoming=f.dir.path().join("incoming.apk").display(), second=second.display(),
+            incoming=f.dir.path().join("incoming.apk").display(), second=second.display(), mounted=mounted.display(), first=baked.join("data_overlay/app/xyz/com.example.app/base.apk").display(), first_dir=baked.join("data_overlay/app/xyz/com.example.app").display(),
             xml=xml.display(), database=baked.join("data_overlay/system/packages.xml").display())).unwrap();
         let incoming = f.dir.path().join("extra.apk");
         crate::apk_metadata::fixture_named(&incoming, true, 1, "com.example.extra");
@@ -3035,10 +3262,13 @@ esac
         stop(&c, &log).unwrap();
         // Stopped containers discover both the mounted APK and the added APK.
         assert_eq!(
-            installed(&Container {
-                running: false,
-                ..c.clone()
-            })
+            installed(
+                &f.home,
+                &Container {
+                    running: false,
+                    ..c.clone()
+                }
+            )
             .unwrap()
             .len(),
             2
