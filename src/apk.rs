@@ -186,6 +186,15 @@ fn load(home: &Path) -> Result<Database> {
 }
 fn save(home: &Path, db: &Database) -> Result<()> {
     let r = init(home)?;
+    let state = r.join("state.json");
+    let bytes = serde_json::to_vec(db)?;
+    // Inventory refresh and Steam registration can rediscover unchanged state.
+    // Keep those reads from forcing another file and directory journal commit.
+    if fs::symlink_metadata(&state).is_ok_and(|m| m.file_type().is_file())
+        && fs::read(&state)? == bytes
+    {
+        return Ok(());
+    }
     let tmp = r.join(format!(
         "state-{}.tmp",
         hex::encode(rand::random::<[u8; 12]>())
@@ -195,9 +204,9 @@ fn save(home: &Path, db: &Database) -> Result<()> {
         .create_new(true)
         .mode(0o600)
         .open(&tmp)?;
-    f.write_all(&serde_json::to_vec(db)?)?;
+    f.write_all(&bytes)?;
     f.sync_all()?;
-    fs::rename(tmp, r.join("state.json"))?;
+    fs::rename(tmp, state)?;
     fs::File::open(r)?.sync_all()?;
     Ok(())
 }
@@ -3584,6 +3593,28 @@ echo true > '{}'
         fn save_file(&self) -> PathBuf {
             self.home.join(".local/share/lepton/contexts/test/baked/data_overlay/data/com.example.app/files/save")
         }
+    }
+    #[test]
+    fn unchanged_inventory_preserves_state_file_and_changes_still_persist() {
+        use std::os::unix::fs::MetadataExt;
+        let f = Fixture::new();
+        let initial = list(&f.home).unwrap();
+        assert!(!initial["apps"].as_array().unwrap().is_empty());
+        let state = init(&f.home).unwrap().join("state.json");
+        let before = fs::metadata(&state).unwrap();
+        let content = fs::read(&state).unwrap();
+        list(&f.home).unwrap();
+        let after = fs::metadata(&state).unwrap();
+        assert_eq!(after.ino(), before.ino());
+        assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+        assert_eq!(fs::read(&state).unwrap(), content);
+
+        let mut db = load(&f.home).unwrap();
+        db.gamepad_enabled = !db.gamepad_enabled;
+        save(&f.home, &db).unwrap();
+        assert_eq!(load(&f.home).unwrap().gamepad_enabled, db.gamepad_enabled);
+        assert_ne!(fs::read(&state).unwrap(), content);
+        assert_ne!(fs::metadata(&state).unwrap().ino(), before.ino());
     }
     #[test]
     fn steam_adapter_preserves_context_while_forwarding_ownership() {
