@@ -687,6 +687,11 @@
     "目标": "Target",
     "校准前": "Before",
     "校准后": "After",
-    "95%帧误差": "95th percentile"
+    "95%帧误差": "95th percentile",
+    "正在启动": "Starting…",
+    "显示方式": "Display mode",
+    "平面窗口": "Flat window",
+    "VR 应用": "VR app",
+    "平面模式显示二维窗口；VR 模式隐藏二维窗口，应用本身需要支持 VR。": "Flat mode shows a 2D window. VR mode hides it; the app must support VR."
   }
 }

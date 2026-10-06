@@ -1,9 +1,9 @@
 import React,{useEffect,useRef,useState} from 'react';
-import {IconApps,IconStar,IconPuzzle,IconBrandSteam,IconBrandAndroid,IconDeviceDesktop,IconPackageImport,IconSettings,IconSearch,IconEye,IconCheck,IconAlertCircle} from '@tabler/icons-react';
+import {IconApps,IconStar,IconPuzzle,IconBrandSteam,IconBrandAndroid,IconDeviceDesktop,IconPackageImport,IconSettings,IconSearch,IconFocus2,IconCheck,IconAlertCircle} from '@tabler/icons-react';
 import {api} from './api';import {t} from './i18n';
 import {fitCalibration,fixation,calibrationBlocks,calibrationValidation,type CalibrationPair,type GazeCalibration} from './gaze-calibration';
 import type {GazeSample} from './launcher-gaze';
-const categoryIcons=[IconStar,IconApps,IconPuzzle,IconBrandSteam,IconBrandAndroid,IconDeviceDesktop],actionIcons=[IconPackageImport,IconApps,IconEye,IconSettings];
+const categoryIcons=[IconStar,IconApps,IconPuzzle,IconBrandSteam,IconBrandAndroid,IconDeviceDesktop],actionIcons=[IconPackageImport,IconApps,IconFocus2,IconSettings];
 export function LauncherCalibration({cells,onClose}:{cells:{row:number;column:number}[];onClose:()=>void}){
  const [phase,setPhase]=useState<'intro'|'collect'|'verify'|'result'>('intro'),[step,setStep]=useState(0),[progress,setProgress]=useState(0),[tracking,setTracking]=useState(false),[problem,setProblem]=useState(''),[result,setResult]=useState<GazeCalibration|null>(null),[saving,setSaving]=useState(false),[saved,setSaved]=useState(false);
  const root=useRef<HTMLDivElement>(null),pairs=useRef<CalibrationPair[]>([]),validation=useRef<CalibrationPair[]>([]),model=useRef<GazeCalibration|null>(null),samples=useRef<CalibrationPair[]>([]),entered=useRef(0),last=useRef(0),generation=useRef(0),geometry=useRef({width:0,height:0}),[targetErrors,setTargetErrors]=useState<{target:number;error:number;p95:number;baseline:number}[]>([]); 
@@ -54,13 +54,13 @@ export function LauncherCalibration({cells,onClose}:{cells:{row:number;column:nu
  <nav className="launcher-tools launcher-shortcuts" aria-label={t('校准快捷按钮')}>{actionIcons.map((Icon,i)=><span key={i} className={`calibration-rail-target ${targetClass(19+i)}`} data-calibration-target={19+i}><Icon size={26}/></span>)}</nav>
  <div className="launcher-grid"><div className="launcher-page">{cells.map((cell,i)=><div key={i} className="launch-item" style={{gridColumn:`${cell.column} / span 4`,gridRow:`${1+cell.row*2} / span 2`}}><span data-calibration-target={i} className={`launch-icon ${targetClass(i)}`}><span className="launch-disc"><IconApps size={42}/></span></span><span className="launch-name">{t('应用 {0}',{0:i+1})}</span></div>)}</div></div>
  {collecting&&!problem&&<section className="calibration-live" aria-label={t('校准进度')}>
-  <span className="calibration-live-icon"><IconEye size={26} stroke={1.6}/></span>
+  <span className="calibration-live-icon"><IconFocus2 size={26} stroke={1.6}/></span>
   <div className="calibration-live-copy"><strong>{tracking?t('看向 {0}',{0:targetName(active)}):t('等待眼动追踪')}</strong><span>{tracking?t('可以自然转头，无需按键。'):t('请保持佩戴，看向高亮目标。')}</span></div>
   <div className="calibration-live-progress"><span>{t(phase==='verify'?'验证':'采集')} <b>{step+1} / {targets.length}</b></span><progress aria-label={t('当前目标进度')} max={1} value={progress}/></div>
   <button className="calibration-secondary" onClick={onClose}>{t('取消')}</button>
  </section>}
  {overlay&&<div className="calibration-dialog-layer"><section className="calibration-dialog" role="dialog" aria-modal="true" aria-labelledby="calibration-title">
-  <span className={`calibration-symbol ${problem?'has-error':''}`}>{problem?<IconAlertCircle size={32} stroke={1.5}/>:phase==='result'?<IconCheck size={32} stroke={1.7}/>:<IconEye size={32} stroke={1.5}/>}</span>
+  <span className={`calibration-symbol ${problem?'has-error':''}`}>{problem?<IconAlertCircle size={32} stroke={1.5}/>:phase==='result'?<IconCheck size={32} stroke={1.7}/>:<IconFocus2 size={32} stroke={1.5}/>}</span>
   <h1 id="calibration-title">{title}</h1>
   {phase==='intro'&&<><p className="calibration-lead">{t('让注视更贴合启动台。')}</p><ul className="calibration-instructions"><li>{t('依次看向高亮图标或按钮，等待进度完成。')}</li><li>{t('边缘看不清时可以转头，也可以移动头部。')}</li><li>{t('无需点击目标；按 B 可随时退出。')}</li></ul><p className="calibration-footnote">{t('先采集，再验证；完成后由你确认保存。')}</p></>}
   {problem&&<p className="calibration-message" role="alert">{problem}</p>}

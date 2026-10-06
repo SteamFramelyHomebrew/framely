@@ -1360,18 +1360,21 @@ fn launch(c: &Container, a: &App, log: &Path) -> Result<()> {
     );
     // Reveal the target only after ActivityManager has completed the launch.
     // The compositor's app mode avoids exposing the Android home screen.
-    if a.show_window.unwrap_or(!a.metadata.vr) {
-        podman(
-            &[
-                "exec",
-                &format!("lepton-{}", c.name),
-                "setprop",
-                "waydroid.active_apps",
-                &a.metadata.package,
-            ],
-            Some(log),
-        )?;
-    }
+    let visible_app = if a.show_window.unwrap_or(!a.metadata.vr) {
+        a.metadata.package.as_str()
+    } else {
+        "none"
+    };
+    podman(
+        &[
+            "exec",
+            &format!("lepton-{}", c.name),
+            "setprop",
+            "waydroid.active_apps",
+            visible_app,
+        ],
+        Some(log),
+    )?;
     Ok(())
 }
 fn live_installed(c: &Container, package: &str, log: &Path) -> Result<bool> {
@@ -1682,6 +1685,10 @@ pub fn operate(
             }
             "install" => {
                 ensure!(p["approve"] == true, "Confirm APK installation");
+                let show_window = p
+                    .get("showWindow")
+                    .map(|value| value.as_bool().context("Invalid APK display mode"))
+                    .transpose()?;
                 let ticket = p["ticket"].as_str().context("Missing reviewed APK")?;
                 let (review, metadata) = review(home, ticket)?;
                 let requested = p["context"].as_str().unwrap_or("");
@@ -1766,7 +1773,10 @@ pub fn operate(
                 rec.pending =
                     Some("Installation interrupted; refresh to reconcile installed version".into());
                 save(home, &db)?;
-                let settings = db.records.get(&app_id).cloned().unwrap();
+                let mut settings = db.records.get(&app_id).cloned().unwrap();
+                if let Some(show) = show_window {
+                    settings.show_window = Some(show);
+                }
                 cancel.check()?;
                 // Before submission cancellation remains possible. Package-manager submission is a commit.
                 cancel.commit(||{
@@ -1776,7 +1786,7 @@ pub fn operate(
  let sdk=podman(&["exec",&format!("lepton-{}",c.name),"getprop","ro.build.version.sdk"],Some(&log))?.trim().parse::<u32>()?;ensure!(metadata.min_sdk<=sdk,"APK requires Android SDK {}, container provides {}",metadata.min_sdk,sdk);
  progress(json!({"phase":"installing","cancellable":false}));install_package(&c,&review.join("base.apk"),&log)?;
  progress(json!({"phase":"verifying"}));let path=podman(&["exec",&format!("lepton-{}",c.name),"pm","path",&metadata.package],Some(&log))?;ensure!(path.contains("package:"),"Android did not report the installed APK");let dest=r.join("apks").join(hash(&app_id));store_apk(&review.join("base.apk"),&dest)?;
- let rec=db.records.get_mut(&app_id).unwrap();rec.metadata=metadata.clone();rec.removed=false;rec.pending=None;save(home,&db)?;fs::remove_dir_all(review)?;
+ let rec=db.records.get_mut(&app_id).unwrap();rec.metadata=metadata.clone();rec.removed=false;rec.pending=None;rec.show_window=settings.show_window;save(home,&db)?;fs::remove_dir_all(review)?;
  // Mirror the operation log under the stable application id for newly installed apps.
  if id!=app_id {let _=fs::copy(&log,r.join("logs").join(format!("{}-{}.log",hash(&app_id),now())));}
  Ok(json!({"app":app_id,"backup":backup_id,"launchable":!metadata.activities.is_empty()}))})
@@ -2243,13 +2253,13 @@ case "$1" in
  inspect) cat '{state}';;
  ps) if [ "$(cat '{state}')" = true ]; then echo lepton-test; fi;;
  stop) echo false > '{state}'; echo stopped;;
- cp) /bin/cp "$2" '{incoming}';;
+ cp) /bin/cp -f "$2" '{incoming}';;
  exec)
   if [ "$3" = pm ]; then
    case "$4" in
     list) if [ -f '{apk}' ] && [ ! -f '{broken}' ] && [ ! -f '{removed}' ]; then echo package:com.example.app; fi;;
     path) if [ "$5" = android ] || [ -f '{apk}' ]; then echo package:/data/app/xyz/com.example.app/base.apk; fi;;
-    install) if [ -f '{fail}' ]; then echo 'Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]'; else /bin/cp '{incoming}' '{apk}'; /bin/rm -f '{broken}' '{removed}'; echo '<package-restrictions><pkg name="com.example.app" installed="true"/></package-restrictions>' > '{restrictions}'; echo Success; fi;;
+    install) if [ -f '{fail}' ]; then echo 'Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]'; else /bin/cp -f '{incoming}' '{apk}'; /bin/rm -f '{broken}' '{removed}'; echo '<package-restrictions><pkg name="com.example.app" installed="true"/></package-restrictions>' > '{restrictions}'; echo Success; fi;;
     uninstall) touch '{removed}'; /bin/rm -f '{apk}'; echo '<package-restrictions><pkg name="com.example.app" installed="false"/></package-restrictions>' > '{restrictions}'; if [ "$5" != -k ]; then /bin/rm -rf '{data}'; fi; echo Success;;
     clear) echo Success;;
    esac
@@ -2312,6 +2322,34 @@ esac
         }
     }
     #[test]
+    fn installation_display_mode_is_validated_and_saved_after_success() {
+        let f = Fixture::new();
+        let id = "test/com.example.app";
+        assert!(f
+            .operation("install", json!({"approve":true,"showWindow":"vr"}))
+            .is_err());
+        assert!(load(&f.home).unwrap().records.is_empty());
+        for (version, show) in [(43, false), (44, true)] {
+            let ticket = f.review(version);
+            f.operation(
+                "install",
+                json!({"ticket":ticket,"context":"test","app":id,"approve":true,"showWindow":show}),
+            )
+            .unwrap();
+            assert_eq!(load(&f.home).unwrap().records[id].show_window, Some(show));
+            assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        }
+        let ticket = f.review(45);
+        fs::write(f.dir.path().join("fail"), "").unwrap();
+        assert!(f
+            .operation(
+                "install",
+                json!({"ticket":ticket,"context":"test","app":id,"approve":true,"showWindow":false})
+            )
+            .is_err());
+        assert_eq!(load(&f.home).unwrap().records[id].show_window, Some(true));
+    }
+    #[test]
     fn launch_reveals_only_the_successful_target_and_respects_vr_override() {
         let f = Fixture::new();
         let db = load(&f.home).unwrap();
@@ -2331,9 +2369,9 @@ esac
         fs::write(&commands, "").unwrap();
         a.show_window = Some(false);
         launch(&c, &a, &log).unwrap();
-        assert!(!fs::read_to_string(&commands)
+        assert!(fs::read_to_string(&commands)
             .unwrap()
-            .contains("waydroid.active_apps"));
+            .contains("setprop waydroid.active_apps none"));
         fs::write(&commands, "").unwrap();
         a.show_window = Some(true);
         fs::write(f.dir.path().join("launch-fail"), "").unwrap();

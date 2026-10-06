@@ -48,7 +48,7 @@
 .launcher-settings label{display:flex;align-items:center;justify-content:space-between;padding:16px 0;width:100%;gap:24px;border-bottom:1px solid #ffffff10}.launcher-settings label small{display:block;color:#a1adb7;margin-top:6px}.launcher-settings input[type=checkbox]{width:26px;height:26px}.launcher-settings input[type=number]{width:100px;padding:10px;background:#141414;color:#fff;border:1px solid #44515c;border-radius:8px;font:inherit}
 .launcher-settings input[type=number]:not([type=checkbox]){width:100px;margin:0}
 .launcher-edit-toolbar{position:absolute;top:26px;left:160px;right:70px;display:flex;align-items:center;justify-content:space-between;gap:24px;z-index:4;color:#edf5fb;font-size:17px;text-shadow:0 1px 4px #061320}
-.launcher-edit-toolbar span,.launcher-edit-toolbar button{display:flex;align-items:center;gap:10px}.launcher-edit-toolbar button{border-radius:32px;padding:10px 20px;background:var(--overlay-bg);border:1px solid #e8f4ff30;color:#d9e3ec;box-shadow:inset 0 1px 1px #f0f7ff30,inset 0 -1px 1px #0c172549,0 10px 30px #0b16252b}
+.launcher-edit-toolbar span,.launcher-edit-toolbar button{display:flex;align-items:center;gap:10px}.launcher-edit-toolbar button{border-radius:32px;padding:10px 20px;background:var(--launcher-glass);border:1px solid #e8f4ff30;color:#d9e3ec;box-shadow:inset 0 1px 1px #f0f7ff30,inset 0 -1px 1px #0c172549,0 10px 30px #0b16252b}
 .launcher-editing .launch-disc{animation:launcher-wiggle .32s ease-in-out infinite alternate}.launcher-editing .launch-item:nth-child(2n) .launch-disc{animation-direction:alternate-reverse}
 .launch-item-dragged .launch-disc{opacity:.22;animation:none}.launcher-drag-ghost{position:fixed;transform:translate(-50%,-50%) scale(1.1);pointer-events:none;z-index:7;filter:drop-shadow(0 12px 18px #06132066)}
 .launcher-drag-edge{pointer-events:none;z-index:6}
@@ -130,3 +130,56 @@
 
 /* Keep spatial controls readable when system transparency is reduced. */
 @media(prefers-reduced-transparency:reduce){.launcher-shell{--launcher-glass:#242424;--launcher-glass-focus:#303030}}
+
+/* Only the pending application gets feedback; other icons remain interactive. */
+.launcher-shell .launch-icon[aria-busy=true]{opacity:1}
+.launch-starting{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:96px;height:96px;border-radius:50%;display:grid;place-items:center;background:#00000066;pointer-events:none}
+.launch-spinner{width:32px;height:32px;border:3px solid #ffffff30;border-top-color:#fff;border-radius:50%;animation:launcher-spin 850ms linear infinite}
+@keyframes launcher-spin{to{transform:rotate(360deg)}}
+@media(max-width:900px){.launch-starting{width:82px;height:82px}}
+@media(prefers-reduced-motion:reduce){.launch-spinner{animation:none}}
+
+/* CSS glass-light approximation, not background refraction. Static highlights
+   stay within the controls; no backdrop filters or continuous repaint loop.
+   DESIGN_VARIANCE 4 / MOTION_INTENSITY 2 / VISUAL_DENSITY 3. */
+.launcher-shell{
+ --launcher-glass:#96969624;
+ --launcher-glass-focus:#b8b8b830;
+ --launcher-glass-depth:inset 0 1px 1px #ffffff38,inset 1px 0 1px #ffffff0c,inset 0 -2px 3px #00000024,0 4px 8px #00000012,0 14px 28px #0000001c;
+}
+.launcher-shell :is(.launcher-tools,.launcher-search,.launcher-edit-toolbar button){
+ isolation:isolate;
+ border-color:#ffffff12;
+ background-color:var(--launcher-glass);
+ background-image:radial-gradient(ellipse at 12% 0%,#ffffff16,transparent 60%),linear-gradient(150deg,#ffffff08,transparent 42%,#0000000c);
+ box-shadow:var(--launcher-glass-depth);
+}
+.launcher-edit-toolbar button{position:relative}
+.launcher-shell :is(.launcher-tools,.launcher-search,.launcher-edit-toolbar button)::after{
+ content:"";
+ position:absolute;
+ inset:-1px;
+ padding:1px;
+ border-radius:inherit;
+ background:linear-gradient(135deg,#ffffff73 0%,#ffffff18 24%,#ffffff04 48%,#ffffff0a 70%,#ffffff38 100%);
+ -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+ -webkit-mask-composite:xor;
+ mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+ mask-composite:exclude;
+ pointer-events:none;
+ z-index:3;
+}
+.launcher-shell .launcher-search:focus-within{
+ background-color:var(--launcher-glass-focus);
+ box-shadow:var(--launcher-glass-depth);
+}
+.launcher-category-active{
+ background:linear-gradient(145deg,#ffffff20,#ffffff09);
+ box-shadow:inset 0 1px 1px #ffffff36,inset 0 -1px 2px #00000016,0 2px 5px #00000012;
+}
+@media(prefers-reduced-transparency:reduce){
+ .launcher-shell{--launcher-glass:#242424;--launcher-glass-focus:#303030}
+ .launcher-shell :is(.launcher-tools,.launcher-search,.launcher-edit-toolbar button){background-image:none}
+ .launcher-shell :is(.launcher-tools,.launcher-search,.launcher-edit-toolbar button)::after{display:none}
+ .launcher-category-active{background:#454545}
+}
