@@ -11,9 +11,9 @@ Click Framely in the SteamVR Dashboard Dock. First use requires accepting the te
 - **Favorites**: open favorite plugin quick pages.
 - **Installed**: browse enabled local plugins and their pages.
 - **Notifications**: view saved notifications and update reminders, and toggle floating notifications.
-- **Settings**: choose an installed language, toggle safe mode, open the plugin manager or **Check for updates**. The update entry opens the manager’s About/update page. Install language files and download the language template from the manager’s Settings page.
+- **Settings**: choose an installed language, toggle safe mode, open the plugin manager or **Check for updates**. The update entry opens the manager’s Settings → Updates page. Install language files and download the language template from the manager’s Settings page.
 
-The manager opens a separate large window with navigation for plugins, plugin library, sources, settings, notification settings and About. Installation, updates and source management happen here. A phone or computer can also use the [network panel](network-panel.md).
+The manager opens a separate large window with five sections: Plugin, APK, Terminal, Files and Settings. Installation, updates and source management happen here. A phone or computer can also use the [network panel](network-panel.md).
 
 ## Plugins and windows
 
@@ -25,11 +25,11 @@ Dock windows use SteamVR close controls. Temporary windows may be destroyed when
 
 Settings provides language, network panel and proxy configuration. HTTP and GitHub proxies have independent switches; saving an address does not automatically enable it.
 
-Safe mode pauses third-party plugins for troubleshooting; leave it after resolving the problem. About shows the device version, updates and terms. Revoking consent disables all plugins; accepting again does not automatically re-enable them.
+Safe mode pauses third-party plugins for troubleshooting; leave it after resolving the problem. Settings → About shows the device version and terms; Settings → Updates manages updates. Revoking consent disables all plugins; accepting again does not automatically re-enable them.
 
-In About, select the Stable or Testing update channel and check for updates. Choose **Download and install**, then confirm once: Framely downloads and verifies the release and automatically starts installation. Download and verification are displayed as separate stages, with byte progress for each. Download or verification failure stops installation and displays an error. Plugins and data remain; the Framely interface briefly closes and restarts.
+In Settings → Updates, select the Stable or Testing update channel and check for updates. Choose **Download and install**, then confirm once: Framely downloads and verifies the release and automatically starts installation. Download and verification are displayed as separate stages, with byte progress for each. Download or verification failure stops installation and displays an error. Plugins and data remain; the Framely interface briefly closes and restarts.
 
-Automatic update checks are enabled by default. Framely checks about 30 seconds after starting (once terms are accepted), then every 6 hours. In About, turn **Check for updates automatically** off or change the interval. Checks use the selected Stable/Testing channel and configured proxy, continue with the panel closed, and never download or install automatically. A newer version saves a notification to the inbox and shows a popup when notification settings allow it. **Ignore** dismisses that version's reminder; **Open updates** opens About's update page. The same version is not repeatedly announced, including after restart. Switching the source or channel clears the old reminder.
+Automatic update checks are enabled by default. Framely checks about 30 seconds after starting (once terms are accepted), then every 6 hours. In Settings → Updates, turn **Check for updates automatically** off or change the interval. Checks use the selected Stable/Testing channel and configured proxy, continue with the panel closed, and never download or install automatically. A newer version saves a notification to the inbox and shows a popup when notification settings allow it. **Ignore** dismisses that version's reminder; **Open updates** opens Settings → Updates. The same version is not repeatedly announced, including after restart. Switching the source or channel clears the old reminder.
 
 Floating notifications follow the headset near the upper-right of the view. Their input mask matches the visible card; short button clicks tolerate small tracking movements.
 

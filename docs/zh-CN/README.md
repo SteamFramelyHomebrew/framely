@@ -13,6 +13,7 @@ Framely 是 Steam Frame 的插件管理器，包含设备端服务、SteamVR 界
 3. [安装与管理插件](user-guide/plugins.md)：插件库、来源、订阅、本地包和更新。
 4. [网络管理面板](user-guide/network-panel.md)：地址、首次密码、登录、手机/电脑使用。
 5. [APK 管理](user-guide/apk-manager.md)：侧载安装、更新、容器、保留数据与清理。
+6. [终端与文件](user-guide/terminal-and-files.md)：用户终端会话、文件操作、回收站、传输与预览。
 
 ## 插件开发与发布
 

@@ -35,3 +35,5 @@ Change the port or switch in Settings → Network panel. Password/authentication
 Restarting the session service also invalidates old logins. Saving identical settings retains the session. Incorrect password checks are rate-limited; retry later when asked.
 
 If unreachable, check changing device IPs, network reachability, enabled state and port. Settings and passwords live in `/home/.framely/state` and are retained by uninstall; reinstalling may still require the old password.
+
+The top switcher provides Plugin, APK, Terminal, Files and Settings; the device address defaults to Plugin. [Terminal and files](terminal-and-files.md) provides user-owned shell sessions, uploads/downloads, editing, archives and previews. These tools use the same login and port.
