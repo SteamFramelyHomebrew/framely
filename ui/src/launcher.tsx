@@ -1,3 +1,4 @@
+import {AppPlaceholder} from './app-placeholder';
 import {SwitchRow} from './switch';
 import React,{useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';
 import {api} from './api';
@@ -20,9 +21,8 @@ function launcherCells(total:number){
 function LauncherArtwork({src,name,kind,fit}:{src?:string|null;name:string;kind:string;fit?:string}){
  const [failed,setFailed]=useState(false);
  useEffect(()=>setFailed(false),[src]);
- const initials=name.trim().split(/\s+/).map(word=>Array.from(word)[0]).slice(0,2).join('').toUpperCase();
  return <span className={`launch-disc ${kind} ${fit==='cover'?'cover-art':''} ${src&&!failed?'has-art':'no-art'}`}>
-  {src&&!failed?<img src={src} alt={t('{0}图标',{0:name})} draggable={false} onError={()=>setFailed(true)}/>:<span className="launch-monogram" aria-hidden="true">{initials}</span>}
+  {src&&!failed?<img src={src} alt={t('{0}图标',{0:name})} draggable={false} onError={()=>setFailed(true)}/>:<AppPlaceholder kind={kind} size={48}/>}
  </span>;
 }
 export function LauncherSettings({config=defaults,refresh}:{config?:LauncherConfig;refresh:()=>Promise<void>}){

@@ -6,6 +6,7 @@ import {Select} from './localized-select';
 import {api} from './api';
 import {RunUserBadge,RunUserNotice,RuntimeUser} from './run-user';
 import {Icon} from './icons';
+import {AppPlaceholder} from './app-placeholder';
 export type Source={id:string;name:string;url:string;enabled:boolean;allowHttp:boolean};
 export type Presentation={authorUrl?:string|null;documentationUrl?:string|null;homepage?:string|null;icon?:string|null;details?:string;tags?:string[];screenshots?:string[];changelog?:string;dependencies?:Record<string,string|{version:string;source:string}>;optionalDependencies?:Record<string,string|{version:string;source:string}>;conflicts?:Record<string,string>;exclusiveResources?:string[]};
 export type Entry=Presentation&{id:string;name:string;author:string;description:string;version:string;apiVersion:number;compatible?:boolean;engines?:{framely?:string};url:string;sha256:string;runAs?:RuntimeUser|null};
@@ -21,7 +22,7 @@ export async function waitJob(id:string,onUpdate?:(job:Job)=>void,statusMethod='
  while(Date.now()<deadline){const job=await api<Job>(statusMethod,{job:started.job});onUpdate?.(job);if(job.phase==='done')return{job:started.job,result:job.result};if(job.phase==='failed')throw new Error(t(job.error??"操作失败"));if(job.phase==='cancelled')throw new Error(t("操作已取消"));await new Promise(r=>setTimeout(r,300));}
  throw new Error(t("操作超时，请重新检查任务状态"));
 }
-export function PluginImage({src,name,size=48}:{src?:string|null;name:string;size?:number}){const[failed,setFailed]=useState(false);useEffect(()=>setFailed(false),[src]);return <span className="plugin-avatar" style={{width:size,height:size}}>{src&&!failed?<img src={src} alt={t("{0}图标", {"0": name})} onError={()=>setFailed(true)}/>:<Icon name="plugins" size={Math.round(size*.55)}/>}</span>}
+export function PluginImage({src,name,size=48,kind='plugin'}:{src?:string|null;name:string;size?:number;kind?:string}){const[failed,setFailed]=useState(false);useEffect(()=>setFailed(false),[src]);return <span className="plugin-avatar" style={{width:size,height:size}}>{src&&!failed?<img src={src} alt={t("{0}图标", {"0": name})} onError={()=>setFailed(true)}/>:<AppPlaceholder kind={kind} size={Math.round(size*.55)}/>}</span>}
 function WebLink({url,children,className}:{url:string;children:React.ReactNode;className?:string}){
  const[error,setError]=useState(''),[busy,setBusy]=useState(false);
  return <><a className={className} href={url} aria-disabled={busy} onClick={e=>{e.preventDefault();e.stopPropagation();if(busy)return;setBusy(true);setError('');void runJob('host.external.open.start',{url}).catch(e=>setError(String(e.message??e))).finally(()=>setBusy(false));}}>{children}</a>{error&&<span className="link-error" role="alert">{error}</span>}</>;

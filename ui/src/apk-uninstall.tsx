@@ -20,7 +20,7 @@ export function ApkUninstall({app,size,purge,deleteContainer,exclusive,busy,erro
   <h2>{t(app.installed?'卸载应用':'清除保留数据')}</h2>
   <p className="apk-uninstall-intro">{t('对应的 Steam 库条目、图标和封面也会移除。')}</p>
   <header className="apk-uninstall-app">
-   <PluginImage name={app.metadata.name} src={app.metadata.icon} size={60}/>
+   <PluginImage kind="lepton" name={app.metadata.name} src={app.metadata.icon} size={60}/>
    <div><h3>{app.metadata.name}</h3><code>{app.metadata.package}</code><small>{t('空间占用')} {size}</small></div>
   </header>
   <div className="apk-uninstall-options" role="group" aria-label={t('卸载选项')}>
