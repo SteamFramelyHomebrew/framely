@@ -123,7 +123,7 @@ template<class T> struct Handler {
  T* acquire(){api.base.add_ref(&api.base);return &api;}
 };
 struct View {
- std::string key,plugin,title;int width=600,height=840,render_scale=1;bool dashboard=false,shown=false,dirty=false,closing=false,closed=false;
+ std::string key,plugin,title;int width=600,height=840;float render_scale=1.f;bool dashboard=false,shown=false,dirty=false,closing=false,closed=false;
  OverlayPlacement placement;NotificationClick notification_click;LauncherPointer launcher_pointer;std::chrono::steady_clock::time_point haptic_at{},activation_at{};
  cef_mouse_event_t pointer{};bool pointer_valid=false,stick_scrolling=false;vr::TrackedDeviceIndex_t pointer_device=vr::k_unTrackedDeviceIndexInvalid;std::chrono::steady_clock::time_point pointer_at{};
  cef_file_dialog_callback_t* file_dialog=nullptr;std::string file_dialog_id;bool file_multiple=false,file_directory=false;
@@ -281,9 +281,9 @@ static void anchor_notification(View& v){
 }
 static View& create_view(const std::string& key,const std::string& title,const std::string& url,bool dock,int width,int height,const std::string& plugin="",float physical_width=0){
  if(views.count(key)){auto& v=*views.at(key);if(dock&&key!="launcher")overlays->ShowDashboard(key.c_str());else if(key!="notifications"&&key!="launcher")show(v,true);return v;}
- // Use 3x for launcher artwork and 2x for scrolling panels. CEF readback,
+ // Use 1.5x for launcher artwork and 2x for scrolling panels. CEF readback,
  // texture upload and launcher mipmap generation scale with the pixel count.
- if(views.size()>=34)throw std::runtime_error("Window limit exceeded");auto v=std::make_unique<View>();v->key=key;v->plugin=plugin;v->title=title;v->dashboard=dock;v->width=width;v->height=height;v->render_scale=key=="launcher"?3:(key=="framely.manager"||key=="menu"||key=="notifications")?2:1;
+ if(views.size()>=34)throw std::runtime_error("Window limit exceeded");auto v=std::make_unique<View>();v->key=key;v->plugin=plugin;v->title=title;v->dashboard=dock;v->width=width;v->height=height;v->render_scale=key=="launcher"?1.5f:(key=="framely.manager"||key=="menu"||key=="notifications")?2:1;
  auto error=dock?overlays->CreateDashboardOverlay(key.c_str(),title.c_str(),&v->overlay,&v->thumbnail):overlays->CreateOverlay(key.c_str(),title.c_str(),&v->overlay);if(error)throw std::runtime_error("Overlay creation failed: "+std::to_string(error));
  overlays->SetOverlayInputMethod(v->overlay,key=="notifications"?vr::VROverlayInputMethod_None:vr::VROverlayInputMethod_Mouse);vr::HmdVector2_t scale{{float(width),float(height)}};overlays->SetOverlayMouseScale(v->overlay,&scale);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_HideLaserIntersection,false);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_SendVRSmoothScrollEvents,true);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_VisibleInDashboard,true);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,true);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_SortWithNonSceneOverlays,false);overlays->SetOverlaySortOrder(v->overlay,0);
 
