@@ -17,9 +17,17 @@ int main(){
  assert(trigger_keys[0]==312&&trigger_keys[1]==313);
  assert(entries[trigger_keys[0]]=="BUTTON_L2"&&entries[trigger_keys[1]]=="BUTTON_R2");
  GamepadTriggers triggers;
- assert(!triggers.update(0,0));assert(!triggers.update(0,29));
- assert(triggers.update(0,30));assert(triggers.update(0,25));
+ assert(!triggers.update(0,0));assert(!triggers.update(0,203));
+ assert(triggers.update(0,204));assert(triggers.update(0,192));
  assert(!triggers.down[1]);assert(triggers.update(1,255));
- assert(!triggers.update(0,20));assert(triggers.down[1]);
+ assert(!triggers.update(0,191));assert(triggers.down[1]);
  assert(!triggers.update(1,0));assert(!triggers.down[0]&&!triggers.down[1]);
+ assert(triggers.configure(50));assert(!triggers.update(0,127));assert(triggers.update(0,128));
+ assert(triggers.update(0,115));assert(!triggers.update(0,114));
+ // Changing the setting recalculates a held trigger without axis movement.
+ assert(triggers.update(0,180));assert(triggers.configure(80));assert(!triggers.update(0,180));
+ assert(triggers.configure(60));assert(triggers.update(0,180));assert(!triggers.update(0,0));
+ assert(triggers.configure(1));assert(!triggers.update(0,2));assert(triggers.update(0,3));assert(!triggers.update(0,0));
+ assert(triggers.configure(100));assert(!triggers.update(1,254));assert(triggers.update(1,255));assert(!triggers.update(1,242));
+ assert(!triggers.configure(0));assert(!triggers.configure(101));assert(triggers.press==255);
 }

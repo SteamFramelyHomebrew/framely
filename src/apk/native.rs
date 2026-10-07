@@ -206,8 +206,13 @@ pub(super) fn prepare(
         )?;
     }
     if db.gamepad_enabled {
-        let m =
-            crate::gamepad::prepare(&root(home), &c.name, &db.gamepad_source, db.gamepad_rumble)?;
+        let m = crate::gamepad::prepare(
+            &root(home),
+            &c.name,
+            &db.gamepad_source,
+            db.gamepad_rumble,
+            db.gamepad_trigger_threshold,
+        )?;
         crate::gamepad::select_target(&c.name, &a.metadata.package)?;
         for (k, v) in [
             ("FRAMELY_GAMEPAD_EVENT", json!(m.event)),

@@ -96,6 +96,12 @@ pub fn set_rumble_enabled(enabled: bool) {
         );
     }
 }
+pub fn set_trigger_threshold(percent: u8) {
+    let mut bridges = BRIDGE.lock().unwrap();
+    for bridge in bridges.contexts.values_mut() {
+        let _ = writeln!(bridge.input, "trigger-threshold {percent}");
+    }
+}
 pub fn stop_context(context: &str) {
     let mut bridges = BRIDGE.lock().unwrap();
     if bridges.active.as_deref() == Some(context) {
@@ -129,7 +135,13 @@ pub fn current(context: &str) -> Option<Mount> {
     }
     bridges.contexts.get(context).map(|b| b.mount.clone())
 }
-pub fn prepare(storage: &Path, context: &str, source: &str, rumble: bool) -> Result<Mount> {
+pub fn prepare(
+    storage: &Path,
+    context: &str,
+    source: &str,
+    rumble: bool,
+    threshold: u8,
+) -> Result<Mount> {
     ensure!(
         matches!(source, "steam" | "frame"),
         "Invalid gamepad input source"
@@ -138,6 +150,10 @@ pub fn prepare(storage: &Path, context: &str, source: &str, rumble: bool) -> Res
     ensure!(
         unsafe { libc::geteuid() } != 0,
         "Gamepad input must run as the Steam session user"
+    );
+    ensure!(
+        (1..=100).contains(&threshold),
+        "Invalid gamepad trigger threshold"
     );
     let current = current(context);
     {
@@ -148,6 +164,7 @@ pub fn prepare(storage: &Path, context: &str, source: &str, rumble: bool) -> Res
         }
         if let Some(bridge) = bridges.contexts.get_mut(context) {
             bridge.package = None;
+            writeln!(bridge.input, "trigger-threshold {threshold}")?;
         }
     }
     if let Some(mount) = current {
@@ -194,6 +211,7 @@ pub fn prepare(storage: &Path, context: &str, source: &str, rumble: bool) -> Res
     };
     let mut child = Command::new(helper)
         .env("FRAMELY_GAMEPAD_SOURCE", source)
+        .env("FRAMELY_GAMEPAD_TRIGGER_THRESHOLD", threshold.to_string())
         .env("FRAMELY_GAMEPAD_RUMBLE", if rumble { "1" } else { "0" })
         .env(
             "FRAMELY_STEAM_SDL_LIBRARY",

@@ -21,7 +21,8 @@ static void stop(int){stopped=1;}
 #include "gamepad_feedback.h"
 static const int axes[]={ABS_X,ABS_Y,ABS_RX,ABS_RY,ABS_Z,ABS_RZ,ABS_HAT0X,ABS_HAT0Y};
 static bool event(int fd,int type,int code,int value){input_event e{};e.type=type;e.code=code;e.value=value;return write(fd,&e,sizeof e)==sizeof e;}
-static bool send(int fd,const int* state){static GamepadTriggers triggers;bool ok=true;for(int k=0;k<10;k++)ok=event(fd,EV_KEY,keys[k],state[k])&&ok;for(int k=0;k<2;k++)ok=event(fd,EV_KEY,trigger_keys[k],triggers.update(k,state[14+k]))&&ok;for(int k=0;k<8;k++)ok=event(fd,EV_ABS,axes[k],state[10+k])&&ok;return event(fd,EV_SYN,SYN_REPORT,0)&&ok;}
+static GamepadTriggers triggers;
+static bool send(int fd,const int* state){bool ok=true;for(int k=0;k<10;k++)ok=event(fd,EV_KEY,keys[k],state[k])&&ok;for(int k=0;k<2;k++)ok=event(fd,EV_KEY,trigger_keys[k],triggers.update(k,state[14+k]))&&ok;for(int k=0;k<8;k++)ok=event(fd,EV_ABS,axes[k],state[10+k])&&ok;return event(fd,EV_SYN,SYN_REPORT,0)&&ok;}
 int main(int argc,char**argv){
  if((argc!=2&&argc!=4)||geteuid()==0){fprintf(stderr,"Run gamepad bridge as the Steam session user with an action manifest.\n");return 1;}
  // A session request runs on a short-lived worker thread. PR_SET_PDEATHSIG
@@ -70,8 +71,9 @@ int main(int argc,char**argv){
  if(witness<0){perror("Gamepad event access");ioctl(fd,UI_DEV_DESTROY);close(fd);shutdown();return 1;}
  printf("%s\n",node.c_str());fflush(stdout);
  // Parent owns routing. Start neutral; EOF, disconnect or disabled actions release input.
- bool enabled=false;std::string commands;int previous[18]{};GamepadFeedback feedback;std::array<uint16_t,2> lastRumble{};uint64_t rumbleAt=0;uint32_t source=0;bool frameConnected[2]{};
- while(!stopped&&getppid()==parent){pollfd p{STDIN_FILENO,POLLIN,0};if(poll(&p,1,0)>0){char buffer[128];auto count=read(0,buffer,sizeof buffer);if(count<=0)break;commands.append(buffer,count);size_t at;while((at=commands.find('\n'))!=std::string::npos){auto command=commands.substr(0,at);commands.erase(0,at+1);if(command=="enable")enabled=true;else if(command=="disable")enabled=false;else if(command=="rumble-on")rumbleEnabled=true;else if(command=="rumble-off")rumbleEnabled=false;}if(commands.size()>128)break;}
+ if(const char* threshold=std::getenv("FRAMELY_GAMEPAD_TRIGGER_THRESHOLD"))triggers.configure(std::atoi(threshold));
+ bool triggerChanged=false;bool enabled=false;std::string commands;int previous[18]{};GamepadFeedback feedback;std::array<uint16_t,2> lastRumble{};uint64_t rumbleAt=0;uint32_t source=0;bool frameConnected[2]{};
+ while(!stopped&&getppid()==parent){pollfd p{STDIN_FILENO,POLLIN,0};if(poll(&p,1,0)>0){char buffer[128];auto count=read(0,buffer,sizeof buffer);if(count<=0)break;commands.append(buffer,count);size_t at;while((at=commands.find('\n'))!=std::string::npos){auto command=commands.substr(0,at);commands.erase(0,at+1);if(command=="enable")enabled=true;else if(command=="disable")enabled=false;else if(command=="rumble-on")rumbleEnabled=true;else if(command=="rumble-off")rumbleEnabled=false;else{int percent;char extra;if(std::sscanf(command.c_str(),"trigger-threshold %d %c",&percent,&extra)==1&&triggers.configure(percent))triggerChanged=true;}}if(commands.size()>128)break;}
   const auto now=milliseconds();
   // Android may upload effects even while unfocused. Always acknowledge the
   // kernel requests; only playback is gated by foreground ownership.
@@ -102,7 +104,7 @@ int main(int argc,char**argv){
    lastRumble=vibration;rumbleAt=now;
   }
   if(!steamMode&&(vibration[0]||vibration[1]))for(int k=0;k<2;k++)if(haptics[k]!=vr::k_ulInvalidActionHandle&&vibration[k])input->TriggerHapticVibrationAction(haptics[k],0,.012f,100.f,float(vibration[k])/65535.f,vr::k_ulInvalidInputValueHandle);
-  if(memcmp(previous,state,sizeof state)){if(!send(fd,state))break;memcpy(previous,state,sizeof state);}
+  if(triggerChanged||memcmp(previous,state,sizeof state)){triggerChanged=false;if(!send(fd,state))break;memcpy(previous,state,sizeof state);}
   std::this_thread::sleep_for(std::chrono::milliseconds(8));
  }
  steam.stop();feedback.stop();int neutral[18]{};send(fd,neutral);close(witness);ioctl(fd,UI_DEV_DESTROY);close(fd);shutdown();return 0;

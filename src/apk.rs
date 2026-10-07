@@ -90,6 +90,8 @@ struct Database {
     gamepad_source: String,
     #[serde(default = "close_container_default")]
     gamepad_rumble: bool,
+    #[serde(default = "gamepad_trigger_threshold_default")]
+    gamepad_trigger_threshold: u8,
     #[serde(default)]
     owned_contexts: Vec<String>,
     #[serde(default)]
@@ -108,6 +110,7 @@ impl Default for Database {
             gamepad_enabled: false,
             gamepad_source: gamepad_source_default(),
             gamepad_rumble: true,
+            gamepad_trigger_threshold: gamepad_trigger_threshold_default(),
             owned_contexts: Vec::new(),
             root_contexts: BTreeMap::new(),
             roots: Vec::new(),
@@ -141,6 +144,9 @@ struct App {
     activity: Option<String>,
     show_window: Option<bool>,
     orientation: Option<String>,
+}
+fn gamepad_trigger_threshold_default() -> u8 {
+    80
 }
 fn gamepad_source_default() -> String {
     "steam".into()
@@ -930,7 +936,7 @@ pub fn list(home: &Path) -> Result<Value> {
         }
     }
     Ok(
-        json!({"apps":apps.iter().map(|a| { let mut v=serde_json::to_value(a).unwrap(); v["steamLaunch"]=json!(db.records.get(&a.id).is_none_or(steam_shortcuts::wanted)); v["steamRegistered"]=json!(db.records.get(&a.id).is_some_and(|r|r.steam_launch));v["steamRegistrationError"]=json!(db.records.get(&a.id).and_then(|r|r.steam_registration_error.as_ref())); v }).collect::<Vec<_>>(),"containers":cs.iter().map(|c| { let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(false); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"retainSteamEntries":db.retain_steam_entries,"gamepadEnabled":db.gamepad_enabled,"gamepadSource":db.gamepad_source,"gamepadRumble":db.gamepad_rumble,"autoStopContainer":db.auto_stop_container,"stopContainerOnClose":db.stop_container_on_close}),
+        json!({"apps":apps.iter().map(|a| { let mut v=serde_json::to_value(a).unwrap(); v["steamLaunch"]=json!(db.records.get(&a.id).is_none_or(steam_shortcuts::wanted)); v["steamRegistered"]=json!(db.records.get(&a.id).is_some_and(|r|r.steam_launch));v["steamRegistrationError"]=json!(db.records.get(&a.id).and_then(|r|r.steam_registration_error.as_ref())); v }).collect::<Vec<_>>(),"containers":cs.iter().map(|c| { let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(false); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"retainSteamEntries":db.retain_steam_entries,"gamepadEnabled":db.gamepad_enabled,"gamepadSource":db.gamepad_source,"gamepadRumble":db.gamepad_rumble,"gamepadTriggerThreshold":db.gamepad_trigger_threshold,"autoStopContainer":db.auto_stop_container,"stopContainerOnClose":db.stop_container_on_close}),
     )
 }
 pub fn launcher(home: &Path) -> Vec<Value> {
@@ -2561,12 +2567,26 @@ fn operate_internal(
                 } else {
                     db.gamepad_rumble
                 };
+                let threshold = if let Some(value) = p.get("triggerThreshold") {
+                    let value = value
+                        .as_u64()
+                        .context("Invalid gamepad trigger threshold")?;
+                    ensure!(
+                        (1..=100).contains(&value),
+                        "Gamepad trigger threshold must be between 1 and 100 percent"
+                    );
+                    value as u8
+                } else {
+                    db.gamepad_trigger_threshold
+                };
                 cancel.commit(|| {
                     db.gamepad_enabled = enabled;
                     db.gamepad_source = source;
                     db.gamepad_rumble = rumble;
+                    db.gamepad_trigger_threshold = threshold;
                     save(home, &db)?;
                     crate::gamepad::set_rumble_enabled(rumble);
+                    crate::gamepad::set_trigger_threshold(threshold);
                     if !enabled {
                         crate::gamepad::stop();
                     }
@@ -2928,6 +2948,7 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                                     &c.name,
                                     &db.gamepad_source,
                                     db.gamepad_rumble,
+                                    db.gamepad_trigger_threshold,
                                 )?)
                             } else {
                                 None
@@ -3437,6 +3458,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         assert!(!load(home).unwrap().gamepad_enabled);
+        assert_eq!(load(home).unwrap().gamepad_trigger_threshold, 80);
         for enabled in [true, false] {
             operate(
                 home,
@@ -3470,7 +3492,23 @@ mod tests {
             assert_eq!(saved.gamepad_source, source);
             assert!(!saved.gamepad_rumble);
         }
+        for threshold in [1, 65, 80, 100] {
+            operate(
+                home,
+                "gamepad.settings",
+                &json!({"enabled":false,"triggerThreshold":threshold}),
+                Cancellation::default(),
+                Arc::new(|_| {}),
+            )
+            .unwrap();
+            assert_eq!(load(home).unwrap().gamepad_trigger_threshold, threshold);
+        }
         for invalid in [
+            json!({"enabled":true,"triggerThreshold":0}),
+            json!({"enabled":true,"triggerThreshold":101}),
+            json!({"enabled":true,"triggerThreshold":80.5}),
+            json!({"enabled":true,"triggerThreshold":"80"}),
+            json!({"enabled":true,"triggerThreshold":-1}),
             json!({"enabled":true,"source":"physical"}),
             json!({"enabled":true,"source":7}),
             json!({"enabled":true,"rumble":"yes"}),
@@ -3484,11 +3522,13 @@ mod tests {
             )
             .is_err());
             assert!(!load(home).unwrap().gamepad_enabled);
+            assert_eq!(load(home).unwrap().gamepad_trigger_threshold, 100);
         }
         fs::write(root(home).join("state.json"), "{\"records\":{}}").unwrap();
         assert!(!load(home).unwrap().gamepad_enabled);
         assert_eq!(load(home).unwrap().gamepad_source, "steam");
         assert!(load(home).unwrap().gamepad_rumble);
+        assert_eq!(load(home).unwrap().gamepad_trigger_threshold, 80);
     }
     #[test]
     fn gamepad_foreground_does_not_match_another_package() {
