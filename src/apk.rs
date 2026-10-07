@@ -24,7 +24,7 @@ mod lifecycle;
 mod native;
 mod steam_bridge;
 mod steam_shortcuts;
-mod steam_ui;
+pub(crate) mod steam_ui;
 mod storage;
 pub fn steam_session_started() -> Result<()> {
     steam_bridge::start_session()?;
@@ -51,6 +51,10 @@ struct Record {
     #[serde(default)]
     steam_registration_error: Option<String>,
     #[serde(default)]
+    steam_transient_generation: Option<String>,
+    #[serde(default)]
+    steam_transient_expires: u64,
+    #[serde(default)]
     steam_app_id: Option<u32>,
     #[serde(default)]
     steam_token: Option<String>,
@@ -73,6 +77,8 @@ struct Record {
 }
 #[derive(Serialize, Deserialize)]
 struct Database {
+    #[serde(default = "close_container_default")]
+    retain_steam_entries: bool,
     #[serde(default)]
     auto_stop_container: bool,
     #[serde(default = "close_container_default")]
@@ -91,6 +97,7 @@ struct Database {
 impl Default for Database {
     fn default() -> Self {
         Self {
+            retain_steam_entries: true,
             auto_stop_container: false,
             stop_container_on_close: true,
             gamepad_enabled: false,
@@ -871,7 +878,7 @@ pub fn list(home: &Path) -> Result<Value> {
         }
     }
     Ok(
-        json!({"apps":apps.iter().map(|a| { let mut v=serde_json::to_value(a).unwrap(); v["steamLaunch"]=json!(db.records.get(&a.id).is_none_or(steam_shortcuts::wanted)); v["steamRegistered"]=json!(db.records.get(&a.id).is_some_and(|r|r.steam_launch));v["steamRegistrationError"]=json!(db.records.get(&a.id).and_then(|r|r.steam_registration_error.as_ref())); v }).collect::<Vec<_>>(),"containers":cs.iter().map(|c| { let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(false); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"gamepadEnabled":db.gamepad_enabled,"autoStopContainer":db.auto_stop_container,"stopContainerOnClose":db.stop_container_on_close}),
+        json!({"apps":apps.iter().map(|a| { let mut v=serde_json::to_value(a).unwrap(); v["steamLaunch"]=json!(db.records.get(&a.id).is_none_or(steam_shortcuts::wanted)); v["steamRegistered"]=json!(db.records.get(&a.id).is_some_and(|r|r.steam_launch));v["steamRegistrationError"]=json!(db.records.get(&a.id).and_then(|r|r.steam_registration_error.as_ref())); v }).collect::<Vec<_>>(),"containers":cs.iter().map(|c| { let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(false); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"retainSteamEntries":db.retain_steam_entries,"gamepadEnabled":db.gamepad_enabled,"autoStopContainer":db.auto_stop_container,"stopContainerOnClose":db.stop_container_on_close}),
     )
 }
 pub fn launcher(home: &Path) -> Vec<Value> {
@@ -2178,7 +2185,7 @@ pub fn operate(
         }
     }
     let result = operate_internal(home, kind, p, cancel, progress, None);
-    if kind == "install" && result.is_ok() {
+    if matches!(kind, "install" | "steam.retention.settings") && result.is_ok() {
         steam_shortcuts::wake_registration();
     }
     result
@@ -2248,19 +2255,31 @@ fn operate_internal(
                     );
                 }
                 record_app(&mut db, &a);
+                let retain = db.retain_steam_entries;
                 let rec = db.records.get_mut(id).context("Missing APK record")?;
-                if enabled {
+                if enabled && retain {
                     steam_shortcuts::register(home, &a, rec)?;
-                } else {
+                    rec.steam_launch = true;
+                } else if !enabled {
                     steam_shortcuts::unregister(home, rec)?;
                     rec.steam_binding = None;
                     rec.steam_app_id = None;
+                    rec.steam_launch = false;
                 }
-                rec.steam_launch = enabled;
                 rec.steam_preference = Some(enabled);
                 rec.steam_registration_error = None;
                 save(home, &db)?;
                 Ok(json!(true))
+            }
+            "steam.retention.settings" => {
+                let retain = p["enabled"]
+                    .as_bool()
+                    .context("Invalid Steam entry retention setting")?;
+                cancel.commit(|| {
+                    db.retain_steam_entries = retain;
+                    save(home, &db)?;
+                    Ok(json!(true))
+                })
             }
             "lifecycle.settings" => {
                 let auto = p["autoStopContainer"]
@@ -3801,6 +3820,79 @@ setup_props
             }
             calls
         })
+    }
+    #[test]
+    fn transient_steam_entry_is_launch_only_protects_newer_launch_and_preserves_data() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let id = "test/com.example.app";
+        let mut db = load(&f.home).unwrap();
+        assert!(db.retain_steam_entries);
+        assert!(
+            serde_json::from_value::<Database>(json!({}))
+                .unwrap()
+                .retain_steam_entries
+        );
+        db.retain_steam_entries = false;
+        save(&f.home, &db).unwrap();
+        assert!(f
+            .operation("steam.retention.settings", json!({"enabled":"bad"}))
+            .is_err());
+        fs::write(f.dir.path().join("running"), "false").unwrap();
+        let server = fake_steam_registry(&f, 4, false);
+        steam_shortcuts::synchronize(&f.home).unwrap();
+        assert!(!load(&f.home).unwrap().records[id].steam_launch);
+        assert!(steam_shortcuts::ensure_registered(&f.home, id, false).unwrap());
+        let first = load(&f.home).unwrap().records[id]
+            .steam_transient_generation
+            .clone()
+            .unwrap();
+        steam_shortcuts::cleanup_transient(&f.home, id, None).unwrap();
+        assert!(load(&f.home).unwrap().records[id].steam_launch); // startup grace
+        assert!(steam_shortcuts::ensure_registered(&f.home, id, false).unwrap());
+        let second = load(&f.home).unwrap().records[id]
+            .steam_transient_generation
+            .clone()
+            .unwrap();
+        assert_ne!(first, second);
+        steam_shortcuts::cleanup_transient(&f.home, id, Some(&first)).unwrap();
+        assert!(load(&f.home).unwrap().records[id].steam_launch);
+        let path = root(&f.home)
+            .join("steam")
+            .join(format!("context-{}.lock", hash("test")));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let lock = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        steam_shortcuts::cleanup_transient(&f.home, id, Some(&second)).unwrap();
+        assert!(load(&f.home).unwrap().records[id].steam_launch);
+        drop(lock);
+        fs::write(f.dir.path().join("running"), "true").unwrap();
+        steam_shortcuts::cleanup_transient(&f.home, id, Some(&second)).unwrap();
+        assert!(load(&f.home).unwrap().records[id].steam_launch);
+        fs::write(f.dir.path().join("running"), "false").unwrap();
+        steam_shortcuts::cleanup_transient(&f.home, id, Some(&second)).unwrap();
+        let db = load(&f.home).unwrap();
+        assert!(!db.records[id].steam_launch);
+        assert_eq!(db.records[id].steam_preference, Some(true));
+        assert!(f.home.join(".local/share/lepton/contexts/test/baked/data_overlay/data/com.example.app/files/save").exists());
+        let calls = server.join().unwrap();
+        assert_eq!(
+            calls,
+            vec![
+                "list-shortcuts",
+                "create-shortcut",
+                "list-shortcuts",
+                "delete-shortcut"
+            ]
+        );
     }
     #[test]
     fn automatic_steam_wrapping_defaults_on_is_idempotent_and_preserves_opt_out() {

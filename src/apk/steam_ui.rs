@@ -8,7 +8,7 @@ use tungstenite::{client, protocol::WebSocketConfig, Message};
 
 #[cfg(test)]
 thread_local! {pub(super) static TEST_RESULT: std::cell::RefCell<Option<Value>>= const {std::cell::RefCell::new(None)};}
-fn evaluate(expression: &str) -> Result<Value> {
+pub(crate) fn evaluate(expression: &str) -> Result<Value> {
     #[cfg(test)]
     if let Some(value) = TEST_RESULT.with(|v| v.borrow().clone()) {
         return Ok(value);
@@ -84,7 +84,7 @@ fn evaluate(expression: &str) -> Result<Value> {
             // Do not return JavaScript exception descriptions: they can contain launch tokens.
             ensure!(
                 v.get("error").is_none() && v["result"].get("exceptionDetails").is_none(),
-                "Steam could not configure the APK entry"
+                "Steam UI operation failed"
             );
             return Ok(v["result"]["result"]["value"].clone());
         }

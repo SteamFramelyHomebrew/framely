@@ -207,6 +207,11 @@ pub(super) fn register(home: &Path, a: &App, r: &mut Record) -> Result<()> {
     } else if marker.exists() {
         fs::remove_file(&marker)?;
     }
+    r.steam_binding = Some(Binding {
+        game_id: game.clone(),
+        native: true,
+        revision: revision(a),
+    });
     rpc(home, "create-shortcut", Some(&game))?;
     let v: Value = serde_json::from_str(&rpc(home, "list-shortcuts", None)?)?;
     ensure!(
@@ -346,7 +351,12 @@ pub(super) fn ensure_registered(home: &Path, id: &str, force: bool) -> Result<bo
         "No launch activity is available for Steam registration"
     );
     record_app(&mut db, &a);
+    let retain = db.retain_steam_entries;
     let rec = db.records.get_mut(id).context("Missing APK record")?;
+    if !retain && !context_busy(home, rec) {
+        rec.steam_transient_generation = Some(hex::encode(rand::random::<[u8; 16]>()));
+        rec.steam_transient_expires = now() + 180;
+    }
     rec.steam_preference = Some(true);
     if !force
         && rec.steam_launch
@@ -394,6 +404,10 @@ pub(super) fn synchronize(home: &Path) -> Result<()> {
         if db.records.get(&a.id).is_some_and(|r| !wanted(r)) {
             continue;
         }
+        if !db.retain_steam_entries {
+            let _ = cleanup_transient(home, &a.id, None);
+            continue;
+        }
         let force = !registered.contains(&game_id(&a.id));
         if !force
             && db.records.get(&a.id).is_some_and(|r| {
@@ -410,6 +424,81 @@ pub(super) fn synchronize(home: &Path) -> Result<()> {
         let _ = ensure_registered(home, &a.id, force);
     }
     Ok(())
+}
+fn context_busy(home: &Path, r: &Record) -> bool {
+    if running(&r.context) || native::runtime_name(r).is_some_and(|name| running(&name)) {
+        return true;
+    }
+    let path = root(home)
+        .join("steam")
+        .join(format!("context-{}.lock", hash(&r.context)));
+    if !path.exists() {
+        return false;
+    }
+    let Ok(file) = fs::OpenOptions::new().write(true).open(path) else {
+        return true;
+    };
+    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 }
+}
+pub(super) fn cleanup_transient(home: &Path, id: &str, completed: Option<&str>) -> Result<()> {
+    let _guard = MUTATION
+        .try_lock()
+        .map_err(|_| anyhow::anyhow!("Another APK operation is running"))?;
+    let directory = init(home)?;
+    let lock = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(directory.join("operation.lock"))?;
+    ensure!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
+        "Another APK operation is running"
+    );
+    let mut db = load(home)?;
+    if db.retain_steam_entries {
+        return Ok(());
+    }
+    let Some(r) = db.records.get(id) else {
+        return Ok(());
+    };
+    if r.steam_binding.is_none() || r.pending.is_some() {
+        return Ok(());
+    }
+    if let Some(generation) = completed {
+        if r.steam_transient_generation.as_deref() != Some(generation) {
+            return Ok(());
+        }
+    } else if now() < r.steam_transient_expires {
+        return Ok(());
+    }
+    fs::create_dir_all(directory.join("steam"))?;
+    let ownership = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(
+            directory
+                .join("steam")
+                .join(format!("context-{}.lock", hash(&r.context))),
+        )?;
+    if unsafe { libc::flock(ownership.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
+        || containers(home, &db)
+            .iter()
+            .any(|c| c.id == r.context && (c.running || wrapper_active(&c.name)))
+    {
+        return Ok(());
+    }
+    unregister(home, r)?;
+    let r = db.records.get_mut(id).unwrap();
+    r.steam_launch = false;
+    r.steam_binding = None;
+    r.steam_app_id = None;
+    r.steam_registration_error = None;
+    r.steam_transient_generation = None;
+    r.steam_transient_expires = 0;
+    save(home, &db)
 }
 pub(super) fn start_auto_registration() {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);

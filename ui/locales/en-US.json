@@ -924,6 +924,15 @@
     "等待 Steam 注册，Steam 就绪后会自动重试。": "Waiting for Steam registration. It will retry automatically when Steam is ready.",
     "空容器": "Empty container",
     "关闭容器": "Close container",
-    "安装前需要关闭容器，以安全备份应用数据。关闭会中断其中正在运行的应用，保留存档和设置。": "Close the container before installation to safely back up app data. This interrupts apps running inside it and retains saves and settings."
+    "安装前需要关闭容器，以安全备份应用数据。关闭会中断其中正在运行的应用，保留存档和设置。": "Close the container before installation to safely back up app data. This interrupts apps running inside it and retains saves and settings.",
+    "保留安装的 APK 到 Steam": "Keep installed APKs in Steam",
+    "默认开启，在 Steam 库中保留已安装应用。关闭后只在启动时注册 Steam 入口，退出后删除入口，应用数据保留。": "On by default. Keeps installed apps in the Steam library. When off, entries are registered at launch and removed after exit; app data is retained.",
+    "保存 Steam 入口设置": "Save Steam entry settings",
+    "远程畅玩": "Remote Play",
+    "通过 Steam 启动，可由 Steam 原生关闭窗口。入口是否常驻遵循 APK 设置页的选项。": "Launch through Steam to use its native window-close controls. Entry retention follows the option on the APK Settings page.",
+    "Remote game or host is no longer available": "The remote game or host is no longer available. Check the computer connection and try again.",
+    "Steam UI operation failed": "Steam UI operation failed. Keep Steam awake and try again.",
+    "选择启动方式": "Choose how to launch",
+    "本机启动": "Launch locally"
   }
 }

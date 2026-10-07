@@ -279,6 +279,7 @@ fn handle(home: &Path, pid: u32, v: Value) -> Result<Value> {
             let home = home.to_owned();
             let id = id.to_owned();
             let token = token.to_owned();
+            let transient_generation = response["transientGeneration"].as_str().map(str::to_owned);
             let gamepad_event = response["env"]["FRAMELY_GAMEPAD_EVENT"]
                 .as_str()
                 .map(PathBuf::from);
@@ -375,6 +376,9 @@ fn handle(home: &Path, pid: u32, v: Value) -> Result<Value> {
                 // affected by an old helper or have its new device removed.
                 crate::gamepad::stop_context(&c.name);
                 drop(ownership);
+                // A generation protects a newer launch from an old exit. A
+                // persistent entry switched to transient mode has no generation.
+                let _ = shortcuts::cleanup_transient(&home, &id, transient_generation.as_deref());
             });
             Ok(response)
         }

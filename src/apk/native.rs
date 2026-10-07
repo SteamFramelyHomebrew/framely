@@ -185,7 +185,12 @@ pub(super) fn prepare(
     }
     db.records.get_mut(id).unwrap().steam_app_id = Some(app_id);
     save(home, &db)?;
-    Ok((c, a, json!({"script":path,"env":env}), ownership))
+    Ok((
+        c,
+        a,
+        json!({"script":path,"env":env,"transientGeneration":db.records[id].steam_transient_generation}),
+        ownership,
+    ))
 }
 
 pub(super) fn run(app: &str, token: &str, command: &[String]) -> Result<()> {

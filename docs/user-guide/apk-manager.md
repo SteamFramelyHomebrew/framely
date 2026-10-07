@@ -152,3 +152,7 @@ Steam 入口显示 APK 的应用名称和图标，并根据图标生成对应的
 关闭原生 Steam 应用后，才能关闭“通过 Steam 启动”；关闭开关只移除 Framely 的入口。卸载 APK 时先停止其原生容器，再移除入口。只有明确选择的卸载或数据清理操作才删除应用数据。用户会话服务继续核对进程及容器启动标识，防止旧占用记录停止新的应用。
 
 Container list headings show installed application names; the data path identifies the container. An APK update stops its container before backing up data. If stopping fails or a native Steam launch still owns it, the installation dialog offers **Close container** with confirmation. Closing interrupts running apps and retains their saves. The reviewed APK remains available so installation can be retried after closing.
+
+### Steam entry retention
+
+**APK → Settings → Keep installed APKs in Steam** defaults to on. Turning it off removes idle Framely-owned entries and disables automatic registration. Launching an app whose **Launch through Steam** option is enabled registers its entry on demand; after the native launch process and container finish, the entry and its temporary Devkit copy are removed. Installed APKs, containers, saves and downloaded game data are retained. Running entries are protected. Failed or interrupted starts are cleaned up after a startup grace period, with retries when Steam is unavailable. Turning retention back on resumes automatic registration.
