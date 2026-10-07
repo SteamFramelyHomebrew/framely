@@ -2819,8 +2819,8 @@ mod tests {
             for expected in [
                 "host.ui.visibility",
                 "host.notification.badge",
-                "launcher.gaze.calibration.get",
                 "status",
+                "launcher.gaze.calibration.get",
                 "agreement.status",
             ] {
                 let (mut stream, _) = listener.accept().unwrap();
@@ -2848,10 +2848,15 @@ mod tests {
             .set("Cookie", &format!("framely={}", agent.web_key))
             .send_json(json!({"menu":true}))
             .is_err());
-        ureq::post(&url)
+        let poll: Value = ureq::post(&url)
             .set("X-Framely-Native", &agent.native_key)
             .send_json(json!({"menu":true}))
+            .unwrap()
+            .into_json()
             .unwrap();
+        assert_eq!(poll["feedback"], json!({"haptics":true,"sounds":true}));
+        assert!(poll.get("gazeCalibration").is_some());
+        assert!(poll["launcher"].is_object());
         assert!(agent
             .api(json!({"method":"host.ui.visibility","params":{"menu":false}}))
             .is_err());
