@@ -7,9 +7,17 @@
 
 [简体中文](README.zh-CN.md)
 
-> Framely is still under rapid development. Preview releases may change frequently; features and interactions are still being refined.
+> Framely is still under rapid development. Features and interfaces may change between preview releases. Android app and game compatibility depends on Lepton and the app itself.
 
-A React plugin manager for Steam Frame, with a Rust core service, a separate CEF/OpenVR host, a network management panel, and a desktop installer. Manage plugins, sources, windows, notifications, and updates.
+Framely provides a unified spatial launcher for Steam Frame and a management panel available both inside the headset and in a PC browser.
+
+- **Unified launcher**: launch Android apps in Lepton, Linux desktop applications, local Steam games, and games available through Steam Remote Play.
+- **APK sideloading and management**: install, update, and uninstall APKs, manage application containers and data, and provide controller input mapping and rumble feedback for Android games that support controllers.
+- **Plugin installation and management**: install and manage Framely plugins, browse the plugin library, and extend Frame with additional features.
+- **Remote management from your PC**: access Frame's management panel in a PC browser to manage files, APKs, and plugins. Upload, download, and edit files, and preview common image and video formats.
+- **Web terminal**: use an interactive terminal running on Frame, execute shell commands, and connect to other devices with `ssh`. The web terminal does not require an SSH connection to Frame.
+
+Framely uses a Rust core service and a separate CEF/OpenVR host, with a desktop installer for setup. It also manages plugin sources, windows, notifications, and updates.
 
 ![Framely spatial launcher](docs/images/launcher.png)
 
