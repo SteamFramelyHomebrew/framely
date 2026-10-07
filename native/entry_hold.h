@@ -10,7 +10,7 @@
 struct EntryHold {
  using Clock=std::chrono::steady_clock;
  enum class Action { Idle, Launcher, QuickPanel };
- static constexpr auto duration=std::chrono::milliseconds(600);
+ static constexpr auto quick_panel_delay=std::chrono::milliseconds(600);
  static constexpr auto ring_delay=std::chrono::milliseconds(100);
  bool pressed=false,fired=false;
  unsigned device=~0u,button=0;
@@ -22,7 +22,7 @@ struct EntryHold {
   if(inside)last_inside=now;
   // Brief pointer jitter is tolerated, but leaving cannot activate a hold.
   if(!inside){if(now-last_inside>std::chrono::milliseconds(150))cancel();return Action::Idle;}
-  if(!fired&&now-started>=duration){fired=true;return Action::QuickPanel;}
+  if(!fired&&now-started>=quick_panel_delay){fired=true;return Action::QuickPanel;}
   return Action::Idle;
  }
  Action event(bool down,unsigned source,unsigned mouse_button,bool available,bool inside,Clock::time_point now){
@@ -30,14 +30,18 @@ struct EntryHold {
    if(!pressed&&available&&inside){pressed=true;fired=false;device=source;button=mouse_button;started=last_inside=now;}
    return Action::Idle;
   }
-  if(!pressed||source!=device||mouse_button!=button)return Action::Idle;
+  // Steam may omit the device on release; known other devices still cannot release this hold.
+  if(!pressed||(source!=device&&source!=~0u&&device!=~0u)||mouse_button!=button)return Action::Idle;
   auto action=tick(now,available,inside);
   if(action==Action::Idle&&pressed&&!fired&&available&&inside)action=Action::Launcher;
   cancel();return action;
  }
  float progress(Clock::time_point now)const{
   if(!pressed||now-started<ring_delay)return 0.f;
-  return std::clamp(std::chrono::duration<float>(now-started).count()/.6f,0.f,1.f);
+  const float elapsed=std::chrono::duration<float>(now-started-ring_delay).count();
+  const float remaining=std::chrono::duration<float>(quick_panel_delay-ring_delay).count();
+  // A tiny nonzero value reveals the track at 100ms without jumping to 1/6 full.
+  return std::clamp(elapsed/remaining,.001f,1.f);
  }
 };
 

@@ -172,7 +172,7 @@ static std::vector<uint8_t> dock_icon(bool hover,bool active,float progress=0){
 // Keep texture storage alive while OpenVR samples the preceding frame. Raw
 // overlay replacement during a hold can disturb the image and hover target.
 struct DockIconTexture {
- GLuint textures[2]{};int slot=0;
+ GLuint textures[2]{};int slot=0;std::vector<uint8_t> upload;
  void init(){
   glGenTextures(2,textures);
   for(auto texture:textures){
@@ -187,7 +187,9 @@ struct DockIconTexture {
   const int next=1-slot;glBindTexture(GL_TEXTURE_2D,textures[next]);
   glPixelStorei(GL_UNPACK_ALIGNMENT,4);glPixelStorei(GL_UNPACK_ROW_LENGTH,0);
   glPixelStorei(GL_UNPACK_SKIP_PIXELS,0);glPixelStorei(GL_UNPACK_SKIP_ROWS,0);
-  glTexSubImage2D(GL_TEXTURE_2D,0,0,0,dock_canvas_width,dock_canvas_height,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());
+  // Raster icons use top-left rows; OpenVR OpenGL textures use bottom-left.
+  merge_paint(upload,pixels.data(),dock_canvas_width,dock_canvas_height,0,static_cast<const cef_rect_t*>(nullptr),true);
+  glTexSubImage2D(GL_TEXTURE_2D,0,0,0,dock_canvas_width,dock_canvas_height,GL_RGBA,GL_UNSIGNED_BYTE,upload.data());
   glFinish();vr::Texture_t texture{reinterpret_cast<void*>(uintptr_t(textures[next])),vr::TextureType_OpenGL,vr::ColorSpace_Auto};
   const auto error=overlays->SetOverlayTexture(overlay,&texture);glFlush();
   if(error){std::cerr<<"Dock texture submission failed "<<error<<"\n";return false;}
@@ -616,12 +618,12 @@ int main(int argc,char** argv){
    if(event.eventType==vr::VREvent_MouseMove||event.eventType==vr::VREvent_MouseButtonDown||event.eventType==vr::VREvent_MouseButtonUp)entry_pointer.move(event.trackedDeviceIndex,event.data.mouse.x,event.data.mouse.y);
    if(event.eventType==vr::VREvent_FocusLeave)entry_pointer.leave();
    if(event.eventType==vr::VREvent_MouseButtonDown||event.eventType==vr::VREvent_MouseButtonUp){
-    activate_entry(entry_hold.event(event.eventType==vr::VREvent_MouseButtonDown,event.trackedDeviceIndex,event.data.mouse.button,anchor_ok&&(event.trackedDeviceIndex==vr::k_unTrackedDeviceIndexInvalid||vr_system->IsTrackedDeviceConnected(event.trackedDeviceIndex)),entry_pointer.inside,now));
+    activate_entry(entry_hold.event(event.eventType==vr::VREvent_MouseButtonDown,event.trackedDeviceIndex,event.data.mouse.button,anchor_ok&&(event.trackedDeviceIndex==vr::k_unTrackedDeviceIndexInvalid||vr_system->IsTrackedDeviceConnected(event.trackedDeviceIndex)),entry_pointer.inside,std::chrono::steady_clock::now()));
    }
   }
   if(!anchor_ok)entry_pointer.leave();
   const bool entry_connected=entry_hold.device==vr::k_unTrackedDeviceIndexInvalid||vr_system->IsTrackedDeviceConnected(entry_hold.device);
-  activate_entry(entry_hold.tick(now,anchor_ok&&entry_connected,entry_pointer.inside&&entry_pointer.device==entry_hold.device));
+  activate_entry(entry_hold.tick(std::chrono::steady_clock::now(),anchor_ok&&entry_connected,entry_pointer.inside&&entry_pointer.device==entry_hold.device));
   for(auto&[key,v]:views)v->stick_scrolling=false;
   entry_actions(button,anchor_ok);
   if(launcher_open){bool held=false;for(auto& hand:entry_buttons)for(auto& trigger:hand)held|=trigger.held;launcher_dismiss.observe(held);}
@@ -690,7 +692,7 @@ int main(int argc,char** argv){
    close_keyboard(false);
   }
   for(auto i=views.begin();i!=views.end();){auto& v=*i->second;if(v.closed){overlays->ClearOverlayTexture(v.overlay);overlays->DestroyOverlay(v.overlay);if(v.thumbnail)overlays->DestroyOverlay(v.thumbnail);glDeleteTextures(2,v.textures);i=views.erase(i);}else ++i;}
-  bool hovered=anchor_ok&&(entry_hold.pressed||overlays->IsHoverTargetOverlay(button));if(hovered&&!icon_hover)hover_haptic(button,button_haptic_at);const auto badge=notification_badge_count.load();const int progress=std::lround(entry_hold.progress(now)*120);if(icon_progress!=progress||icon_active!=(menu_open||launcher_open)||icon_hover!=hovered||icon_badge!=badge){pixels=dock_icon(hovered,menu_open||launcher_open,progress/120.f);if(icon_texture.submit(button,pixels)){icon_progress=progress;icon_badge=badge;icon_active=menu_open||launcher_open;}}icon_hover=hovered;
+  bool hovered=anchor_ok&&(entry_hold.pressed||overlays->IsHoverTargetOverlay(button));if(hovered&&!icon_hover)hover_haptic(button,button_haptic_at);const auto badge=notification_badge_count.load();const float ring=entry_hold.progress(std::chrono::steady_clock::now());const int progress=ring>0?std::max(1,int(std::lround(ring*120))):0;if(icon_progress!=progress||icon_active!=(menu_open||launcher_open)||icon_hover!=hovered||icon_badge!=badge){pixels=dock_icon(hovered,menu_open||launcher_open,progress/120.f);if(icon_texture.submit(button,pixels)){icon_progress=progress;icon_badge=badge;icon_active=menu_open||launcher_open;}}icon_hover=hovered;
   auto sync=overlays->WaitFrameSync(8);
   // A timeout already waited: never append another sleep to it. Bound retries
   // only for immediate API failures, so a broken sync call cannot busy-spin.

@@ -1,4 +1,5 @@
 #include "entry_hold.h"
+#include "paint_buffer.h"
 #include <cassert>
 #include <iostream>
 
@@ -16,9 +17,11 @@ int main(){
  EntryHold hold;
  hold.event(true,1,1,true,true,start);
  assert(hold.progress(start+milliseconds(99))==0);
- assert(std::abs(hold.progress(start+milliseconds(100))-1.f/6)<.001f);
- assert(std::abs(hold.progress(start+milliseconds(300))-.5f)<.001f);
+ assert(hold.tick(start+milliseconds(100),true,true)==A::Idle);
+ assert(hold.progress(start+milliseconds(100))>0&&hold.progress(start+milliseconds(100))<.01f);
+ assert(std::abs(hold.progress(start+milliseconds(300))-.4f)<.001f);
  assert(hold.tick(start+milliseconds(599),true,true)==A::Idle);
+ assert(hold.progress(start+milliseconds(599))<1);
  assert(hold.tick(start+milliseconds(600),true,true)==A::QuickPanel);
  assert(hold.tick(start+milliseconds(900),true,true)==A::Idle);
  assert(hold.event(false,1,1,true,true,start+seconds(1))==A::Idle);
@@ -30,6 +33,10 @@ int main(){
  assert(hold.event(false,2,1,true,true,start+milliseconds(100))==A::Idle);
  assert(hold.event(false,1,2,true,true,start+milliseconds(110))==A::Idle);
  assert(hold.event(false,1,1,true,true,start+milliseconds(120))==A::Launcher);
+ // A release with no tracked device must not leave an old progress ring held.
+ hold.event(true,1,1,true,true,start);
+ assert(hold.event(false,~0u,1,true,true,start+milliseconds(80))==A::Launcher);
+ assert(!hold.pressed&&hold.progress(start+milliseconds(100))==0);
  // Small jitter does not restart the timer; a sustained leave or loss cancels.
  hold.event(true,1,1,true,true,start);
  hold.tick(start+milliseconds(480),true,true);
@@ -63,6 +70,13 @@ int main(){
  assert(pixels[top]>original[top]&&pixels[top]<255);
  assert(pixels[top]==pixels[top+1]&&pixels[top+1]==pixels[top+2]);
  assert(pixels[(8*128+64)*4]>original[(8*128+64)*4]);
+ // The GPU upload must flip top-left artwork exactly once, including the ring.
+ struct Rect{int x,y,width,height;};
+ std::vector<uint8_t> upload;
+ merge_paint(upload,pixels.data(),128,128,0,static_cast<const Rect*>(nullptr),true);
+ assert(upload[((127-5)*128+64)*4]==pixels[top]);
+ assert(upload[((127-8)*128+64)*4]==pixels[(8*128+64)*4]);
+ assert(pixels[(5*128+64)*4]>pixels[(5*128+63)*4]);
  auto partial=pixels;entry_progress_ring(pixels,1);
  assert(pixels!=partial);
  std::cout<<"entry_hold: passed\n";
