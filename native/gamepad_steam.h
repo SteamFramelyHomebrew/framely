@@ -33,7 +33,7 @@ inline std::array<int,18> steam_pad_state(const std::array<bool,15>& buttons,con
 class SteamGamepad {
  void* library=nullptr;
  using Pad=void*;
- bool (*init)(uint32_t)=nullptr;void (*quit)()=nullptr;void (*update)()=nullptr;
+ bool (*init)(uint32_t)=nullptr;void (*quit)()=nullptr;void (*update)()=nullptr;void (*pump)()=nullptr;void (*flush)(uint32_t,uint32_t)=nullptr;
  uint32_t* (*get)(int*)=nullptr;void (*freeMem)(void*)=nullptr;Pad (*openPad)(uint32_t)=nullptr;void (*closePad)(Pad)=nullptr;
  const char* (*path)(uint32_t)=nullptr;bool (*button)(Pad,int)=nullptr;int16_t (*axis)(Pad,int)=nullptr;
  bool (*rumblePad)(Pad,uint16_t,uint16_t,uint32_t)=nullptr;
@@ -57,7 +57,7 @@ public:
  uint32_t source()const{return selected;}
  bool start(const char* lib,const char* info){
   if(!lib||!info)return false;infoPath=info;library=dlopen(lib,RTLD_NOW|RTLD_LOCAL);if(!library)return false;
-  bool ok=symbol(init,"SDL_Init")&&symbol(quit,"SDL_Quit")&&symbol(update,"SDL_UpdateGamepads")&&symbol(get,"SDL_GetGamepads")&&symbol(freeMem,"SDL_free")&&symbol(openPad,"SDL_OpenGamepad")&&symbol(closePad,"SDL_CloseGamepad")&&symbol(path,"SDL_GetGamepadPathForID")&&symbol(button,"SDL_GetGamepadButton")&&symbol(axis,"SDL_GetGamepadAxis")&&symbol(rumblePad,"SDL_RumbleGamepad");if(!ok)return false;
+  bool ok=symbol(init,"SDL_Init")&&symbol(quit,"SDL_Quit")&&symbol(update,"SDL_UpdateGamepads")&&symbol(pump,"SDL_PumpEvents")&&symbol(flush,"SDL_FlushEvents")&&symbol(get,"SDL_GetGamepads")&&symbol(freeMem,"SDL_free")&&symbol(openPad,"SDL_OpenGamepad")&&symbol(closePad,"SDL_CloseGamepad")&&symbol(path,"SDL_GetGamepadPathForID")&&symbol(button,"SDL_GetGamepadButton")&&symbol(axis,"SDL_GetGamepadAxis")&&symbol(rumblePad,"SDL_RumbleGamepad");if(!ok)return false;
   setenv("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD","1",1);setenv("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS","1",1);setenv("SteamVirtualGamepadInfo",info,1);
   // Only Steam's post-configuration evdev pads are accepted. HIDAPI must not
   // additionally open the physical devices or bypass Steam's mappings.
@@ -65,7 +65,7 @@ public:
   initialized=init(0x2000);return initialized;
  }
  std::array<int,18> read(uint64_t now,bool enabled){
-  std::array<int,18> result{};if(!initialized)return result;update();scan(now);uint32_t next=selected;
+  std::array<int,18> result{};if(!initialized)return result;pump();flush(0,0xffff);update();scan(now);uint32_t next=selected;
   for(auto& p:pads){std::array<bool,15> buttons{};std::array<int,6> axes{};for(int k=0;k<15;k++)buttons[k]=button(p.pad,k);for(int k=0;k<6;k++)axes[k]=axis(p.pad,k);auto state=steam_pad_state(buttons,axes);
    bool activity=false;for(int k=0;k<10;k++)activity|=state[k]&&!p.previous[k];for(int k=10;k<16;k++)activity|=std::abs(state[k])>(k<14?8000:40)&&std::abs(state[k]-p.previous[k])>(k<14?1500:15);for(int k=16;k<18;k++)activity|=state[k]!=0&&state[k]!=p.previous[k];p.previous=state;
    if(enabled&&activity)next=p.id;

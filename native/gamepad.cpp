@@ -34,24 +34,27 @@ int main(int argc,char**argv){
  bool rumbleEnabled=!std::getenv("FRAMELY_GAMEPAD_RUMBLE")||std::string(std::getenv("FRAMELY_GAMEPAD_RUMBLE"))!="0";
  auto milliseconds=[](){return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());};
  signal(SIGTERM,stop);signal(SIGINT,stop);signal(SIGPIPE,SIG_IGN);
- vr::EVRInitError error;vr::VR_Init(&error,vr::VRApplication_Overlay);if(error){fprintf(stderr,"SteamVR gamepad input unavailable: %d\n",error);return 1;}
+ vr::EVRInitError error=vr::VRInitError_None;if(!steamMode)vr::VR_Init(&error,vr::VRApplication_Overlay);if(error){fprintf(stderr,"SteamVR gamepad input unavailable: %d\n",error);return 1;}
  // Different live containers must not share SteamVR's generated executable
  // identity. Otherwise a second helper replaces the first app's registered PID.
  bool registered=false;
- auto shutdown=[&](){if(registered)vr::VRApplications()->RemoveApplicationManifest(argv[2]);vr::VR_Shutdown();};
- if(argc==4){
+ // Steam Input already represents Steam's configured output. Registering an
+ // independent OpenVR action app here suppresses SDL's virtual-gamepad
+ // enumeration in this process on Frame.
+ auto shutdown=[&](){if(!steamMode){if(registered)vr::VRApplications()->RemoveApplicationManifest(argv[2]);vr::VR_Shutdown();}};
+ if(!steamMode&&argc==4){
   if(vr::VRApplications()->AddApplicationManifest(argv[2],true)!=vr::VRApplicationError_None){fprintf(stderr,"Gamepad application registration failed.\n");shutdown();return 1;}
   registered=true;
   auto identity=vr::VRApplications()->IdentifyApplication(getpid(),argv[3]);if(identity!=vr::VRApplicationError_None){fprintf(stderr,"Gamepad application identity failed: %d (%s).\n",identity,vr::VRApplications()->GetApplicationsErrorNameFromEnum(identity));shutdown();return 1;}
  }
- auto*input=vr::VRInput();vr::VRActiveActionSet_t set{};
- bool valid=input->SetActionManifestPath(argv[1])==vr::VRInputError_None&&input->GetActionSetHandle("/actions/framely_gamepad",&set.ulActionSet)==vr::VRInputError_None;
+ auto*input=steamMode?nullptr:vr::VRInput();vr::VRActiveActionSet_t set{};
+ bool valid=steamMode||(input->SetActionManifestPath(argv[1])==vr::VRInputError_None&&input->GetActionSetHandle("/actions/framely_gamepad",&set.ulActionSet)==vr::VRInputError_None);
  const char*names[]={"right_a","right_b","right_x","right_y","left_bumper","right_bumper","left_menu","right_menu","left_stickclick","right_stickclick","left_thumbstick","right_thumbstick","left_trigger","right_trigger","left_dpad_left","left_dpad_right","left_dpad_up","left_dpad_down"};
  vr::VRActionHandle_t handles[18]{};
- for(int k=0;k<18;k++)valid= input->GetActionHandle((std::string("/actions/framely_gamepad/in/")+names[k]).c_str(),&handles[k])==vr::VRInputError_None&&valid;
+ for(int k=0;!steamMode&&k<18;k++)valid= input->GetActionHandle((std::string("/actions/framely_gamepad/in/")+names[k]).c_str(),&handles[k])==vr::VRInputError_None&&valid;
  if(!valid){fprintf(stderr,"Invalid gamepad action bindings.\n");shutdown();return 1;}
  vr::VRActionHandle_t haptics[2]{};
- for(int k=0;k<2;k++)input->GetActionHandle(k?"/actions/framely_gamepad/out/right_haptic":"/actions/framely_gamepad/out/left_haptic",&haptics[k]);
+ for(int k=0;!steamMode&&k<2;k++)input->GetActionHandle(k?"/actions/framely_gamepad/out/right_haptic":"/actions/framely_gamepad/out/left_haptic",&haptics[k]);
  int fd=open("/dev/uinput",O_RDWR|O_NONBLOCK|O_CLOEXEC);if(fd<0){perror("Gamepad /dev/uinput");shutdown();return 1;}
  bool ok=ioctl(fd,UI_SET_EVBIT,EV_KEY)==0&&ioctl(fd,UI_SET_EVBIT,EV_ABS)==0&&ioctl(fd,UI_SET_EVBIT,EV_FF)==0&&ioctl(fd,UI_SET_FFBIT,FF_RUMBLE)==0;
  for(auto key:keys)ok=ioctl(fd,UI_SET_KEYBIT,key)==0&&ok;
