@@ -11,3 +11,6 @@ g++ -std=c++17 -O2 -I"$cef" -I"$openvr" -I"$base/native" -I"$out" "$base/native/
 # Independent of CEF; both binaries ship in the core/update archive.
 g++ -std=c++17 -O2 -I"$openvr" "$base/native/gamepad.cpp" -L"$openvr/lib/linuxarm64" -lopenvr_api -ldl -pthread -Wl,-rpath,'$ORIGIN' -o "$out/framely-gamepad"
 gcc -shared -fPIC -nostdlib -fno-stack-protector -Wl,--hash-style=both "$base/native/gamepad_grab.c" -o "$out/libframely-gamepad-grab.so"
+
+# Android GLES layer uses loader-supplied symbols; no host glibc dependency.
+gcc -shared -fPIC -nostdlib -fno-stack-protector -fvisibility=hidden -Wl,-z,defs,--hash-style=both,-soname,libFramelyFBOCompat.so "$base/native/fbo_compat.c" -o "$out/libFramelyFBOCompat.so"

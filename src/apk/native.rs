@@ -176,6 +176,7 @@ pub(super) fn prepare(
         "APP_WANTS_FLATSCREEN":if flat {"true"}else{"false"},
         "LEPTON_NO_CLEANUP":"true", "TERM":"dumb"
     });
+    graphics::configure_environment(&mut env, a.framebuffer_compatibility, &a.metadata.package)?;
     let installed_dir = c
         .baked
         .join("data_overlay")

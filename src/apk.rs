@@ -21,6 +21,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 mod cleanup;
+mod graphics;
 mod lifecycle;
 mod native;
 mod steam_bridge;
@@ -75,6 +76,8 @@ struct Record {
     show_window: Option<bool>,
     #[serde(default)]
     orientation: Option<String>,
+    #[serde(default)]
+    framebuffer_compatibility: bool,
 }
 #[derive(Serialize, Deserialize)]
 struct Database {
@@ -144,6 +147,8 @@ struct App {
     activity: Option<String>,
     show_window: Option<bool>,
     orientation: Option<String>,
+    #[serde(default)]
+    framebuffer_compatibility: bool,
 }
 fn gamepad_trigger_threshold_default() -> u8 {
     80
@@ -785,6 +790,7 @@ fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App
                         activity,
                         show_window: rec.and_then(|r| r.show_window),
                         orientation: rec.and_then(|r| r.orientation.clone()),
+                        framebuffer_compatibility: rec.is_some_and(|r| r.framebuffer_compatibility),
                     });
                 }
             }
@@ -838,6 +844,7 @@ fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App
                 activity: r.activity.clone(),
                 show_window: r.show_window,
                 orientation: r.orientation.clone(),
+                framebuffer_compatibility: r.framebuffer_compatibility,
             });
         }
     }
@@ -882,6 +889,7 @@ fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App
                     activity: None,
                     show_window: None,
                     orientation: None,
+                    framebuffer_compatibility: false,
                 });
             }
         }
@@ -1320,7 +1328,14 @@ function setup_props() {
 "#;
     Ok(source
         .replace(directory, "SCRIPT_DIR=\"${FRAMELY_LEPTON_DIR:?}\"")
-        .replace(include, &format!("{include}\n{}\n{hooks}", storage::HOOKS)))
+        .replace(
+            include,
+            &format!(
+                "{include}\n{}\n{hooks}\n{}",
+                storage::HOOKS,
+                graphics::HOOKS
+            ),
+        ))
 }
 fn start(home: &Path, c: &Container, show: Option<bool>, log: &Path) -> Result<()> {
     start_container(home, c, show, true, log)
@@ -1579,6 +1594,7 @@ fn start_oriented_container_for(
     let (window_dex, window_script) = window_runtime(home)?;
     cmd.env("FRAMELY_WINDOW_DEX", window_dex)
         .env("FRAMELY_WINDOW_SCRIPT", window_script);
+    graphics::configure_command(&mut cmd, false, "")?;
     cmd.env_remove("SteamAppId");
     storage::configure(
         &mut cmd,
@@ -1734,6 +1750,7 @@ fn record_app(db: &mut Database, a: &App) {
             activity: a.activity.clone(),
             show_window: a.show_window,
             orientation: a.orientation.clone(),
+            framebuffer_compatibility: a.framebuffer_compatibility,
             ..Default::default()
         });
 }
@@ -2064,6 +2081,7 @@ fn launch(c: &Container, a: &App, log: &Path) -> Result<()> {
 }
 fn launch_with_started(c: &Container, a: &App, log: &Path, started: impl FnOnce()) -> Result<()> {
     let component = launch_component(a)?;
+    graphics::apply(c, a, log)?;
     podman(
         &[
             "exec",
@@ -2821,6 +2839,11 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                     ensure!(v.is_boolean() || v.is_null(), "Invalid window setting");
                     rec.show_window = v.as_bool();
                 }
+                if let Some(v) = p.get("framebufferCompatibility") {
+                    rec.framebuffer_compatibility = v
+                        .as_bool()
+                        .context("Invalid framebuffer compatibility setting")?;
+                }
                 if let Some(v) = p.get("orientation") {
                     ensure!(
                         v.as_str()
@@ -2900,6 +2923,12 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                             launch_component(&a)?;
                             progress(json!({"phase":"starting"}));
                             let flat = a.show_window.unwrap_or(!a.metadata.vr);
+                            if a.framebuffer_compatibility {
+                                graphics::library(true)?;
+                                if running(&c.name) && !graphics::mounted(&c, &log)? {
+                                    stop(&c, &log)?;
+                                }
+                            }
                             if flat && running(&c.name) {
                                 let name = format!("lepton-{}", c.name);
                                 let headless = podman(
@@ -4476,7 +4505,8 @@ setup_props
         );
         assert!(!fs::read_to_string(f.dir.path().join("commands"))
             .unwrap()
-            .contains("stop "));
+            .lines()
+            .any(|line| line.starts_with("stop ")));
         // Unknown lifecycle output refuses a destructive stop.
         fs::write(f.dir.path().join("bad-probe"), "").unwrap();
         assert!(steam_bridge::test_request(&f.home, id, "test-token", "stop").is_err());
@@ -5424,6 +5454,34 @@ esac
         let c = Cancellation::default();
         c.stop();
         assert!(inspect(&f.home, &f.dir.path().join("upload.apk"), &c).is_err());
+    }
+    #[test]
+    fn framebuffer_preference_defaults_off_validates_and_survives_refresh() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let id = "test/com.example.app";
+        assert!(!load(&f.home).unwrap().records[id].framebuffer_compatibility);
+        assert!(f
+            .operation(
+                "settings",
+                json!({"app":id,"framebufferCompatibility":"yes"})
+            )
+            .is_err());
+        f.operation(
+            "settings",
+            json!({"app":id,"framebufferCompatibility":true}),
+        )
+        .unwrap();
+        list(&f.home).unwrap();
+        let db = load(&f.home).unwrap();
+        assert!(db.records[id].framebuffer_compatibility);
+        assert!(app(&f.home, &db, id).unwrap().0.framebuffer_compatibility);
+        f.operation(
+            "settings",
+            json!({"app":id,"framebufferCompatibility":false}),
+        )
+        .unwrap();
+        assert!(!load(&f.home).unwrap().records[id].framebuffer_compatibility);
     }
     #[test]
     fn window_orientation_is_validated_persisted_and_applied() {
