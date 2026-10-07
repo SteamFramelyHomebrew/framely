@@ -105,24 +105,8 @@ pub(super) fn configure(
     let expression = format!(
         r#"(async()=>{{
         const p={parameters};
-        let app;
-        for(let n=0;n<10;n++){{
-            const apps=Array.from(appStore.m_mapApps.values());
-            const matches=apps.filter(a=>a.display_name==='Devkit Game: '+p.game);
-            app=matches.length===1?matches[0]:apps.find(a=>a.appid===p.previous);
-            if(app) break;
-            await new Promise(r=>setTimeout(r,100));
-        }}
-        if(!app || app.appid<2147483648) throw Error('Missing owned shortcut');
-        const id=app.appid;
-        let sub;
-        const details=await new Promise((resolve,reject)=>{{
-            let timer=setTimeout(()=>{{sub?.unregister();reject(Error('Details timed out'))}},3000);
-            sub=SteamClient.Apps.RegisterForAppDetails(id,d=>{{clearTimeout(timer);sub?.unregister();resolve(d)}});
-        }});
-        sub?.unregister();
-        const exe=details.strShortcutExe?.replace(/^"|"$/g,'').replace('/./','/');
-        if(exe!==p.exe) throw Error('Shortcut target does not match owned APK');
+        const owned=await ({lookup})(p);
+        const id=owned.id;
         SteamClient.Apps.SetShortcutLaunchOptions(id,p.launch);
         SteamClient.Apps.SetShortcutName(id,p.name);
         if(p.icon) SteamClient.Apps.SetShortcutIcon(id,p.icon);
@@ -134,7 +118,8 @@ pub(super) fn configure(
             }}
         }}
         return id;
-    }})()"#
+    }})()"#,
+        lookup = include_str!("steam_shortcut_lookup.js")
     );
     let result = evaluate(&expression)?;
     result
