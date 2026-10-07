@@ -43,6 +43,9 @@ pub fn lifecycle_started() {
     lifecycle::start();
 }
 static MUTATION: Mutex<()> = Mutex::new(());
+// Integration tests must serialize all callers of the process-wide APK mutation lock.
+#[cfg(test)]
+pub(crate) static TEST_SERIAL: Mutex<()> = Mutex::new(());
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Record {
@@ -2461,6 +2464,14 @@ pub fn operate(
     }
     result
 }
+// Explicitly release flock: concurrent forked children can briefly inherit the
+// descriptor before exec, so closing this process's descriptor alone is insufficient.
+struct OperationLock(fs::File);
+impl Drop for OperationLock {
+    fn drop(&mut self) {
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
 fn operate_internal(
     home: &Path,
     kind: &str,
@@ -2474,14 +2485,16 @@ fn operate_internal(
         .map_err(|_| anyhow::anyhow!("Another APK operation is running"))?;
     cancel.check()?;
     let r = init(home)?;
-    let lock = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(r.join("operation.lock"))?;
+    let lock = OperationLock(
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(r.join("operation.lock"))?,
+    );
     ensure!(
-        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
+        unsafe { libc::flock(lock.0.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
         "Another APK operation is running"
     );
     let mut db = load(home)?;
@@ -3362,7 +3375,31 @@ pub fn launch_app_with_progress(
 mod tests {
     use super::*;
     #[test]
+    fn operation_lock_releases_while_an_inherited_descriptor_remains_open() {
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join("operation.lock");
+        let lock = OperationLock(fs::File::create(&path).unwrap());
+        assert_eq!(
+            unsafe { libc::flock(lock.0.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        // dup shares the open-file description, just as a descriptor inherited by fork does.
+        let inherited = lock.0.try_clone().unwrap();
+        let observer = fs::File::open(path).unwrap();
+        assert_ne!(
+            unsafe { libc::flock(observer.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        drop(lock);
+        assert_eq!(
+            unsafe { libc::flock(observer.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        drop(inherited);
+    }
+    #[test]
     fn lifecycle_settings_migrate_persist_and_reject_invalid_values() {
+        let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let t = tempfile::tempdir().unwrap();
         let home = t.path();
         assert!(!load(home).unwrap().auto_stop_container);
@@ -3483,7 +3520,7 @@ mod tests {
     }
     #[test]
     fn gamepad_setting_defaults_off_and_round_trips() {
-        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         assert!(!load(home).unwrap().gamepad_enabled);
@@ -3868,7 +3905,7 @@ setup_podman_mounts
     }
     #[test]
     fn local_apk_review_snapshots_source_and_rejects_invalid_selections() {
-        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         let source = home.path().join("selected.APK");
         crate::apk_metadata::fixture(&source, true, 7);
@@ -3933,7 +3970,6 @@ setup_podman_mounts
             .join("com.example.app.framely-preserve-token.legacy-link")
             .is_symlink());
     }
-    static SERIAL: Mutex<()> = Mutex::new(());
     struct Fixture {
         dir: tempfile::TempDir,
         home: PathBuf,
@@ -3947,7 +3983,7 @@ setup_podman_mounts
     }
     impl Fixture {
         fn new() -> Self {
-            let guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
             steam_ui::TEST_RESULT.with(|p| *p.borrow_mut() = Some(json!(0x92345678u32)));
             let dir = tempfile::tempdir().unwrap();
             let home = dir.path().join("home");

@@ -715,6 +715,9 @@ mod tests {
     }
     #[test]
     fn inspect_apk_with_cesu8_resources() {
+        let _guard = crate::apk::TEST_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::io::Write;
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("emoji.apk");
