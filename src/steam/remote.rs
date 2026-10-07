@@ -11,6 +11,8 @@ pub(super) struct RemoteApp {
     pub id: u32,
     pub name: String,
     pub client: String,
+    #[serde(default, rename = "deviceName")]
+    pub device_name: String,
 }
 fn query(request: serde_json::Value) -> Result<serde_json::Value> {
     crate::apk::steam_ui::evaluate(&format!("({})({request})", include_str!("remote.js")))

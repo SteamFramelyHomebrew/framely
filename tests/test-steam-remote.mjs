@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+const evaluate=eval(`(${await readFile('src/steam/remote.js','utf8')})`);
+const launched=[];
+globalThis.window={RemotePlayStore_SteamUI:{devices:[{clientId:'12',clientName:'Gaming PC',status:'Connected'},{clientId:'13',clientName:'Laptop',status:'Connected'},{clientId:'14',clientName:'Offline',status:'Disconnected'}]},appStore:{allApps:[{appid:42,display_name:'Game',app_type:1,remote_per_client_data:['12','13','14'].map(clientid=>({clientid,installed:true})),BIsPerClientDataLocal:()=>false}]}};
+globalThis.SteamClient={Apps:{StreamGame:async(...args)=>launched.push(args)}};
+const rows=await evaluate({mode:'list'});
+assert.deepEqual(rows.map(r=>[r.client,r.deviceName]),[['12','Gaming PC'],['13','Laptop']]);
+assert.equal(await evaluate({mode:'launch',id:42,client:'13'}),true);
+assert.deepEqual(launched,[[42,'13',-1]]);
+window.RemotePlayStore_SteamUI.devices[1].status='Disconnected';
+assert.equal(await evaluate({mode:'launch',id:42,client:'13'}),false);
+assert.equal(launched.length,1);
+console.log('Remote device names, selection and disconnected-host validation passed.');

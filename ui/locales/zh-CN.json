@@ -964,6 +964,19 @@
     "Android user did not unlock; export logs and retry.": "Android 用户未解锁，请导出日志后重试。",
     "Android external storage did not mount; export logs and retry.": "Android 外部存储未挂载，请导出日志后重试。",
     "Android container stopped before becoming ready; export logs and retry.": "Android 容器在就绪前退出，请导出日志后重试。",
-    "Android readiness probe did not respond; export logs and retry.": "Android 就绪状态查询无响应，请导出日志后重试。"
+    "Android readiness probe did not respond; export logs and retry.": "Android 就绪状态查询无响应，请导出日志后重试。",
+    "选择启动方式": "选择启动方式",
+    "远程畅玩": "远程畅玩",
+    "保存 Steam 入口设置": "保存 Steam 入口设置",
+    "保留安装的 APK 到 Steam": "保留安装的 APK 到 Steam",
+    "Steam UI operation failed": "Steam 界面操作失败，请保持 Steam 唤醒后重试。",
+    "Remote game or host is no longer available": "远程游戏或设备已不可用，请检查电脑连接后重试。",
+    "本机启动": "本机启动",
+    "通过 Steam 启动，可由 Steam 原生关闭窗口。入口是否常驻遵循 APK 设置页的选项。": "通过 Steam 启动，可由 Steam 原生关闭窗口。入口是否常驻遵循 APK 设置页的选项。",
+    "空容器": "空容器",
+    "默认开启，在 Steam 库中保留已安装应用。关闭后只在启动时注册 Steam 入口，退出后删除入口，应用数据保留。": "默认开启，在 Steam 库中保留已安装应用。关闭后只在启动时注册 Steam 入口，退出后删除入口，应用数据保留。",
+    "在此 Frame 上运行": "在此 Frame 上运行",
+    "远程设备 {0}": "远程设备 {0}",
+    "架构": "架构"
   }
 }

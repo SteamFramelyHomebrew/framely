@@ -974,6 +974,9 @@
     "Android user did not unlock; export logs and retry.": "Android user did not unlock; export logs and retry.",
     "Android external storage did not mount; export logs and retry.": "Android external storage did not mount; export logs and retry.",
     "Android container stopped before becoming ready; export logs and retry.": "Android container stopped before becoming ready; export logs and retry.",
-    "Android readiness probe did not respond; export logs and retry.": "Android readiness probe did not respond; export logs and retry."
+    "Android readiness probe did not respond; export logs and retry.": "Android readiness probe did not respond; export logs and retry.",
+    "在此 Frame 上运行": "Run on this Frame",
+    "远程设备 {0}": "Remote device {0}",
+    "架构": "Architecture"
   }
 }

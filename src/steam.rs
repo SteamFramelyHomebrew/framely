@@ -13,11 +13,17 @@ pub struct App {
     pub remote: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_client: Option<String>,
+    pub remote_targets: Vec<RemoteTarget>,
     pub id: u32,
     pub name: String,
     pub kind: &'static str,
     pub icon: Option<String>,
     pub icon_fit: &'static str,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct RemoteTarget {
+    pub client: String,
+    pub name: String,
 }
 #[derive(Debug)]
 enum Value {
@@ -213,6 +219,7 @@ pub fn discover(home: &Path) -> Vec<App> {
                     id,
                     remote: false,
                     remote_client: None,
+                    remote_targets: Vec::new(),
                     name: name.into(),
                     kind: if text(v, "installdir").is_some_and(|dir| {
                         fs::read_dir(library.join("steamapps/common").join(dir)).is_ok_and(
@@ -320,14 +327,7 @@ fn merge_remote(home: &Path, local: Vec<App>, remote: Vec<remote::RemoteApp>) ->
         home.join(".steam/steam")
     };
     for a in remote {
-        if let Some(existing) = apps.get_mut(&a.id) {
-            // Keep local metadata and a single stable icon, but expose both launch targets.
-            if existing.remote_client.is_none() {
-                existing.remote_client = Some(a.client);
-            }
-            continue;
-        }
-        apps.entry(a.id).or_insert_with(|| {
+        let existing = apps.entry(a.id).or_insert_with(|| {
             let icon = cached_artwork(&steam, a.id);
             App {
                 id: a.id,
@@ -336,9 +336,23 @@ fn merge_remote(home: &Path, local: Vec<App>, remote: Vec<remote::RemoteApp>) ->
                 icon_fit: icon.as_ref().map(|v| v.1).unwrap_or("contain"),
                 icon: icon.map(|v| v.0),
                 remote: true,
-                remote_client: Some(a.client),
+                remote_client: None,
+                remote_targets: Vec::new(),
             }
         });
+        if existing.remote_targets.iter().any(|t| t.client == a.client) {
+            continue;
+        }
+        if existing.remote_client.is_none() {
+            existing.remote_client = Some(a.client.clone());
+        }
+        existing.remote_targets.push(RemoteTarget {
+            client: a.client,
+            name: a.device_name,
+        });
+        existing
+            .remote_targets
+            .sort_by(|a, b| a.name.cmp(&b.name).then(a.client.cmp(&b.client)));
     }
     apps.into_values().collect()
 }
@@ -383,22 +397,26 @@ mod tests {
             icon_fit: "contain",
             remote: false,
             remote_client: None,
+            remote_targets: Vec::new(),
         }];
         let rows = vec![
             remote::RemoteApp {
                 id: 42,
                 name: "Same remote".into(),
                 client: "12".into(),
+                device_name: "Gaming PC".into(),
             },
             remote::RemoteApp {
                 id: 43,
                 name: "Remote".into(),
                 client: "12".into(),
+                device_name: "Gaming PC".into(),
             },
             remote::RemoteApp {
                 id: 43,
                 name: "Other host".into(),
                 client: "13".into(),
+                device_name: "Laptop".into(),
             },
         ];
         let apps = merge_remote(home.path(), local, rows);
@@ -406,6 +424,9 @@ mod tests {
         assert!(!apps[0].remote);
         assert_eq!(apps[0].name, "Local");
         assert_eq!(apps[0].remote_client.as_deref(), Some("12"));
+        assert_eq!(apps[0].remote_targets[0].name, "Gaming PC");
+        assert_eq!(apps[1].remote_targets.len(), 2);
+        assert_eq!(apps[1].remote_targets[1].name, "Laptop");
         assert!(apps[1].remote);
         assert_eq!(apps[1].remote_client.as_deref(), Some("12"));
     }
