@@ -193,3 +193,5 @@ button{overflow-wrap:anywhere}
 
 /* Tint layers preserve the shell alpha; do not add opaque scrolling surfaces. */
 @media(prefers-reduced-transparency:reduce){:root{--bg:#121212;--surface:#1a1a1a;--overlay-bg:#121212;--manager-content-tint:#1a1a1c;--manager-chrome-tint:#202022}}
+
+.manager .shell-header .manager-install-button{min-height:44px;padding:8px 14px;font-size:18px;gap:8px;white-space:nowrap;flex:none}
