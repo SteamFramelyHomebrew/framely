@@ -21,7 +21,7 @@ Steam Frame 的 React 插件管理器：Rust 核心服务、独立 CEF/OpenVR �
 
 ### 安装器安装
 
-从 [Framely Installer 发行下载页](https://github.com/SteamFramelyHomebrew/framely/releases/tag/installer-v0.4.1-preview.9) 下载适合电脑平台的安装器。Linux 提供 `.tar.gz`，Windows 和 macOS 提供 `.zip`。解压并启动安装器，填写 Frame 的 IP 和 SSH 端口，核对 SSH 指纹后使用 `steamos` 账户连接。选择 Framely 版本，再确认安装。安装 Preview 版本时需启用测试版本；安装器与 Frame 本体的版本号相互独立。
+从 [Framely Installer 发行下载页](https://github.com/SteamFramelyHomebrew/framely/releases/tag/installer-v0.4.1-preview.10) 下载适合电脑平台的安装器。Linux 提供 `.tar.gz`，Windows 和 macOS 提供 `.zip`。解压并启动安装器，填写 Frame 的 IP 和 SSH 端口，核对 SSH 指纹后使用 `steamos` 账户连接。选择 Framely 版本，再确认安装。安装 Preview 版本时需启用测试版本；安装器与 Frame 本体的版本号相互独立。
 
 ### 命令安装
 
@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/i
 安装 Preview 时指定实际已发布的标签：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install --version v0.4.5-preview.1
+curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install --version v0.4.5-preview.2
 ```
 
 将示例标签替换为需要安装的已发布版本，并在提示时输入 sudo 密码。更新、修复和卸载步骤见[安装指南](docs/zh-CN/user-guide/installation.md)。

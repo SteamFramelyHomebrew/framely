@@ -64,7 +64,7 @@ FRAMELY_INSTALLER_PREVIEW_DIR=installer/dist/previews installer/target/debug/fra
 
 Preview requires an available GPU or software Vulkan renderer. Default release builds do not include preview support.
 
-Installer versions are managed independently in this directory's `Cargo.toml` and `Cargo.lock`. Pushing an `installer-v<VERSION>` tag (currently `installer-v0.4.1-preview.9`) triggers `.github/workflows/installer-release.yml` to build and publish only the installer. The core uses `v<VERSION>` tags and a separate workflow. Manual Actions runs produce build artifacts only. Installer releases do not become the repository's Latest release, preserving Frame's default install/update URLs.
+Installer versions are managed independently in this directory's `Cargo.toml` and `Cargo.lock`. Pushing an `installer-v<VERSION>` tag (currently `installer-v0.4.1-preview.10`) triggers `.github/workflows/installer-release.yml` to build and publish only the installer. The core uses `v<VERSION>` tags and a separate workflow. Manual Actions runs produce build artifacts only. Installer releases do not become the repository's Latest release, preserving Frame's default install/update URLs.
 
 Actions builds Linux x64/ARM64, Windows x64, and macOS Intel/Apple Silicon. macOS produces an `.app` ZIP, Windows an EXE ZIP, and Linux a tar.gz. Apple notarization and Windows code signing are not configured; verify first-launch behavior on each system before publishing.
 

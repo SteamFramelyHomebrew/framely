@@ -21,7 +21,7 @@ The target device is a Linux ARM64 Steam Frame. Enable developer mode and SSH on
 
 ### Desktop installer
 
-Download the package for your computer from the [Framely Installer release](https://github.com/SteamFramelyHomebrew/framely/releases/tag/installer-v0.4.1-preview.9). Linux packages are `.tar.gz`; Windows and macOS packages are `.zip`. Extract and launch the installer, enter the Frame IP and SSH port, verify the SSH fingerprint, and connect with the `steamos` account. Select the Framely version, then confirm installation. Enable testing releases to install a Preview version. Installer and device versions are independent.
+Download the package for your computer from the [Framely Installer release](https://github.com/SteamFramelyHomebrew/framely/releases/tag/installer-v0.4.1-preview.10). Linux packages are `.tar.gz`; Windows and macOS packages are `.zip`. Extract and launch the installer, enter the Frame IP and SSH port, verify the SSH fingerprint, and connect with the `steamos` account. Select the Framely version, then confirm installation. Enable testing releases to install a Preview version. Installer and device versions are independent.
 
 ### Command installation
 
@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/i
 For a Preview release, specify an actual published tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install --version v0.4.5-preview.1
+curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install --version v0.4.5-preview.2
 ```
 
 Replace the example tag with the published version you want to install. Enter the sudo password when prompted. See the [installation guide](docs/user-guide/installation.md) for updates, repair, and uninstallation.
