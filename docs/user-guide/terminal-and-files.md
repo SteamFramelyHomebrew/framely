@@ -63,3 +63,7 @@ Select an image or video to preview it. PNG, JPEG, GIF, WebP, AVIF, BMP, MP4, We
 ## Access and privacy
 
 Terminal, file and transfer routes use the existing authenticated manager connection and port. Mutating routes and the terminal WebSocket require an exact matching Origin; plugin sandboxes cannot use them. The service runs as the configured Steam user, independently of the root daemon. Preview/download content is read only after explicit selection. Test media are generated fixtures; Framely does not automatically read or upload Arcturus recordings.
+
+## Diagnostic export
+
+**Settings → General → Export logs** and the installer’s **Export logs** use the same collector. The archive includes recent APK operation logs, Lepton’s saved Android logs, and a limited snapshot of running containers: Android boot, user unlock, storage mounting, PackageManager readiness and recent main/system/crash logs. Rootless containers are inspected as the configured Steam session user. Stopped containers are not started. App state is summarized without tokens or icons; APK files, saves, media and raw memory dumps are excluded. File and archive limits retain recent output; missing sources, truncation and command timeouts are listed in `report.json`. Logs can contain application information; review before sharing.

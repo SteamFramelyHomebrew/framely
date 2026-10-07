@@ -499,7 +499,6 @@
     "日志已保存到：{0}": "Logs saved to: {0}",
     "日志包已生成，请查看浏览器下载。": "Log archive created. Check your browser downloads.",
     "日志包缺少数据": "Log archive data is missing",
-    "导出本体、插件和渲染日志及服务状态，不包含插件配置和访问密码文件。": "Export Framely, plugin and renderer logs with service status. Plugin settings and access password files are excluded.",
     "发现可用发行版本": "Release available",
     "稍后": "Later",
     "全部包含的分类": "Categories included in All",
@@ -968,6 +967,7 @@
     "振动反馈": "Haptic feedback",
     "提示音反馈": "Sound feedback",
     "指向可交互控件时振动，不影响 APK 游戏振动。": "Vibrate when pointing at interactive controls. APK game rumble is unaffected.",
-    "使用 Steam 提示音反馈聚焦和点击。": "Use Steam sounds for focus and clicks."
+    "使用 Steam 提示音反馈聚焦和点击。": "Use Steam sounds for focus and clicks.",
+    "导出本体、插件、渲染及 APK/Lepton 日志和服务状态，不包含插件配置和访问密码文件。": "Export Framely, plugin, renderer and APK/Lepton logs with service status. Plugin settings and access password files are excluded."
   }
 }
