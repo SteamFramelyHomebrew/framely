@@ -7,7 +7,7 @@ export async function uploadFile(file:Pick<File,'size'|'slice'>,signal:AbortSign
  try{
   signal.throwIfAborted();const start=await transport.start(file.size);ticket=start.upload;
   signal.throwIfAborted();
-  if(!Number.isSafeInteger(start.chunkSize)||start.chunkSize<=0||start.chunkSize>4*1024*1024)throw new Error('Invalid upload chunk size');
+  if(!Number.isSafeInteger(start.chunkSize)||start.chunkSize<=0||start.chunkSize>16*1024*1024)throw new Error('Invalid upload chunk size');
   const worker=async()=>{
    try{
     while(nextOffset<file.size){

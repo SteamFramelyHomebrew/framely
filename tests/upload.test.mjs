@@ -4,10 +4,10 @@ import {build} from 'esbuild';
 const result=await build({entryPoints:['ui/src/upload.ts'],bundle:true,write:false,platform:'node',format:'esm'});
 const {uploadFile}=await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].contents).toString('base64'));
 test('250 MiB selection uses bounded blobs and never reads the entire file',async()=>{
- const size=250*1024*1024,chunk=4*1024*1024;let received=0,calls=0,last=0,nextOffset=0;
+ const size=250*1024*1024,chunk=16*1024*1024;let received=0,calls=0,last=0,nextOffset=0;
  const file={size,arrayBuffer(){throw Error('whole file read');},slice(start,end){assert.equal(start,nextOffset);nextOffset+=chunk;return new Blob([new Uint8Array(Math.min(end,size)-start)]);}};
  const id=await uploadFile(file,new AbortController().signal,p=>last=p,{start:async n=>{assert.equal(n,size);return {upload:'ticket',chunkSize:chunk};},chunk:async(id,offset,blob)=>{assert.equal(id,'ticket');assert.equal(offset,received);assert.ok(blob.size<=chunk);received+=blob.size;calls++;},abort:async()=>assert.fail('unexpected abort')});
- assert.equal(id,'ticket');assert.equal(received,size);assert.equal(calls,63);assert.equal(last,100);
+ assert.equal(id,'ticket');assert.equal(received,size);assert.equal(calls,16);assert.equal(last,100);
 });
 test('cancellation stops scheduling new chunks and clears the upload',async()=>{
  const controller=new AbortController();let calls=0,aborted='';
@@ -15,7 +15,7 @@ test('cancellation stops scheduling new chunks and clears the upload',async()=>{
  assert.equal(calls,4);assert.equal(aborted,'partial');
 });
 test('invalid server chunk size and failed requests clean up uploads',async()=>{
- for(const chunkSize of [0,8*1024*1024,1]){let aborted=false;await assert.rejects(uploadFile({size:2,slice:()=>new Blob(['a'])},new AbortController().signal,()=>{},{start:async()=>({upload:'partial',chunkSize}),chunk:async()=>{throw Error('network');},abort:async()=>{aborted=true;}}));assert.ok(aborted);}
+ for(const chunkSize of [0,16*1024*1024+1,1]){let aborted=false;await assert.rejects(uploadFile({size:2,slice:()=>new Blob(['a'])},new AbortController().signal,()=>{},{start:async()=>({upload:'partial',chunkSize}),chunk:async()=>{throw Error('network');},abort:async()=>{aborted=true;}}));assert.ok(aborted);}
 });
 
 test('four workers allow out-of-order completion with monotonic acknowledged progress',async()=>{

@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-pub const CHUNK: usize = 4 * 1024 * 1024;
+pub const CHUNK: usize = 16 * 1024 * 1024;
 #[derive(Clone, Default)]
 pub struct Uploads(Arc<Mutex<Option<Upload>>>);
 struct Upload {
