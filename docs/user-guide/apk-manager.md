@@ -97,17 +97,31 @@ In **Manage app → Advanced settings → Window orientation**, choose **Automat
 
 Moonlight V+ 12.12.12’s connection-creation screen currently crashes on the tested Lepton build because Android’s clipboard service is absent. This is distinct from the window-startup failure. Framely does not modify or re-sign the APK; a compatible Lepton runtime or an app-side fallback is required.
 
-### Optional Frame gamepad input
+### Optional gamepad input
 
-**APK → Apps → Frame gamepad input** is off by default, including after upgrading an existing installation. Enable it to use the two Frame controllers as one standard Android gamepad for APKs opened through Framely. It includes ABXY, the D-pad and diagonals, both sticks and stick clicks, shoulder buttons, analog triggers, Select and Start. Applications must support Android gamepad input; this does not map controls to touchscreen gestures or provide Android VR controller tracking or vibration.
+**APK → Settings → Gamepad input** is off by default, including after upgrading an existing installation. Enable it to forward Steam Input as a standard Android gamepad for APKs opened through Framely. Steam Input is the default source and follows Steam’s controller configurations, including external controllers recognized by Steam. **Frame direct** retains the original OpenVR bindings for compatibility. Close and restart a container to change its source. It includes ABXY, the D-pad and diagonals, both sticks and stick clicks, shoulder buttons, analog triggers, Select and Start. Applications must support Android gamepad input; this does not map controls to touchscreen gestures or provide Android VR controller tracking; supported games can request gamepad rumble.
 
 Enabling applies on the next application launch. Framely may restart its container to attach the input device, stopping other apps in that container. Disabling stops forwarding immediately. Only one Framely-launched APK receives input at a time. Switching apps, closing an app, transient process-query failures and foreground changes neutralize input without removing the virtual pad. Each running container retains its device for reuse; container stop, disabling the feature or session-service restart releases it. After a service restart, launch the APK again to reconnect. Keep the intended Android window selected in Dock; the bridge does not change Steam's physical-controller bindings.
 
-The bridge runs as the Steam session user and requires access to `/dev/uinput`, active SteamVR and the supported Lepton startup hooks. It does not modify Steam's installed Lepton files. Only its virtual event node is mounted into the target container, where Android claims it exclusively. If this claim fails, no input is forwarded and the launch reports an error. Disable the option to use the normal launch path. Bridge errors are recorded in `~/.local/share/framely/apk-manager/logs/gamepad.log`; key presses are not logged. The native helper and Android adapter ship in both offline and core update packages.
+The bridge runs as the Steam session user and requires access to `/dev/uinput`, active SteamVR and the supported Lepton startup hooks. It does not modify Steam's installed Lepton files. Only its virtual event node and read-only Android key layout are mounted into the target container, where Android claims it exclusively. If this claim fails, no input is forwarded and the launch reports an error. Disable the option to use the normal launch path. Bridge errors are recorded in `~/.local/share/framely/apk-manager/logs/gamepad.log`; key presses are not logged. The native helper and Android adapter ship in both offline and core update packages.
 
 Native Steam launches select the input target before startup acknowledgement. Forwarding begins only after Android claims the virtual device and the target application becomes foreground. Each container's helper has its own temporary SteamVR identity, so another helper cannot replace its registration. Returning to an already running application reselects its input target.
 
 When this option is enabled, launch APKs through the management panel or launcher. A one-shot CLI launch cannot own the persistent input bridge and reports an error instead. For read-only diagnostics, run `framely apk input-status '{"app":"CONTEXT/PACKAGE"}'` as the Steam session user. It reports Android process, foreground and lifecycle status without input events or Steam tokens; it does not prove that the application handles gamepad events.
+
+**Gamepad rumble** can be disabled independently and takes effect immediately. Linux `FF_RUMBLE` effects are acknowledged and sent back to the current source controller. Input source changes, Android foreground loss, disconnects and bridge shutdown stop feedback; stale effects are not resumed. Rumble intensity is capped at half strength and each request at ten seconds. Games must use Android gamepad vibration; phone vibration and Android VR haptics are not forwarded.
+
+Steam Input loads SDL3 from Steam’s bundled ARM64 runtime and reads Steam’s virtual gamepads, never the physical devices directly. Framely’s output has a distinct device identity and is excluded to prevent a feedback loop. If the Steam runtime is unavailable, launch reports an error; choose Frame direct explicitly instead of silently bypassing Steam’s mappings. With multiple source controllers, the most recently active controller supplies input and receives rumble; they are not merged.
+
+### 可选手柄输入
+
+**APK → 设置 → 手柄输入**默认关闭，旧配置升级也保持关闭。开启后默认使用 Steam Input，沿用 Steam 的手柄配置，支持 Frame 手柄及 Steam 已识别的外接手柄。可选择 **Frame 直连（兼容模式）**保留原有 OpenVR 输入。切换来源需关闭容器后重新启动；关闭输入立即生效。
+
+支持 ABXY、十字键及斜向、双摇杆及按压、肩键、模拟扳机、Select 与 Start；应用必须原生支持 Android 游戏手柄，不模拟触摸或 VR 控制器追踪。同时仅一个目标 APK 接收输入，Android 前台状态丢失、查询失败时清零，但保留虚拟设备以便恢复。
+
+**手柄震动**可独立关闭并立即生效。支持游戏请求的 `FF_RUMBLE`，回传给当前输入手柄；切换来源、失去 Android 前台状态、断连或退出时停止，不恢复旧效果。强度上限为一半，单次请求最长十秒；不转发手机振动或 Android VR 触觉。多个手柄以最近产生有效输入的手柄为来源，不合并输入。
+
+桥接以 Steam 会话用户运行，使用 Steam 随附的 ARM64 SDL3，仅读取 Steam 虚拟手柄。Framely 输出设备使用独立标识并排除自身，避免反馈循环。仅把专用事件节点及只读按键布局挂载进容器，不修改系统或 Steam 安装文件。SDL3 不可用时明确报错，可手动选择 Frame 直连。日志位于 `~/.local/share/framely/apk-manager/logs/gamepad.log`，不记录按键。APK 必须从管理面板或启动台启动，单次 CLI 不能持有持续桥接。
 
 ## Container lifecycle
 

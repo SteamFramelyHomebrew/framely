@@ -77,6 +77,14 @@
     {
       "name": "/actions/framely_gamepad/in/right_stickclick",
       "type": "boolean"
+    },
+    {
+      "name": "/actions/framely_gamepad/out/left_haptic",
+      "type": "vibration"
+    },
+    {
+      "name": "/actions/framely_gamepad/out/right_haptic",
+      "type": "vibration"
     }
   ],
   "default_bindings": [

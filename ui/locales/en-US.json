@@ -933,6 +933,14 @@
     "Remote game or host is no longer available": "The remote game or host is no longer available. Check the computer connection and try again.",
     "Steam UI operation failed": "Steam UI operation failed. Keep Steam awake and try again.",
     "选择启动方式": "Choose how to launch",
-    "本机启动": "Launch locally"
+    "本机启动": "Launch locally",
+    "手柄输入": "Gamepad input",
+    "默认关闭。通过 Steam Input 将手柄转发为 Android 标准游戏手柄；也可选择 Frame 直连。开启后下次打开 APK 生效，关闭立即停止输入。": "Off by default. Forward Steam Input as a standard Android gamepad, or select Frame direct input. Enabling applies on the next APK launch; disabling stops input immediately.",
+    "手柄输入来源": "Input source",
+    "Steam Input（推荐）": "Steam Input (recommended)",
+    "Frame 直连（兼容模式）": "Frame direct (compatibility)",
+    "来源切换需关闭容器后重新启动。Steam Input 使用 Steam 的手柄配置，并支持 Steam 已识别的外接手柄。": "Close and restart the container to change sources. Steam Input uses Steam controller configurations and supports external controllers recognized by Steam.",
+    "手柄震动": "Gamepad rumble",
+    "将游戏的手柄震动反馈回传给当前输入手柄；应用失去 Android 前台状态或手柄断连时停止。": "Send game rumble to the current source controller; stop when the app loses Android foreground status or the controller disconnects."
   }
 }

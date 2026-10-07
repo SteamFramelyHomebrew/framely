@@ -16,6 +16,7 @@ pub struct Mount {
     pub token: String,
     pub event: PathBuf,
     pub grab: PathBuf,
+    pub layout: PathBuf,
     pub ready: PathBuf,
 }
 struct Bridge {
@@ -85,6 +86,16 @@ pub fn stop() {
     bridges.active = None;
     bridges.contexts.clear();
 }
+pub fn set_rumble_enabled(enabled: bool) {
+    let mut bridges = BRIDGE.lock().unwrap();
+    for bridge in bridges.contexts.values_mut() {
+        let _ = writeln!(
+            bridge.input,
+            "{}",
+            if enabled { "rumble-on" } else { "rumble-off" }
+        );
+    }
+}
 pub fn stop_context(context: &str) {
     let mut bridges = BRIDGE.lock().unwrap();
     if bridges.active.as_deref() == Some(context) {
@@ -118,7 +129,11 @@ pub fn current(context: &str) -> Option<Mount> {
     }
     bridges.contexts.get(context).map(|b| b.mount.clone())
 }
-pub fn prepare(storage: &Path, context: &str) -> Result<Mount> {
+pub fn prepare(storage: &Path, context: &str, source: &str, rumble: bool) -> Result<Mount> {
+    ensure!(
+        matches!(source, "steam" | "frame"),
+        "Invalid gamepad input source"
+    );
     ensure!(SESSION.load(std::sync::atomic::Ordering::Relaxed),"Gamepad launch requires the UI session; open the APK from the management panel or launcher");
     ensure!(
         unsafe { libc::geteuid() } != 0,
@@ -146,8 +161,9 @@ pub fn prepare(storage: &Path, context: &str) -> Result<Mount> {
     let helper = distribution.join("lib/openvr/framely-gamepad");
     let grab = distribution.join("lib/openvr/libframely-gamepad-grab.so");
     let manifest = distribution.join("share/input/gamepad/actions.json");
+    let layout = distribution.join("share/input/gamepad/Vendor_0001_Product_f001.kl");
     ensure!(
-        helper.is_file() && grab.is_file() && manifest.is_file(),
+        helper.is_file() && grab.is_file() && manifest.is_file() && layout.is_file(),
         "Gamepad input runtime is missing; install a complete Framely build"
     );
     let token = hex::encode(rand::random::<[u8; 16]>());
@@ -170,7 +186,23 @@ pub fn prepare(storage: &Path, context: &str) -> Result<Mount> {
         .create(true)
         .mode(0o600)
         .open(storage.join("logs/gamepad.log"))?;
+    let home = crate::steam::home()?;
+    let steam = if home.join(".local/share/Steam").exists() {
+        home.join(".local/share/Steam")
+    } else {
+        home.join(".steam/steam")
+    };
     let mut child = Command::new(helper)
+        .env("FRAMELY_GAMEPAD_SOURCE", source)
+        .env("FRAMELY_GAMEPAD_RUMBLE", if rumble { "1" } else { "0" })
+        .env(
+            "FRAMELY_STEAM_SDL_LIBRARY",
+            steam.join("steamrtarm64/libSDL3.so.0"),
+        )
+        .env(
+            "FRAMELY_STEAM_GAMEPAD_INFO",
+            steam.join("config/virtualgamepadinfo.txt"),
+        )
         .arg(manifest)
         .arg(&app_manifest)
         .arg(&app_key)
@@ -200,6 +232,7 @@ pub fn prepare(storage: &Path, context: &str) -> Result<Mount> {
             token,
             event: PathBuf::new(),
             grab,
+            layout,
             ready,
         },
         child,
@@ -337,6 +370,7 @@ mod tests {
                 token: "same-device".into(),
                 event: PathBuf::from("/dev/input/event999"),
                 grab: PathBuf::new(),
+                layout: PathBuf::new(),
                 ready: directory.path().into(),
             },
             child,

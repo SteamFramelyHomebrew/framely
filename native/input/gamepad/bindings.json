@@ -154,6 +154,16 @@
             }
           }
         }
+      ],
+      "haptics": [
+        {
+          "path": "/user/hand/left/output/haptic",
+          "output": "/actions/framely_gamepad/out/left_haptic"
+        },
+        {
+          "path": "/user/hand/right/output/haptic",
+          "output": "/actions/framely_gamepad/out/right_haptic"
+        }
       ]
     }
   }

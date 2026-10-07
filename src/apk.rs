@@ -85,6 +85,10 @@ struct Database {
     stop_container_on_close: bool,
     #[serde(default)]
     gamepad_enabled: bool,
+    #[serde(default = "gamepad_source_default")]
+    gamepad_source: String,
+    #[serde(default = "close_container_default")]
+    gamepad_rumble: bool,
     #[serde(default)]
     owned_contexts: Vec<String>,
     #[serde(default)]
@@ -101,6 +105,8 @@ impl Default for Database {
             auto_stop_container: false,
             stop_container_on_close: true,
             gamepad_enabled: false,
+            gamepad_source: gamepad_source_default(),
+            gamepad_rumble: true,
             owned_contexts: Vec::new(),
             root_contexts: BTreeMap::new(),
             roots: Vec::new(),
@@ -134,6 +140,9 @@ struct App {
     activity: Option<String>,
     show_window: Option<bool>,
     orientation: Option<String>,
+}
+fn gamepad_source_default() -> String {
+    "steam".into()
 }
 fn close_container_default() -> bool {
     true
@@ -878,7 +887,7 @@ pub fn list(home: &Path) -> Result<Value> {
         }
     }
     Ok(
-        json!({"apps":apps.iter().map(|a| { let mut v=serde_json::to_value(a).unwrap(); v["steamLaunch"]=json!(db.records.get(&a.id).is_none_or(steam_shortcuts::wanted)); v["steamRegistered"]=json!(db.records.get(&a.id).is_some_and(|r|r.steam_launch));v["steamRegistrationError"]=json!(db.records.get(&a.id).and_then(|r|r.steam_registration_error.as_ref())); v }).collect::<Vec<_>>(),"containers":cs.iter().map(|c| { let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(false); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"retainSteamEntries":db.retain_steam_entries,"gamepadEnabled":db.gamepad_enabled,"autoStopContainer":db.auto_stop_container,"stopContainerOnClose":db.stop_container_on_close}),
+        json!({"apps":apps.iter().map(|a| { let mut v=serde_json::to_value(a).unwrap(); v["steamLaunch"]=json!(db.records.get(&a.id).is_none_or(steam_shortcuts::wanted)); v["steamRegistered"]=json!(db.records.get(&a.id).is_some_and(|r|r.steam_launch));v["steamRegistrationError"]=json!(db.records.get(&a.id).and_then(|r|r.steam_registration_error.as_ref())); v }).collect::<Vec<_>>(),"containers":cs.iter().map(|c| { let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(false); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"retainSteamEntries":db.retain_steam_entries,"gamepadEnabled":db.gamepad_enabled,"gamepadSource":db.gamepad_source,"gamepadRumble":db.gamepad_rumble,"autoStopContainer":db.auto_stop_container,"stopContainerOnClose":db.stop_container_on_close}),
     )
 }
 pub fn launcher(home: &Path) -> Vec<Value> {
@@ -1189,6 +1198,9 @@ if [[ -n "${FRAMELY_GAMEPAD_EVENT:-}" ]]; then
         framely_original_gamepad_mounts "$@"
         podman_mount_entry "${FRAMELY_GAMEPAD_EVENT:?}" /dev/input/event250 rw
         podman_mount_entry "${FRAMELY_GAMEPAD_GRAB:?}" /vendor/lib64/libframely_gamepad_grab.so ro
+        if [[ -n "${FRAMELY_GAMEPAD_LAYOUT:-}" ]]; then
+            podman_mount_entry "$FRAMELY_GAMEPAD_LAYOUT" /system/usr/keylayout/Vendor_0001_Product_f001.kl ro
+        fi
         podman_mount_entry "${FRAMELY_GAMEPAD_READY:?}" /framely-gamepad-ready rw
     }
     eval "$(declare -f generate_zygote_launch_rc | sed '1s/generate_zygote_launch_rc/framely_original_gamepad_zygote/')"
@@ -1358,6 +1370,7 @@ fn start_oriented_container(
     if let Some(mount) = gamepad {
         cmd.env("FRAMELY_GAMEPAD_EVENT", &mount.event)
             .env("FRAMELY_GAMEPAD_GRAB", &mount.grab)
+            .env("FRAMELY_GAMEPAD_LAYOUT", &mount.layout)
             .env("FRAMELY_GAMEPAD_READY", &mount.ready)
             .env("FRAMELY_GAMEPAD_TOKEN", &mount.token);
     }
@@ -2297,9 +2310,29 @@ fn operate_internal(
             }
             "gamepad.settings" => {
                 let enabled = p["enabled"].as_bool().context("Invalid gamepad setting")?;
+                let source = if let Some(value) = p.get("source") {
+                    value.as_str().context("Invalid gamepad input source")?
+                } else {
+                    &db.gamepad_source
+                }
+                .to_owned();
+                ensure!(
+                    matches!(source.as_str(), "steam" | "frame"),
+                    "Invalid gamepad input source"
+                );
+                let rumble = if p.get("rumble").is_some() {
+                    p["rumble"]
+                        .as_bool()
+                        .context("Invalid gamepad rumble setting")?
+                } else {
+                    db.gamepad_rumble
+                };
                 cancel.commit(|| {
                     db.gamepad_enabled = enabled;
+                    db.gamepad_source = source;
+                    db.gamepad_rumble = rumble;
                     save(home, &db)?;
+                    crate::gamepad::set_rumble_enabled(rumble);
                     if !enabled {
                         crate::gamepad::stop();
                     }
@@ -2611,7 +2644,12 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                                 }
                             }
                             let gamepad = if db.gamepad_enabled {
-                                Some(crate::gamepad::prepare(&root(home), &c.name)?)
+                                Some(crate::gamepad::prepare(
+                                    &root(home),
+                                    &c.name,
+                                    &db.gamepad_source,
+                                    db.gamepad_rumble,
+                                )?)
                             } else {
                                 None
                             };
@@ -3148,8 +3186,38 @@ mod tests {
         )
         .is_err());
         assert!(!load(home).unwrap().gamepad_enabled);
+        for source in ["frame", "steam"] {
+            operate(
+                home,
+                "gamepad.settings",
+                &json!({"enabled":false,"source":source,"rumble":false}),
+                Cancellation::default(),
+                Arc::new(|_| {}),
+            )
+            .unwrap();
+            let saved = load(home).unwrap();
+            assert_eq!(saved.gamepad_source, source);
+            assert!(!saved.gamepad_rumble);
+        }
+        for invalid in [
+            json!({"enabled":true,"source":"physical"}),
+            json!({"enabled":true,"source":7}),
+            json!({"enabled":true,"rumble":"yes"}),
+        ] {
+            assert!(operate(
+                home,
+                "gamepad.settings",
+                &invalid,
+                Cancellation::default(),
+                Arc::new(|_| {})
+            )
+            .is_err());
+            assert!(!load(home).unwrap().gamepad_enabled);
+        }
         fs::write(root(home).join("state.json"), "{\"records\":{}}").unwrap();
         assert!(!load(home).unwrap().gamepad_enabled);
+        assert_eq!(load(home).unwrap().gamepad_source, "steam");
+        assert!(load(home).unwrap().gamepad_rumble);
     }
     #[test]
     fn gamepad_foreground_does_not_match_another_package() {
@@ -3217,13 +3285,16 @@ setup_props
             .env("TEST_MOUNTS", dir.path().join("mounts"))
             .env("FRAMELY_GAMEPAD_EVENT", "/dev/input/event17")
             .env("FRAMELY_GAMEPAD_GRAB", "/runtime/grab.so")
+            .env("FRAMELY_GAMEPAD_LAYOUT", "/runtime/gamepad.kl")
             .env("FRAMELY_GAMEPAD_READY", "/private/gamepad")
             .env("FRAMELY_GAMEPAD_TOKEN", "token")
             .status()
             .unwrap();
         assert!(status.success());
         let mounts = fs::read_to_string(dir.path().join("mounts")).unwrap();
-        assert_eq!(mounts.lines().count(), 3);
+        assert_eq!(mounts.lines().count(), 4);
+        assert!(mounts
+            .contains("/runtime/gamepad.kl|/system/usr/keylayout/Vendor_0001_Product_f001.kl|ro"));
         assert!(mounts.contains("/dev/input/event17|/dev/input/event250|rw"));
         assert!(!mounts.contains("/dev/input|"));
         assert!(fs::read_to_string(dir.path().join("init.zygote64.rc"))
