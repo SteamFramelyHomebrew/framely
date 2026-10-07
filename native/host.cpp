@@ -169,6 +169,32 @@ static std::vector<uint8_t> dock_icon(bool hover,bool active,float progress=0){
  for(int row=0;row<dock_canvas_height;row++)std::copy_n(source.data()+row*128*4,128*4,canvas.data()+(row*dock_canvas_width+dock_icon_left)*4);
  return canvas;
 }
+// Keep texture storage alive while OpenVR samples the preceding frame. Raw
+// overlay replacement during a hold can disturb the image and hover target.
+struct DockIconTexture {
+ GLuint textures[2]{};int slot=0;
+ void init(){
+  glGenTextures(2,textures);
+  for(auto texture:textures){
+   glBindTexture(GL_TEXTURE_2D,texture);
+   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+   glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,dock_canvas_width,dock_canvas_height,0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
+  }
+ }
+ bool submit(vr::VROverlayHandle_t overlay,const std::vector<uint8_t>& pixels){
+  glXMakeContextCurrent(xdisplay,glsurface,glsurface,glcontext);
+  const int next=1-slot;glBindTexture(GL_TEXTURE_2D,textures[next]);
+  glPixelStorei(GL_UNPACK_ALIGNMENT,4);glPixelStorei(GL_UNPACK_ROW_LENGTH,0);
+  glPixelStorei(GL_UNPACK_SKIP_PIXELS,0);glPixelStorei(GL_UNPACK_SKIP_ROWS,0);
+  glTexSubImage2D(GL_TEXTURE_2D,0,0,0,dock_canvas_width,dock_canvas_height,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());
+  glFinish();vr::Texture_t texture{reinterpret_cast<void*>(uintptr_t(textures[next])),vr::TextureType_OpenGL,vr::ColorSpace_Auto};
+  const auto error=overlays->SetOverlayTexture(overlay,&texture);glFlush();
+  if(error){std::cerr<<"Dock texture submission failed "<<error<<"\n";return false;}
+  slot=next;return true;
+ }
+ void destroy(){glDeleteTextures(2,textures);}
+};
 static vr::VROverlayHandle_t active_main_window(){
  static auto refreshed=std::chrono::steady_clock::time_point{};static vr::VROverlayHandle_t selected=0;
  auto now=std::chrono::steady_clock::now();if(now-refreshed<std::chrono::milliseconds(500)&&selected&&overlays->IsActiveDashboardOverlay(selected))return selected;
@@ -547,7 +573,7 @@ int main(int argc,char** argv){
   auto* frame=v->browser->get_main_frame(v->browser);execute(frame,"window.dispatchEvent(new CustomEvent('framely.fileDialog',{detail:"+json({{"id",v->file_dialog_id},{"multiple",v->file_multiple},{"directory",v->file_directory},{"accept",accept},{"defaultPath",default_path?text(default_path):std::string{}}}).dump()+"}))");frame->base.release(&frame->base);return 1;
  };
  client.api.get_dialog_handler=[](cef_client_t*){return dialog_handler.acquire();};client.api.get_render_handler=[](cef_client_t*){return render_handler.acquire();};client.api.get_life_span_handler=[](cef_client_t*){return life_handler.acquire();};client.api.get_display_handler=[](cef_client_t*){return display_handler.acquire();};client.api.get_request_handler=[](cef_client_t*){return request_handler.acquire();};
- vr::VROverlayHandle_t button=0;auto err=overlays->CreateOverlay("framely.dock.button","Framely",&button);if(err){cef_shutdown();vr::VR_Shutdown();return 6;}auto pixels=dock_icon(false,false);overlays->SetOverlayRaw(button,pixels.data(),dock_canvas_width,dock_canvas_height,4);overlays->SetOverlayInputMethod(button,vr::VROverlayInputMethod_Mouse);vr::HmdVector2_t scale{{dock_canvas_width,dock_canvas_height}};overlays->SetOverlayMouseScale(button,&scale);vr::VROverlayIntersectionMaskPrimitive_t mask{};mask.m_nPrimitiveType=vr::OverlayIntersectionPrimitiveType_Rectangle;mask.m_Primitive.m_Rectangle={dock_icon_left,0,128,128};if(overlays->SetOverlayIntersectionMask(button,&mask,1)){std::cerr<<"Dock input mask unavailable\n";overlays->DestroyOverlay(button);cef_shutdown();vr::VR_Shutdown();return 6;}overlays->SetOverlayFlag(button,vr::VROverlayFlags_VisibleInDashboard,true);overlays->SetOverlayFlag(button,vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,true);overlays->SetOverlayFlag(button,vr::VROverlayFlags_SortWithNonSceneOverlays,false);overlays->SetOverlaySortOrder(button,0);overlays->SetOverlayFlag(button,vr::VROverlayFlags_HideLaserIntersection,false);
+ vr::VROverlayHandle_t button=0;auto err=overlays->CreateOverlay("framely.dock.button","Framely",&button);if(err){cef_shutdown();vr::VR_Shutdown();return 6;}auto pixels=dock_icon(false,false);DockIconTexture icon_texture;icon_texture.init();if(!icon_texture.submit(button,pixels)){icon_texture.destroy();overlays->DestroyOverlay(button);cef_shutdown();vr::VR_Shutdown();return 6;}overlays->SetOverlayInputMethod(button,vr::VROverlayInputMethod_Mouse);vr::HmdVector2_t scale{{dock_canvas_width,dock_canvas_height}};overlays->SetOverlayMouseScale(button,&scale);vr::VROverlayIntersectionMaskPrimitive_t mask{};mask.m_nPrimitiveType=vr::OverlayIntersectionPrimitiveType_Rectangle;mask.m_Primitive.m_Rectangle={dock_icon_left,0,128,128};if(overlays->SetOverlayIntersectionMask(button,&mask,1)){std::cerr<<"Dock input mask unavailable\n";overlays->DestroyOverlay(button);icon_texture.destroy();cef_shutdown();vr::VR_Shutdown();return 6;}overlays->SetOverlayFlag(button,vr::VROverlayFlags_VisibleInDashboard,true);overlays->SetOverlayFlag(button,vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,true);overlays->SetOverlayFlag(button,vr::VROverlayFlags_SortWithNonSceneOverlays,false);overlays->SetOverlaySortOrder(button,0);overlays->SetOverlayFlag(button,vr::VROverlayFlags_HideLaserIntersection,false);
  try{create_view("menu","Framely",initial,false,600,840);}catch(const std::exception& e){std::cerr<<e.what()<<"\n";running=0;}
  std::thread poller([port]{int failures=0;json last_gaze;bool gaze_loaded=false;while(running){try{auto data=poll_http(port);notification_badge_count.store(data.value("notificationBadge",0u));launcher_prioritize_ui.store(data.value("launcher",json::object()).value("prioritizeUi",true));std::lock_guard<std::mutex> lock(queue_mutex);auto calibration=data.value("gazeCalibration",json(nullptr));if(!gaze_loaded||calibration!=last_gaze){queue.push_back({{"kind","gaze.correction"},{"calibration",calibration}});last_gaze=calibration;gaze_loaded=true;}for(const auto& c:data.at("commands")){if(queue.size()<256)queue.push_back(c);}failures=0;}catch(const std::exception& e){if(++failures>=10){std::cerr<<"Agent connection lost: "<<e.what()<<"\n";running=0;}}std::this_thread::sleep_for(std::chrono::milliseconds(100));}});
  std::thread priority_worker([]{LauncherPriority priority;while(running){priority.update(launcher_priority_active.load());std::this_thread::sleep_for(std::chrono::milliseconds(100));}});
@@ -664,11 +690,11 @@ int main(int argc,char** argv){
    close_keyboard(false);
   }
   for(auto i=views.begin();i!=views.end();){auto& v=*i->second;if(v.closed){overlays->ClearOverlayTexture(v.overlay);overlays->DestroyOverlay(v.overlay);if(v.thumbnail)overlays->DestroyOverlay(v.thumbnail);glDeleteTextures(2,v.textures);i=views.erase(i);}else ++i;}
-  bool hovered=anchor_ok&&overlays->IsHoverTargetOverlay(button);if(hovered&&!icon_hover)hover_haptic(button,button_haptic_at);const auto badge=notification_badge_count.load();const int progress=std::lround(entry_hold.progress(now)*120);if(icon_progress!=progress||icon_active!=(menu_open||launcher_open)||icon_hover!=hovered||icon_badge!=badge){icon_progress=progress;icon_badge=badge;icon_active=menu_open||launcher_open;pixels=dock_icon(hovered,icon_active,progress/120.f);overlays->SetOverlayRaw(button,pixels.data(),dock_canvas_width,dock_canvas_height,4);}icon_hover=hovered;
+  bool hovered=anchor_ok&&(entry_hold.pressed||overlays->IsHoverTargetOverlay(button));if(hovered&&!icon_hover)hover_haptic(button,button_haptic_at);const auto badge=notification_badge_count.load();const int progress=std::lround(entry_hold.progress(now)*120);if(icon_progress!=progress||icon_active!=(menu_open||launcher_open)||icon_hover!=hovered||icon_badge!=badge){pixels=dock_icon(hovered,menu_open||launcher_open,progress/120.f);if(icon_texture.submit(button,pixels)){icon_progress=progress;icon_badge=badge;icon_active=menu_open||launcher_open;}}icon_hover=hovered;
   auto sync=overlays->WaitFrameSync(8);
   // A timeout already waited: never append another sleep to it. Bound retries
   // only for immediate API failures, so a broken sync call cannot busy-spin.
   if(sync!=vr::VROverlayError_None&&sync!=vr::VROverlayError_TimedOut)std::this_thread::sleep_until(frame_start+std::chrono::milliseconds(8));
  }
- close_keyboard();for(auto&[key,v]:views)close_view(*v);auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);while(std::chrono::steady_clock::now()<deadline){cef_do_message_loop_work();bool all=true;for(auto&[key,v]:views)all&=v->closed;if(all)break;std::this_thread::sleep_for(std::chrono::milliseconds(5));}poller.join();priority_worker.join();for(auto&[key,v]:views)if(!v->closed){std::cerr<<"Browser shutdown timed out\n";_Exit(7);}for(auto&[key,v]:views){overlays->DestroyOverlay(v->overlay);if(v->thumbnail)overlays->DestroyOverlay(v->thumbnail);glDeleteTextures(2,v->textures);}views.clear();overlays->DestroyOverlay(button);cef_shutdown();vr::VR_Shutdown();glXMakeContextCurrent(xdisplay,None,None,nullptr);glXDestroyContext(xdisplay,glcontext);glXDestroyPbuffer(xdisplay,glsurface);XCloseDisplay(xdisplay);return 0;
+ close_keyboard();for(auto&[key,v]:views)close_view(*v);auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);while(std::chrono::steady_clock::now()<deadline){cef_do_message_loop_work();bool all=true;for(auto&[key,v]:views)all&=v->closed;if(all)break;std::this_thread::sleep_for(std::chrono::milliseconds(5));}poller.join();priority_worker.join();for(auto&[key,v]:views)if(!v->closed){std::cerr<<"Browser shutdown timed out\n";_Exit(7);}for(auto&[key,v]:views){overlays->DestroyOverlay(v->overlay);if(v->thumbnail)overlays->DestroyOverlay(v->thumbnail);glDeleteTextures(2,v->textures);}views.clear();overlays->DestroyOverlay(button);icon_texture.destroy();cef_shutdown();vr::VR_Shutdown();glXMakeContextCurrent(xdisplay,None,None,nullptr);glXDestroyContext(xdisplay,glcontext);glXDestroyPbuffer(xdisplay,glsurface);XCloseDisplay(xdisplay);return 0;
 }

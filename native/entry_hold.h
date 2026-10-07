@@ -11,6 +11,7 @@ struct EntryHold {
  using Clock=std::chrono::steady_clock;
  enum class Action { Idle, Launcher, QuickPanel };
  static constexpr auto duration=std::chrono::milliseconds(600);
+ static constexpr auto ring_delay=std::chrono::milliseconds(100);
  bool pressed=false,fired=false;
  unsigned device=~0u,button=0;
  Clock::time_point started{},last_inside{};
@@ -35,7 +36,8 @@ struct EntryHold {
   cancel();return action;
  }
  float progress(Clock::time_point now)const{
-  return pressed?std::clamp(std::chrono::duration<float>(now-started).count()/.6f,0.f,1.f):0.f;
+  if(!pressed||now-started<ring_delay)return 0.f;
+  return std::clamp(std::chrono::duration<float>(now-started).count()/.6f,0.f,1.f);
  }
 };
 
@@ -44,12 +46,12 @@ inline void entry_progress_ring(std::vector<uint8_t>& pixels,float progress){
  constexpr float pi=3.14159265358979323846f;
  for(int y=0;y<128;y++)for(int x=0;x<128;x++){
   float dx=x-63.5f,dy=y-63.5f;
-  float coverage=std::clamp(2.f-std::abs(std::hypot(dx,dy)-58.f),0.f,1.f);
+  float coverage=std::clamp(2.75f-std::abs(std::hypot(dx,dy)-58.f),0.f,1.f);
   if(coverage<=0)continue;
   float angle=std::atan2(dx,-dy);if(angle<0)angle+=2*pi;
   bool filled=angle<=progress*2*pi;
-  const int track[3]={66,73,81},blue[3]={147,197,237};
+  const float alpha=coverage*(filled?.68f:.14f);
   int i=(y*128+x)*4;
-  for(int c=0;c<3;c++)pixels[i+c]=uint8_t(pixels[i+c]+((filled?blue[c]:track[c])-pixels[i+c])*coverage);
+  for(int c=0;c<3;c++)pixels[i+c]=uint8_t(pixels[i+c]+(255-pixels[i+c])*alpha);
  }
 }

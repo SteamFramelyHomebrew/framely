@@ -15,6 +15,8 @@ int main(){
  }
  EntryHold hold;
  hold.event(true,1,1,true,true,start);
+ assert(hold.progress(start+milliseconds(99))==0);
+ assert(std::abs(hold.progress(start+milliseconds(100))-1.f/6)<.001f);
  assert(std::abs(hold.progress(start+milliseconds(300))-.5f)<.001f);
  assert(hold.tick(start+milliseconds(599),true,true)==A::Idle);
  assert(hold.tick(start+milliseconds(600),true,true)==A::QuickPanel);
@@ -56,6 +58,11 @@ int main(){
   assert(pixels[i+3]==original[i+3]);
   if(std::hypot(x-63.5f,y-63.5f)<55.f)for(int c=0;c<4;c++)assert(pixels[i+c]==original[i+c]);
  }
+ // A white line is blended, not opaque, and is wider than the previous ring.
+ const int top=(5*128+64)*4;
+ assert(pixels[top]>original[top]&&pixels[top]<255);
+ assert(pixels[top]==pixels[top+1]&&pixels[top+1]==pixels[top+2]);
+ assert(pixels[(8*128+64)*4]>original[(8*128+64)*4]);
  auto partial=pixels;entry_progress_ring(pixels,1);
  assert(pixels!=partial);
  std::cout<<"entry_hold: passed\n";
