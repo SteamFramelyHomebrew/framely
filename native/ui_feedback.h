@@ -20,6 +20,7 @@ class SteamUiSounds {
  bool (*resume)(void*)=nullptr;
  bool (*put)(void*,const void*,int)=nullptr;
  bool (*clear)(void*)=nullptr;
+ bool (*gain)(void*,float)=nullptr;
  void (*destroy)(void*)=nullptr;
  void (*release)(void*)=nullptr;
  template<class T> bool bind(T& fn,const char* name){fn=reinterpret_cast<T>(dlsym(library,name));return fn!=nullptr;}
@@ -36,13 +37,13 @@ class SteamUiSounds {
   if(root.empty())return false;
   for(const auto* name:{"steamrtarm64/libSDL3.so.0","steamrt64/libSDL3.so.0"}){library=dlopen((root+"/"+name).c_str(),RTLD_NOW|RTLD_LOCAL);if(library)break;}
   if(!library)return false;
-  if(!(bind(init,"SDL_InitSubSystem")&&bind(quit,"SDL_QuitSubSystem")&&bind(load,"SDL_LoadWAV")&&bind(open,"SDL_OpenAudioDeviceStream")&&bind(resume,"SDL_ResumeAudioStreamDevice")&&bind(put,"SDL_PutAudioStreamData")&&bind(clear,"SDL_ClearAudioStream")&&bind(destroy,"SDL_DestroyAudioStream")&&bind(release,"SDL_free"))){shutdown();return false;}
+  if(!(bind(init,"SDL_InitSubSystem")&&bind(quit,"SDL_QuitSubSystem")&&bind(load,"SDL_LoadWAV")&&bind(open,"SDL_OpenAudioDeviceStream")&&bind(resume,"SDL_ResumeAudioStreamDevice")&&bind(put,"SDL_PutAudioStreamData")&&bind(clear,"SDL_ClearAudioStream")&&bind(gain,"SDL_SetAudioStreamGain")&&bind(destroy,"SDL_DestroyAudioStream")&&bind(release,"SDL_free"))){shutdown();return false;}
   if(!init(0x10)){shutdown();return false;}initialized=true;
-  const char* names[]={"deck_ui_navigation.wav","deck_ui_default_activation.wav"};
+  const char* names[]={"deck_ui_typing.wav","deck_ui_typing.wav"};
   for(int i=0;i<2;++i){Spec spec{};auto& clip=clips[i];
    if(!load((root+"/steamui/sounds/"+names[i]).c_str(),&spec,&clip.data,&clip.size)||!clip.size||clip.size>1024*1024){shutdown();return false;}
    clip.stream=open(0xffffffffu,&spec,nullptr,nullptr);
-   if(!clip.stream||!resume(clip.stream)){shutdown();return false;}
+   if(!clip.stream||!gain(clip.stream,i==0?.30f:.45f)||!resume(clip.stream)){shutdown();return false;}
   }
   return true;
  }

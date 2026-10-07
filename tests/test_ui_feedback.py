@@ -14,8 +14,9 @@ static int loads=0, writes=0, streams=0, cleared=0;
 extern "C" {
 bool SDL_InitSubSystem(uint32_t flags){assert(flags==0x10);return true;}
 void SDL_QuitSubSystem(uint32_t flags){assert(flags==0x10);assert(streams==0);}
-bool SDL_LoadWAV(const char* path,void* spec,uint8_t** data,uint32_t* len){assert(strstr(path,"/steamui/sounds/deck_ui_"));++loads;*data=(uint8_t*)malloc(4);*len=4;return true;}
+bool SDL_LoadWAV(const char* path,void* spec,uint8_t** data,uint32_t* len){assert(strstr(path,"/steamui/sounds/deck_ui_typing.wav"));++loads;*data=(uint8_t*)malloc(4);*len=4;return true;}
 void* SDL_OpenAudioDeviceStream(uint32_t id,const void*,void* callback,void* userdata){assert(id==0xffffffffu&&!callback&&!userdata);++streams;return malloc(1);}
+bool SDL_SetAudioStreamGain(void*,float gain){assert(gain==.30f||gain==.45f);return true;}
 bool SDL_ResumeAudioStreamDevice(void*){return true;}
 bool SDL_PutAudioStreamData(void*,const void*,int len){assert(loads==2&&len==4);++writes;return true;}
 bool SDL_ClearAudioStream(void*){++cleared;return true;}
