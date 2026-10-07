@@ -93,7 +93,7 @@ The initial implementation supports individual APKs. Split APK bundles, XAPK/APK
 
 ### Flat window orientation
 
-In **Manage app → Advanced settings → Window orientation**, choose **Automatic**, **Landscape**, or **Portrait**. The choice is saved per app and applied at its next launch. Forced portrait uses a tall window rather than rotating content sideways. Changing orientation may restart the shared container and stop other apps in it. VR apps ignore this setting.
+In **Manage app → Advanced settings → Window orientation**, choose **Automatic**, **Landscape**, or **Portrait**. The choice is saved per app and applied at its next launch. Forced portrait uses a tall window rather than rotating content sideways. Changing orientation may restart the shared container and stop other apps in it. VR apps ignore this setting. Flat APK startup also explicitly selects fullscreen and applies it to the created Android task, avoiding a restored freeform desktop window. This affects startup only; later manual resizing remains available.
 
 Moonlight V+ 12.12.12’s connection-creation screen currently crashes on the tested Lepton build because Android’s clipboard service is absent. This is distinct from the window-startup failure. Framely does not modify or re-sign the APK; a compatible Lepton runtime or an app-side fallback is required.
 
@@ -105,7 +105,7 @@ Enabling applies on the next application launch. Framely may restart its contain
 
 The bridge runs as the Steam session user and requires access to `/dev/uinput`, active SteamVR and the supported Lepton startup hooks. It does not modify Steam's installed Lepton files. Only its virtual event node and read-only Android key layout are mounted into the target container, where Android claims it exclusively. If this claim fails, no input is forwarded and the launch reports an error. Disable the option to use the normal launch path. Bridge errors are recorded in `~/.local/share/framely/apk-manager/logs/gamepad.log`; key presses are not logged. The native helper and Android adapter ship in both offline and core update packages.
 
-Native Steam launches select the input target before startup acknowledgement. Forwarding begins only after Android claims the virtual device and the target application becomes foreground. Each container's helper has its own temporary SteamVR identity, so another helper cannot replace its registration. Returning to an already running application reselects its input target.
+Native Steam launches select the input target before startup acknowledgement. Forwarding begins only after Android claims the virtual device and the target application becomes foreground. Frame direct helpers have separate temporary SteamVR identities. Steam Input helpers do not register OpenVR action sets, because that registration can suppress Steam virtual-gamepad enumeration in SDL. Returning to an already running application reselects its input target.
 
 When this option is enabled, launch APKs through the management panel or launcher. A one-shot CLI launch cannot own the persistent input bridge and reports an error instead. For read-only diagnostics, run `framely apk input-status '{"app":"CONTEXT/PACKAGE"}'` as the Steam session user. It reports Android process, foreground and lifecycle status without input events or Steam tokens; it does not prove that the application handles gamepad events.
 
@@ -121,7 +121,7 @@ Steam Input loads SDL3 from Steam’s bundled ARM64 runtime and reads Steam’s 
 
 **手柄震动**可独立关闭并立即生效。支持游戏请求的 `FF_RUMBLE`，回传给当前输入手柄；切换来源、失去 Android 前台状态、断连或退出时停止，不恢复旧效果。强度上限为一半，单次请求最长十秒；不转发手机振动或 Android VR 触觉。多个手柄以最近产生有效输入的手柄为来源，不合并输入。
 
-桥接以 Steam 会话用户运行，使用 Steam 随附的 ARM64 SDL3，仅读取 Steam 虚拟手柄。Framely 输出设备使用独立标识并排除自身，避免反馈循环。仅把专用事件节点及只读按键布局挂载进容器，不修改系统或 Steam 安装文件。SDL3 不可用时明确报错，可手动选择 Frame 直连。日志位于 `~/.local/share/framely/apk-manager/logs/gamepad.log`，不记录按键。APK 必须从管理面板或启动台启动，单次 CLI 不能持有持续桥接。
+桥接以 Steam 会话用户运行，使用 Steam 随附的 ARM64 SDL3，仅读取 Steam 虚拟手柄。Framely 输出设备使用独立标识并排除自身，避免反馈循环。仅把专用事件节点及只读按键布局挂载进容器，不修改系统或 Steam 安装文件。Frame 直连使用独立的 SteamVR 身份；Steam Input 不注册 OpenVR 输入动作，避免影响 SDL 的虚拟手柄枚举。SDL3 不可用时明确报错，可手动选择 Frame 直连。日志位于 `~/.local/share/framely/apk-manager/logs/gamepad.log`，不记录按键。APK 必须从管理面板或启动台启动，单次 CLI 不能持有持续桥接。
 
 ## Container lifecycle
 
@@ -155,7 +155,7 @@ Disabling Steam launch removes only Framely's entry; close a native Steam app fi
 
 Steam 入口显示 APK 的应用名称和图标，并根据图标生成对应的库封面、横幅和背景图，不联网下载图片。启动台原有图标、排序和收藏不变，通过明确的 Steam App ID 绑定过滤 Steam 分类中的重复入口。APK 更新会刷新生成的入口信息。
 
-原生运行时的进程和容器名为 `steamlaunch-…`，APK 仍保留原数据目录及 Framely 身份，无需复制游戏数据、重装 APK 或修改系统合成器。用户目录内的独立 Lepton 入口适配保留资源目录、选择的启动入口、窗口方向、着色器缓存和可选手柄转发，并防止原生 Lepton 在时间戳变化或短时间退出后清除已有安装。无法识别的入口脚本格式会在启动应用之前拒绝。
+原生运行时的进程和容器名为 `steamlaunch-…`，APK 仍保留原数据目录及 Framely 身份，无需复制游戏数据、重装 APK 或修改系统合成器。平面 APK 启动后会通过 Android 任务接口切换为全屏，避免恢复成桌面内的自由窗口；不会持续锁定用户之后的窗口调整。用户目录内的独立 Lepton 入口适配保留资源目录、选择的启动入口、窗口方向、着色器缓存和可选手柄转发，并防止原生 Lepton 在时间戳变化或短时间退出后清除已有安装。无法识别的入口脚本格式会在启动应用之前拒绝。
 
 切换启动路径之前，需要先关闭已经运行的容器；Framely 不会为了绑定 Steam 重启游戏。旧共享容器仍可识别，但同时只允许一个 Steam 启动占用其数据。跨进程保留的占用锁阻止重复启动及共享数据的并发启动。
 

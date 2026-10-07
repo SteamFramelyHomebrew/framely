@@ -9,6 +9,17 @@ const NATIVE_HOOKS: &str = r#"
 function is_app_baked() { return 0; }
 function get_app_mount_dir() { print "${FRAMELY_NATIVE_MOUNT:?}"; }
 function get_app_activity() { print "${FRAMELY_NATIVE_ACTIVITY:?}"; }
+# Android may otherwise reuse its desktop/freeform launch preference. Select
+# fullscreen before creating the activity, rather than resizing it afterwards.
+function run_app_commands() {
+    local APP_ID="${1:-$(get_app_id)}"
+    local APP_ACTIVITY="${2:-$(get_app_activity)}"
+    if app_wants_flatscreen; then
+        print "am start -S --windowingMode 1 ${APP_ID}/${APP_ACTIVITY} && /system/bin/sh /vendor/share/framely-window.sh ${APP_ID}"
+    else
+        print "am start -S ${APP_ID}/${APP_ACTIVITY}"
+    fi
+}
 function get_app_hash() { extract_app_hash; }
 function get_app_last_depot_version() { extract_app_last_depot_version; }
 function clear_baked_app_data() { println 'Framely: keeping installed application data'; }
@@ -149,7 +160,10 @@ pub(super) fn prepare(
         c.baked.join("external")
     };
     let flat = a.show_window.unwrap_or(!a.metadata.vr);
+    let (window_dex, window_script) = window_runtime(home)?;
     let mut env = json!({
+        "FRAMELY_WINDOW_DEX": window_dex,
+        "FRAMELY_WINDOW_SCRIPT": window_script,
         "FRAMELY_LEPTON_DIR":runner.parent().context("Missing Lepton directory")?,
         "STEAM_COMPAT_DATA_PATH":c.baked.parent().context("Missing application data")?,
         "FRAMELY_NATIVE_MOUNT":mount,
@@ -373,6 +387,7 @@ waitforexitandrun)
     setup_podman_mounts
     get_app_mount_dir
     get_app_activity
+    run_app_commands test.Package test.Selected
     teardown
 ;;
 esac
@@ -387,7 +402,7 @@ esac
         let save = data.join("data/test/save");
         fs::create_dir_all(save.parent().unwrap()).unwrap();
         fs::write(&save, b"saved game").unwrap();
-        for _ in 0..2 {
+        for flat in [true, false] {
             let out = Command::new("bash")
                 .arg(&entry)
                 .env("FRAMELY_LEPTON_DIR", lib.parent().unwrap())
@@ -397,6 +412,7 @@ esac
                 .env("FRAMELY_NATIVE_LAUNCH", "true")
                 .env("FRAMELY_NATIVE_MOUNT", "/data/app/test")
                 .env("FRAMELY_NATIVE_ACTIVITY", "test.Selected")
+                .env("APP_WANTS_FLATSCREEN", if flat { "true" } else { "false" })
                 .env("TEST_DATA", &data)
                 .env("TEST_PROPS", t.path().join("props"))
                 .output()
@@ -407,6 +423,12 @@ esac
                 String::from_utf8_lossy(&out.stderr)
             );
             assert!(String::from_utf8_lossy(&out.stdout).contains("test.Selected"));
+            let expected = if flat {
+                "am start -S --windowingMode 1 test.Package/test.Selected"
+            } else {
+                "am start -S test.Package/test.Selected"
+            };
+            assert!(String::from_utf8_lossy(&out.stdout).contains(expected));
             assert_eq!(fs::read(&save).unwrap(), b"saved game");
             assert_eq!(fs::read(&download).unwrap(), b"resume-me");
         }

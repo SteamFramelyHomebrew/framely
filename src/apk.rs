@@ -1109,6 +1109,23 @@ fn persistent_registration(c: &Container, expected: &Metadata, log: &Path) -> Re
 }
 // Adapt only the entry script in a private temporary file. Keep Lepton's original
 // libraries and dev-context data handling; app mode can clear existing baked data.
+fn window_runtime(home: &Path) -> Result<(PathBuf, PathBuf)> {
+    let dir = root(home).join("steam/window-runtime");
+    fs::create_dir_all(&dir)?;
+    let dex = dir.join("framely-window.dex");
+    let script = dir.join("window.sh");
+    steam_shortcuts::write_owned(
+        &dex,
+        include_bytes!("../native/android/framely-window.dex"),
+        0o600,
+    )?;
+    steam_shortcuts::write_owned(
+        &script,
+        include_bytes!("../native/android/window.sh"),
+        0o600,
+    )?;
+    Ok((dex, script))
+}
 fn direct_launch_script(source: &str) -> Result<String> {
     let directory =
         "SCRIPT_DIR=$( cd -- \"$( dirname -- \"${BASH_SOURCE[0]}\" )\" &> /dev/null && pwd )";
@@ -1187,6 +1204,16 @@ if [[ -n "${FRAMELY_SHADER_CACHE_DIR:-}${FRAMELY_EXTERNAL_MEDIA_DIR:-}" ]]; then
         if [[ -n "${FRAMELY_SHADER_CACHE_DIR:-}" ]]; then
             podman_mount_entry "$FRAMELY_SHADER_CACHE_DIR" /data/shaders rw,U
         fi
+    }
+fi
+# Per-user readonly helper uses Android's task API, without patching its image.
+if [[ -n "${FRAMELY_WINDOW_DEX:-}" ]]; then
+    declare -F setup_podman_mounts >/dev/null || { echo "Unsupported Lepton window mounts" >&2; exit 64; }
+    eval "$(declare -f setup_podman_mounts | sed '1s/setup_podman_mounts/framely_original_window_mounts/')"
+    function setup_podman_mounts() {
+        framely_original_window_mounts "$@" || return
+        podman_mount_entry "$FRAMELY_WINDOW_DEX" /vendor/share/framely-window.dex ro
+        podman_mount_entry "${FRAMELY_WINDOW_SCRIPT:?}" /vendor/share/framely-window.sh ro
     }
 fi
 # Optional virtual gamepad: mount only its event node, not host input devices.
@@ -1357,6 +1384,9 @@ fn start_oriented_container(
                 "false"
             },
         );
+    let (window_dex, window_script) = window_runtime(home)?;
+    cmd.env("FRAMELY_WINDOW_DEX", window_dex)
+        .env("FRAMELY_WINDOW_SCRIPT", window_script);
     cmd.env_remove("SteamAppId");
     storage::configure(
         &mut cmd,
@@ -1844,26 +1874,32 @@ fn launch_with_started(c: &Container, a: &App, log: &Path, started: impl FnOnce(
     if a.show_window.unwrap_or(!a.metadata.vr) {
         apply_orientation(c, a.orientation.as_deref(), log)?;
     }
-    let s = podman(
-        &[
-            "exec",
-            &format!("lepton-{}", c.name),
-            "am",
-            "start",
-            "-W",
-            "--user",
-            "0",
-            "-n",
-            &component,
-        ],
-        Some(log),
-    )?;
+    let runtime = format!("lepton-{}", c.name);
+    let mut launch_args = vec!["exec"];
+    launch_args.extend([runtime.as_str(), "am", "start", "-W", "--user", "0"]);
+    if a.show_window.unwrap_or(!a.metadata.vr) {
+        launch_args.extend(["--windowingMode", "1"]);
+    }
+    launch_args.extend(["-n", &component]);
+    let s = podman(&launch_args, Some(log))?;
     ensure!(
         !s.contains("Error:")
             && !s.contains("Exception")
             && s.lines().any(|line| line.trim() == "Status: ok"),
         "Application launch failed: {s}"
     );
+    if a.show_window.unwrap_or(!a.metadata.vr) {
+        podman(
+            &[
+                "exec",
+                &runtime,
+                "sh",
+                "/vendor/share/framely-window.sh",
+                &a.metadata.package,
+            ],
+            Some(log),
+        )?;
+    }
     // Select the display mode after the requested activity is foreground.
     // Lepton's per-app HWC mode can create a zero-sized xdg_surface on Gamescope
     // and abort its display service. Full-display mode avoids that transition;
@@ -4388,7 +4424,7 @@ setup_props
         launch(&c, &a, &log).unwrap();
         let trace = fs::read_to_string(&commands).unwrap();
         let start = trace
-            .find("am start -W --user 0 -n com.example.app/")
+            .find("am start -W --user 0 --windowingMode 1 -n com.example.app/")
             .unwrap();
         let reveal = trace.find("setprop waydroid.active_apps Waydroid").unwrap();
         assert!(start < reveal);
@@ -4398,6 +4434,9 @@ setup_props
         assert!(fs::read_to_string(&commands)
             .unwrap()
             .contains("setprop waydroid.active_apps none"));
+        assert!(!fs::read_to_string(&commands)
+            .unwrap()
+            .contains("--windowingMode"));
         fs::write(&commands, "").unwrap();
         a.show_window = Some(true);
         fs::write(f.dir.path().join("launch-fail"), "").unwrap();
@@ -4998,7 +5037,9 @@ esac
         assert_eq!(fs::read(&mounted).unwrap(), original);
         assert!(fs::read_to_string(f.dir.path().join("commands"))
             .unwrap()
-            .contains("am start -W --user 0 -n com.example.extra/com.example.extra.Main"));
+            .contains(
+            "am start -W --user 0 --windowingMode 1 -n com.example.extra/com.example.extra.Main"
+        ));
     }
     #[test]
     fn review_tampering_expiry_and_cancel_are_rejected() {
