@@ -55,29 +55,43 @@ int main(){
  assert(hold.tick(start+seconds(1),true,true)==A::Idle);
  hold.event(true,1,1,true,true,start);
  assert(hold.event(false,1,1,true,false,start+milliseconds(100))==A::Idle);
- // The ring never alters the central logo or texture alpha; only its perimeter.
+ // A short click with a late release is judged by event time, not dequeue time.
+ const auto received=start+seconds(1);
+ hold.event(true,1,1,true,true,entry_event_time(received,1.f),received);
+ assert(hold.tick(received,true,true)==A::Idle);
+ assert(hold.progress(received+milliseconds(99))==0);
+ assert(hold.event(false,1,1,true,true,entry_event_time(received,.92f),received)==A::Launcher);
+ // A missing overlay release cannot leave a delayed quick-panel activation.
+ hold.event(true,1,1,true,true,start);
+ assert(hold.released(true,true)==A::Launcher);
+ assert(hold.tick(start+seconds(1),true,true)==A::Idle);
+ // A fresh down after a lost release starts a new gesture, never the old timer.
+ hold.event(true,1,1,true,true,start);
+ hold.event(true,1,1,true,true,start+seconds(1));
+ assert(hold.progress(start+seconds(1)+milliseconds(80))==0);
+ assert(hold.event(false,1,1,true,true,start+seconds(1)+milliseconds(80))==A::Launcher);
+ // A real long hold remains a single long action, including delayed dequeue.
+ hold.event(true,1,1,true,true,entry_event_time(received,1.f),received);
+ assert(hold.event(false,1,1,true,true,entry_event_time(received,.3f),received)==A::QuickPanel);
+ assert(entry_event_time(received,-1.f)==received);
+ assert(entry_event_time(received,NAN)==received);
+ // The progress follows the rounded square's border, leaving the logo intact.
  std::vector<uint8_t> pixels(128*128*4,23),original=pixels;
- entry_progress_ring(pixels,0);assert(pixels==original);
- entry_progress_ring(pixels,.5f);
- assert(pixels!=original);
+ entry_progress_border(pixels,0);assert(pixels==original);
+ entry_progress_border(pixels,.5f);assert(pixels!=original);
  for(int y=0;y<128;y++)for(int x=0;x<128;x++){
-  int i=(y*128+x)*4;
-  assert(pixels[i+3]==original[i+3]);
-  if(std::hypot(x-63.5f,y-63.5f)<55.f)for(int c=0;c<4;c++)assert(pixels[i+c]==original[i+c]);
+  int i=(y*128+x)*4;assert(pixels[i+3]==original[i+3]);
+  if(std::abs(x-63.5f)<58&&std::abs(y-63.5f)<58)for(int c=0;c<4;c++)assert(pixels[i+c]==original[i+c]);
  }
- // A white line is blended, not opaque, and is wider than the previous ring.
- const int top=(5*128+64)*4;
- assert(pixels[top]>original[top]&&pixels[top]<255);
- assert(pixels[top]==pixels[top+1]&&pixels[top+1]==pixels[top+2]);
- assert(pixels[(8*128+64)*4]>original[(8*128+64)*4]);
- // The GPU upload must flip top-left artwork exactly once, including the ring.
- struct Rect{int x,y,width,height;};
- std::vector<uint8_t> upload;
+ const int top=(2*128+64)*4;
+ assert(pixels[top]==147&&pixels[top+1]==197&&pixels[top+2]==237);
+ assert(pixels[(64*128+125)*4]>original[(64*128+125)*4]);
+ assert(pixels[(4*128+123)*4]>original[(4*128+123)*4]); // rounded corner
+ assert(pixels[(5*128+64)*4]==original[(5*128+64)*4]); // no circular ring
+ struct Rect{int x,y,width,height;};std::vector<uint8_t> upload;
  merge_paint(upload,pixels.data(),128,128,0,static_cast<const Rect*>(nullptr),true);
- assert(upload[((127-5)*128+64)*4]==pixels[top]);
- assert(upload[((127-8)*128+64)*4]==pixels[(8*128+64)*4]);
- assert(pixels[(5*128+64)*4]>pixels[(5*128+63)*4]);
- auto partial=pixels;entry_progress_ring(pixels,1);
- assert(pixels!=partial);
+ assert(upload[((127-2)*128+64)*4]==pixels[top]);
+ assert(pixels[top]>pixels[(2*128+63)*4]);
+ auto partial=pixels;entry_progress_border(pixels,1);assert(pixels!=partial);
  std::cout<<"entry_hold: passed\n";
 }

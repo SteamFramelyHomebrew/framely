@@ -77,6 +77,8 @@ static std::set<std::string> dashboard_keys;
 static bool launcher_restore_previous=true,launcher_previous_menu=false;
 static std::chrono::steady_clock::time_point launcher_keyboard_back_until{};
 static EntryHold entry_hold;
+static uint64_t entry_source_buttons=0;
+static std::map<unsigned,uint64_t> entry_previous_buttons;
 static bool entry_actions_ready=false;
 static vr::VRActionSetHandle_t entry_set=0,gaze_set=0;
 static vr::VRActionHandle_t primary_action=0,upper_action=0,aim_action=0,close_action=0,navigate_action=0;
@@ -165,7 +167,7 @@ static json poll_http(int port){int fd=socket(AF_INET,SOCK_STREAM,0);if(fd<0)thr
 // Keep a wider curved mesh around the narrow button; transparent margins never hit input.
 static constexpr int dock_canvas_width=640,dock_canvas_height=128,dock_icon_left=256;
 static std::vector<uint8_t> dock_icon(bool hover,bool active,float progress=0){
- auto source=icon(hover,active);entry_progress_ring(source,progress);notification_badge(source,notification_badge_count.load());std::vector<uint8_t> canvas(dock_canvas_width*dock_canvas_height*4,0);
+ auto source=icon(hover,active);entry_progress_border(source,progress);notification_badge(source,notification_badge_count.load());std::vector<uint8_t> canvas(dock_canvas_width*dock_canvas_height*4,0);
  for(int row=0;row<dock_canvas_height;row++)std::copy_n(source.data()+row*128*4,128*4,canvas.data()+(row*dock_canvas_width+dock_icon_left)*4);
  return canvas;
 }
@@ -618,12 +620,24 @@ int main(int argc,char** argv){
    if(event.eventType==vr::VREvent_MouseMove||event.eventType==vr::VREvent_MouseButtonDown||event.eventType==vr::VREvent_MouseButtonUp)entry_pointer.move(event.trackedDeviceIndex,event.data.mouse.x,event.data.mouse.y);
    if(event.eventType==vr::VREvent_FocusLeave)entry_pointer.leave();
    if(event.eventType==vr::VREvent_MouseButtonDown||event.eventType==vr::VREvent_MouseButtonUp){
-    activate_entry(entry_hold.event(event.eventType==vr::VREvent_MouseButtonDown,event.trackedDeviceIndex,event.data.mouse.button,anchor_ok&&(event.trackedDeviceIndex==vr::k_unTrackedDeviceIndexInvalid||vr_system->IsTrackedDeviceConnected(event.trackedDeviceIndex)),entry_pointer.inside,std::chrono::steady_clock::now()));
+    const auto received=std::chrono::steady_clock::now();const bool was_pressed=entry_hold.pressed;const auto previous_started=entry_hold.started;
+    activate_entry(entry_hold.event(event.eventType==vr::VREvent_MouseButtonDown,event.trackedDeviceIndex,event.data.mouse.button,anchor_ok&&(event.trackedDeviceIndex==vr::k_unTrackedDeviceIndexInvalid||vr_system->IsTrackedDeviceConnected(event.trackedDeviceIndex)),entry_pointer.inside,entry_event_time(received,event.eventAgeSeconds),received));
+    if(entry_hold.pressed&&(!was_pressed||entry_hold.started!=previous_started)){
+     entry_source_buttons=0;vr::VRControllerState_t state{};
+     if(entry_hold.device!=vr::k_unTrackedDeviceIndexInvalid&&vr_system->GetControllerState(entry_hold.device,&state,sizeof(state))){
+      const auto previous=entry_previous_buttons.find(entry_hold.device);
+      if(previous!=entry_previous_buttons.end())entry_source_buttons=state.ulButtonPressed&~previous->second;
+      // An unambiguous single button is safe even if its down event arrived late.
+      if(!entry_source_buttons&&state.ulButtonPressed&&(state.ulButtonPressed&(state.ulButtonPressed-1))==0)entry_source_buttons=state.ulButtonPressed;
+     }
+    }
    }
   }
   if(!anchor_ok)entry_pointer.leave();
   const bool entry_connected=entry_hold.device==vr::k_unTrackedDeviceIndexInvalid||vr_system->IsTrackedDeviceConnected(entry_hold.device);
-  activate_entry(entry_hold.tick(std::chrono::steady_clock::now(),anchor_ok&&entry_connected,entry_pointer.inside&&entry_pointer.device==entry_hold.device));
+  const bool entry_inside=entry_pointer.inside&&entry_pointer.device==entry_hold.device;
+  if(entry_hold.pressed&&entry_source_buttons){vr::VRControllerState_t state{};if(vr_system->GetControllerState(entry_hold.device,&state,sizeof(state))&&!(state.ulButtonPressed&entry_source_buttons))activate_entry(entry_hold.released(anchor_ok&&entry_connected,entry_inside));}
+  activate_entry(entry_hold.tick(std::chrono::steady_clock::now(),anchor_ok&&entry_connected,entry_inside));
   for(auto&[key,v]:views)v->stick_scrolling=false;
   entry_actions(button,anchor_ok);
   if(launcher_open){bool held=false;for(auto& hand:entry_buttons)for(auto& trigger:hand)held|=trigger.held;launcher_dismiss.observe(held);}
@@ -693,6 +707,9 @@ int main(int argc,char** argv){
   }
   for(auto i=views.begin();i!=views.end();){auto& v=*i->second;if(v.closed){overlays->ClearOverlayTexture(v.overlay);overlays->DestroyOverlay(v.overlay);if(v.thumbnail)overlays->DestroyOverlay(v.thumbnail);glDeleteTextures(2,v.textures);i=views.erase(i);}else ++i;}
   bool hovered=anchor_ok&&(entry_hold.pressed||overlays->IsHoverTargetOverlay(button));if(hovered&&!icon_hover)hover_haptic(button,button_haptic_at);const auto badge=notification_badge_count.load();const float ring=entry_hold.progress(std::chrono::steady_clock::now());const int progress=ring>0?std::max(1,int(std::lround(ring*120))):0;if(icon_progress!=progress||icon_active!=(menu_open||launcher_open)||icon_hover!=hovered||icon_badge!=badge){pixels=dock_icon(hovered,menu_open||launcher_open,progress/120.f);if(icon_texture.submit(button,pixels)){icon_progress=progress;icon_badge=badge;icon_active=menu_open||launcher_open;}}icon_hover=hovered;
+  // Remember source state only after draining events, to identify the actual
+  // newly pressed button rather than unrelated buttons held on the controller.
+  for(auto device:{entry_pointer.device,entry_hold.device})if(device!=vr::k_unTrackedDeviceIndexInvalid){vr::VRControllerState_t state{};if(vr_system->GetControllerState(device,&state,sizeof(state)))entry_previous_buttons[device]=state.ulButtonPressed;else entry_previous_buttons.erase(device);}
   auto sync=overlays->WaitFrameSync(8);
   // A timeout already waited: never append another sleep to it. Bound retries
   // only for immediate API failures, so a broken sync call cannot busy-spin.
