@@ -983,6 +983,15 @@
     "帧缓冲兼容修复": "帧缓冲兼容修复",
     "仅用于部分游戏有声音但黑屏的问题，默认关闭。修改后需重启应用生效，不改变系统驱动或游戏文件。": "仅用于部分游戏有声音但黑屏的问题，默认关闭。修改后需重启应用生效，不改变系统驱动或游戏文件。",
     "Invalid framebuffer compatibility setting": "无效的帧缓冲兼容设置",
-    "Framebuffer compatibility runtime is missing; install a complete Framely build": "缺少帧缓冲兼容修复组件，请安装完整的 Framely 更新包。"
+    "Framebuffer compatibility runtime is missing; install a complete Framely build": "缺少帧缓冲兼容修复组件，请安装完整的 Framely 更新包。",
+    "展示方式": "展示方式",
+    "列表": "列表",
+    "小图标": "小图标",
+    "中图标": "中图标",
+    "大图标": "大图标",
+    "选择 {0}": "选择 {0}",
+    "Invalid file view": "无效的文件展示方式",
+    "Invalid file sort": "无效的文件排序方式",
+    "Invalid file sort direction": "无效的文件排序方向"
   }
 }

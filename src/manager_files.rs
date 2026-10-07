@@ -68,6 +68,73 @@ fn save_json(path: &Path, v: &Value) -> Result<()> {
     Ok(())
 }
 use std::os::unix::fs::OpenOptionsExt;
+#[derive(Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ViewPreferences {
+    #[serde(default = "default_file_view")]
+    view: String,
+    #[serde(default)]
+    folders: BTreeMap<String, FolderSort>,
+}
+fn default_file_view() -> String {
+    "list".into()
+}
+#[derive(Serialize, Deserialize)]
+struct FolderSort {
+    sort: String,
+    descending: bool,
+}
+fn view_preferences(home: &Path, p: &Value) -> Result<Value> {
+    let file = state(home)?.join("view-preferences.json");
+    let mut preferences: ViewPreferences = if file.exists() {
+        serde_json::from_slice(&fs::read(&file)?)?
+    } else {
+        ViewPreferences {
+            view: default_file_view(),
+            ..Default::default()
+        }
+    };
+    let mut changed = false;
+    if let Some(view) = p.get("view") {
+        let view = view.as_str().context("Invalid file view")?;
+        ensure!(
+            matches!(
+                view,
+                "list" | "icons-small" | "icons-medium" | "icons-large"
+            ),
+            "Invalid file view"
+        );
+        preferences.view = view.into();
+        changed = true;
+    }
+    if p.get("path").is_some() {
+        let dir = PathBuf::from(strparam(p, "path")?);
+        ensure!(dir.is_absolute(), "Use an absolute file path");
+        let dir = dir.canonicalize()?;
+        ensure!(dir.is_dir(), "Select a directory");
+        let sort = strparam(p, "sort")?;
+        ensure!(
+            matches!(sort, "name" | "size" | "modified"),
+            "Invalid file sort"
+        );
+        let descending = p["descending"]
+            .as_bool()
+            .context("Invalid file sort direction")?;
+        preferences.folders.insert(
+            dir.to_str().context("Invalid directory path")?.into(),
+            FolderSort {
+                sort: sort.into(),
+                descending,
+            },
+        );
+        changed = true;
+    }
+    let value = serde_json::to_value(preferences)?;
+    if changed {
+        save_json(&file, &value)?;
+    }
+    Ok(value)
+}
 #[derive(Default)]
 pub struct Files {
     preferences: Mutex<()>,
@@ -453,6 +520,10 @@ impl Files {
         let operation = p["operation"].as_str().unwrap_or("list");
         match operation {
             "list" => list(p, home),"properties" => entry(&path(p,"path")?),
+            "view.preferences" => {
+                let _guard = self.preferences.lock().unwrap();
+                view_preferences(home, p)
+            },
             "preferences" => {
                 let _guard = self.preferences.lock().unwrap();
                 let file = state(home)?.join("preferences.json");
@@ -1520,6 +1591,74 @@ mod operation_tests {
             )
             .is_err());
         assert_eq!(fs::read_dir(dest).unwrap().count(), 0);
+    }
+    #[test]
+    fn folder_sort_and_global_view_preferences_persist_independently() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let a = home.path().join("a");
+        let b = home.path().join("b");
+        fs::create_dir(&a).unwrap();
+        fs::create_dir(&b).unwrap();
+        let manager = Files::default();
+        let defaults = manager
+            .api(home.path(), &json!({"operation":"view.preferences"}))
+            .unwrap();
+        assert_eq!(defaults, json!({"view":"list","folders":{}}));
+        manager
+            .api(
+                home.path(),
+                &json!({"operation":"view.preferences","path":a,"sort":"size","descending":true}),
+            )
+            .unwrap();
+        manager.api(home.path(), &json!({"operation":"view.preferences","path":b,"sort":"modified","descending":false})).unwrap();
+        manager
+            .api(
+                home.path(),
+                &json!({"operation":"view.preferences","view":"icons-large"}),
+            )
+            .unwrap();
+        // Canonical paths avoid separate preferences for aliases/trailing slashes.
+        let alias = home.path().join("alias");
+        symlink(&a, &alias).unwrap();
+        manager.api(home.path(), &json!({"operation":"view.preferences","path":alias,"sort":"name","descending":false})).unwrap();
+        let reloaded = Files::default()
+            .api(home.path(), &json!({"operation":"view.preferences"}))
+            .unwrap();
+        assert_eq!(reloaded["view"], "icons-large");
+        assert_eq!(reloaded["folders"].as_object().unwrap().len(), 2);
+        assert_eq!(
+            reloaded["folders"][a.to_str().unwrap()],
+            json!({"sort":"name","descending":false})
+        );
+        assert_eq!(
+            reloaded["folders"][b.to_str().unwrap()],
+            json!({"sort":"modified","descending":false})
+        );
+        for bad in [
+            json!({"view":"giant"}),
+            json!({"path":a,"sort":"invalid","descending":false}),
+            json!({"path":a,"sort":"size","descending":"true"}),
+            json!({"path":"relative","sort":"name","descending":false}),
+        ] {
+            let mut p = bad;
+            p["operation"] = json!("view.preferences");
+            assert!(manager.api(home.path(), &p).is_err());
+        }
+        assert_eq!(
+            manager
+                .api(home.path(), &json!({"operation":"view.preferences"}))
+                .unwrap(),
+            reloaded
+        );
+        assert_eq!(
+            manager
+                .api(home.path(), &json!({"operation":"preferences"}))
+                .unwrap(),
+            json!([])
+        );
     }
     #[test]
     fn bookmarks_survive_missing_directories_and_editor_requires_revision() {

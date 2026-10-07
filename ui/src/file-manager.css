@@ -155,3 +155,26 @@
 .file-manager .file-context-menu button{display:flex;width:100%;text-align:left;justify-content:flex-start;min-height:34px;font-size:13px;padding:6px 10px}
 .file-manager .file-context-menu button:focus-visible{background:#3a3a3f;outline:none}
 .file-manager .file-context-menu [role=separator]{height:1px;margin:5px 6px;background:var(--file-line)}
+/* File display preference is global; folders retain only their sort order. */
+.file-manager .file-view-control .framely-select{min-width:112px}
+.file-manager .file-view-control .framely-select button{font-size:13px;min-height:36px;padding:6px 9px;background:transparent!important;border-color:var(--file-line)}
+.file-manager .file-icon-grid{--file-tile-width:132px;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(var(--file-tile-width),100%),1fr));gap:12px 8px;padding:20px 8px;align-content:start}
+.file-manager .file-icon-grid.icons-small{--file-tile-width:100px;gap:8px 4px}
+.file-manager .file-icon-grid.icons-large{--file-tile-width:176px;gap:20px 12px}
+.file-manager .file-icon-tile{position:relative;min-width:0;border-radius:8px;align-self:start}
+.file-manager .file-icon-tile:hover{background:#ffffff06}
+.file-manager .file-icon-tile.selected{background:#3b3b41}
+.file-manager .file-tile-open{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;width:100%;padding:16px 8px 12px;gap:10px;white-space:normal}
+.file-manager .file-tile-open:hover:not(:disabled){background:transparent}
+.file-manager .file-tile-open .file-entry-icon{position:relative;width:80px;height:64px}
+.file-manager .icons-small .file-tile-open .file-entry-icon{width:52px;height:44px}
+.file-manager .icons-large .file-tile-open .file-entry-icon{width:104px;height:88px}
+.file-manager .file-tile-name{font-size:13px;line-height:1.45;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:38px;max-width:100%;text-align:center}
+.file-manager .file-link-marker{position:absolute;bottom:0;right:0;background:var(--file-bg);border-radius:4px}
+.file-manager .file-tile-check{position:absolute;top:6px;left:6px;z-index:1;display:grid;place-items:center;padding:4px;opacity:0}
+.file-manager .file-icon-tile:hover .file-tile-check,.file-manager .file-icon-tile:focus-within .file-tile-check,.file-manager .file-icon-tile.selected .file-tile-check{opacity:1}
+@media(hover:none){.file-manager .file-tile-check{opacity:1}}
+.file-manager .file-grid-select-all{display:inline-flex;align-items:center;gap:7px;margin-right:16px}
+.file-manager .file-grid-skeleton{display:flex;flex-direction:column;align-items:center;gap:16px;padding:16px 8px}
+.file-manager .file-grid-skeleton i{width:48px;height:56px;background:#ffffff09;border-radius:6px}
+.file-manager .file-grid-skeleton span{width:70%;height:12px;background:#ffffff09;border-radius:4px}

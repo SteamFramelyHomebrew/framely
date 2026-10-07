@@ -983,6 +983,15 @@
     "帧缓冲兼容修复": "Framebuffer compatibility fix",
     "仅用于部分游戏有声音但黑屏的问题，默认关闭。修改后需重启应用生效，不改变系统驱动或游戏文件。": "For specific games with sound but a black screen. Off by default. Restart the app after changing this option; system drivers and game files are unchanged.",
     "Invalid framebuffer compatibility setting": "Invalid framebuffer compatibility setting",
-    "Framebuffer compatibility runtime is missing; install a complete Framely build": "Framebuffer compatibility runtime is missing; install a complete Framely build"
+    "Framebuffer compatibility runtime is missing; install a complete Framely build": "Framebuffer compatibility runtime is missing; install a complete Framely build",
+    "展示方式": "View",
+    "列表": "List",
+    "小图标": "Small icons",
+    "中图标": "Medium icons",
+    "大图标": "Large icons",
+    "选择 {0}": "Select {0}",
+    "Invalid file view": "Invalid file view",
+    "Invalid file sort": "Invalid file sort",
+    "Invalid file sort direction": "Invalid file sort direction"
   }
 }
