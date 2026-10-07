@@ -85,3 +85,7 @@ cargo run --manifest-path installer/Cargo.toml --locked --no-default-features --
 After connecting to Frame, click **Export logs** in the footer and choose a ZIP destination on your computer. You do not need to select a release or installation package. Collection runs directly over SSH with administrator access, independently of Framely’s web panel and daemon. It also works with stopped services or damaged state, and includes the installer’s current operation log. Export does not install, restart or change Framely.
 
 The archive includes bounded recent service/plugin/CEF logs, GPU evidence, installation versions and a plugin status summary. Missing sources are listed in `report.json`. Plugin settings, inbox contents and password files are excluded; common credential patterns are masked. Review logs before sharing. Cancelling the save dialog leaves the installation untouched.
+
+### Proxy preferences
+
+The **Settings** tab controls downloads on the installer computer. System proxy discovery is enabled by default. An explicit HTTP/SOCKS proxy takes precedence; leave it empty to follow the system toggle. An optional HTTPS GitHub proxy prefix routes GitHub API and asset URLs as `prefix/original-URL`. Settings persist locally and apply to subsequent version checks and downloads; SSH and Frame settings are unchanged. Saving clears the release selection so the next version check uses the new settings. Package verification remains enabled.

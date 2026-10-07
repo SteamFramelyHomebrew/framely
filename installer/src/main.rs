@@ -48,6 +48,9 @@ enum Event {
 }
 struct Installer {
     page: usize,
+    system_proxy: bool,
+    http_proxy: Entity<InputState>,
+    github_proxy: Entity<InputState>,
     chosen_action: String,
     device_state: Option<Installation>,
     preview: bool,
@@ -104,9 +107,18 @@ impl Installer {
                     .masked(masked)
             })
         };
+        let proxy_result = framely_installer::proxy::load();
+        let proxy_error = proxy_result
+            .as_ref()
+            .err()
+            .map(|_| "无法读取代理设置，请在设置页重新保存。".to_owned());
+        let proxies = proxy_result.unwrap_or_default();
         let networks = discovery::networks();
         let mut view = Self {
             page: 0,
+            system_proxy: proxies.system,
+            http_proxy: input(&proxies.http, "http://127.0.0.1:7890", false),
+            github_proxy: input(&proxies.github, "https://your-github-proxy.example", false),
             chosen_action: "install".into(),
             device_state: None,
             preview: cfg!(feature = "visual-test")
@@ -145,7 +157,7 @@ impl Installer {
             progress: None,
             logs: Vec::new(),
             status: "开启 Frame 开发者模式并设置密码，将电脑和 Frame 连接到同一网络。".into(),
-            error: None,
+            error: proxy_error,
             release_error: None,
             connection_stage: None,
             sender,
@@ -587,6 +599,30 @@ impl Installer {
         self.queue_prompt(dialogs::Prompt::Operation(self.chosen_action.clone()));
         cx.notify();
     }
+    fn save_proxy(&mut self, cx: &mut Context<Self>) {
+        let settings = framely_installer::proxy::DownloadSettings {
+            system: self.system_proxy,
+            http: self.http_proxy.read(cx).value().trim().to_owned(),
+            github: self
+                .github_proxy
+                .read(cx)
+                .value()
+                .trim()
+                .trim_end_matches('/')
+                .to_owned(),
+        };
+        match framely_installer::proxy::save(settings) {
+            Ok(()) => {
+                self.error = None;
+                self.release_error = None;
+                self.releases.clear();
+                self.selected = None;
+                self.status = "代理设置已保存，下次下载及检查版本时生效。".into();
+            }
+            Err(error) => self.error = Some(format!("保存代理设置失败：{error}")),
+        }
+        cx.notify();
+    }
     fn navigate(&mut self, page: usize, cx: &mut Context<Self>) {
         if self.busy {
             return;
@@ -801,6 +837,7 @@ fn preview_pages(dir: PathBuf) -> anyhow::Result<()> {
         (0, "devices"),
         (1, "versions"),
         (2, "maintenance"),
+        (3, "settings"),
         (1, "local"),
         (0, "empty"),
         (0, "connecting"),

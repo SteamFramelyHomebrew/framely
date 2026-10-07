@@ -3,6 +3,117 @@ use anyhow::{Result, bail, ensure};
 use std::{collections::HashMap, net::IpAddr};
 use url::Url;
 
+/// Installer-only download preferences. Explicit HTTP proxy overrides automatic
+/// discovery; GitHub routing rewrites only trusted GitHub source hosts.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct DownloadSettings {
+    pub system: bool,
+    pub http: String,
+    pub github: String,
+}
+impl Default for DownloadSettings {
+    fn default() -> Self {
+        Self {
+            system: true,
+            http: String::new(),
+            github: String::new(),
+        }
+    }
+}
+impl DownloadSettings {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.http.len() <= 2048 && self.github.len() <= 2048,
+            "代理地址过长"
+        );
+        if !self.http.is_empty() {
+            parse_proxy(&self.http)?;
+        }
+        if !self.github.is_empty() {
+            let url =
+                Url::parse(&self.github).map_err(|_| anyhow::anyhow!("GitHub 代理地址无效"))?;
+            ensure!(
+                url.scheme() == "https"
+                    && url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.query().is_none()
+                    && url.fragment().is_none(),
+                "GitHub 代理必须是 HTTPS 地址，不能含账号、查询参数或片段"
+            );
+        }
+        Ok(())
+    }
+    pub fn route(&self, url: &Url) -> Url {
+        if !self.github.is_empty()
+            && matches!(
+                url.host_str(),
+                Some(
+                    "github.com"
+                        | "api.github.com"
+                        | "raw.githubusercontent.com"
+                        | "objects.githubusercontent.com"
+                        | "release-assets.githubusercontent.com"
+                )
+            )
+            && !url
+                .as_str()
+                .starts_with(&format!("{}/", self.github.trim_end_matches('/')))
+        {
+            Url::parse(&format!("{}/{}", self.github.trim_end_matches('/'), url))
+                .expect("validated GitHub proxy")
+        } else {
+            url.clone()
+        }
+    }
+    pub fn proxy_for(&self, url: &Url) -> Result<Option<ureq::Proxy>> {
+        if !self.http.is_empty() {
+            return parse_proxy(&self.http).map(Some);
+        }
+        if self.system { for_url(url) } else { Ok(None) }
+    }
+}
+static DOWNLOAD_SETTINGS: std::sync::OnceLock<std::sync::RwLock<DownloadSettings>> =
+    std::sync::OnceLock::new();
+fn active_settings() -> &'static std::sync::RwLock<DownloadSettings> {
+    DOWNLOAD_SETTINGS.get_or_init(|| std::sync::RwLock::new(DownloadSettings::default()))
+}
+pub fn current() -> DownloadSettings {
+    active_settings().read().unwrap().clone()
+}
+fn settings_path() -> Result<std::path::PathBuf> {
+    Ok(
+        directories::ProjectDirs::from("org", "Framely", "Installer")
+            .ok_or_else(|| anyhow::anyhow!("无法确定配置目录"))?
+            .config_dir()
+            .join("download-settings.json"),
+    )
+}
+pub fn load() -> Result<DownloadSettings> {
+    let path = settings_path()?;
+    let settings = if path.exists() {
+        serde_json::from_slice::<DownloadSettings>(&std::fs::read(path)?)?
+    } else {
+        DownloadSettings::default()
+    };
+    settings.validate()?;
+    *active_settings().write().unwrap() = settings.clone();
+    Ok(settings)
+}
+pub fn save(settings: DownloadSettings) -> Result<()> {
+    settings.validate()?;
+    let path = settings_path()?;
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+    use std::io::Write;
+    file.write_all(&serde_json::to_vec_pretty(&settings)?)?;
+    file.as_file().sync_all()?;
+    file.persist(path)?;
+    *active_settings().write().unwrap() = settings;
+    Ok(())
+}
+
 #[derive(Default)]
 struct Settings {
     proxies: HashMap<String, String>,
@@ -556,5 +667,86 @@ mod tests {
             settings.select(&Url::parse("https://github.com").unwrap()),
             Some("proxy.example.org:8080")
         );
+    }
+}
+
+#[cfg(test)]
+mod download_settings_tests {
+    use super::*;
+    #[test]
+    fn default_preserves_system_discovery_and_old_preferences() {
+        assert!(DownloadSettings::default().system);
+        assert!(
+            serde_json::from_str::<DownloadSettings>("{}")
+                .unwrap()
+                .system
+        );
+    }
+    #[test]
+    fn disabled_system_and_explicit_override() {
+        let mut settings = DownloadSettings {
+            system: false,
+            ..Default::default()
+        };
+        let target = Url::parse("https://github.com/a/b").unwrap();
+        assert!(settings.proxy_for(&target).unwrap().is_none());
+        settings.http = "http://127.0.0.1:7890".into();
+        settings.validate().unwrap();
+        assert!(settings.proxy_for(&target).unwrap().is_some());
+    }
+    #[test]
+    fn github_routes_only_exact_hosts_and_does_not_double_wrap_redirects() {
+        let settings = DownloadSettings {
+            github: "https://proxy.example/prefix/".into(),
+            ..Default::default()
+        };
+        settings.validate().unwrap();
+        for host in [
+            "github.com",
+            "api.github.com",
+            "raw.githubusercontent.com",
+            "objects.githubusercontent.com",
+            "release-assets.githubusercontent.com",
+        ] {
+            let original = Url::parse(&format!("https://{host}/a?x=1")).unwrap();
+            let routed = settings.route(&original);
+            assert_eq!(
+                routed.as_str(),
+                format!("https://proxy.example/prefix/{original}")
+            );
+            assert_eq!(settings.route(&routed), routed);
+        }
+        for host in ["github.com.evil.example", "example.org", "proxy.example"] {
+            let url = Url::parse(&format!("https://{host}/a")).unwrap();
+            assert_eq!(settings.route(&url), url);
+        }
+    }
+    #[test]
+    fn invalid_preferences_are_rejected_before_saving() {
+        for github in [
+            "http://proxy.example",
+            "https://proxy.example?q=1",
+            "https://u:p@proxy.example",
+            "https://proxy.example/#x",
+        ] {
+            assert!(
+                DownloadSettings {
+                    github: github.into(),
+                    ..Default::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        for http in ["file:///tmp/x", "http://[::1]:1234"] {
+            assert!(
+                DownloadSettings {
+                    http: http.into(),
+                    ..Default::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
     }
 }

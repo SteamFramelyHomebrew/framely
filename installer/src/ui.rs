@@ -1,6 +1,6 @@
 use super::*;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::Icon;
+use gpui_kit::component::{Icon, switch::Switch};
 use gpui_kit::prelude::FluentBuilder;
 
 pub(super) const BG: u32 = 0x15171b;
@@ -477,6 +477,24 @@ impl Installer {
                     .child(discovery)
                     .child(connection),
             )
+            .into_any_element()
+    }
+    fn settings_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        panel()
+            .child(heading("代理设置", "仅影响安装器检查版本与下载，不改变电脑或 Frame 的系统设置。"))
+            .child(div().flex().items_center().justify_between()
+                .child(div().flex().flex_col().gap_2().child("使用系统代理")
+                    .child(muted("读取环境变量和系统网络设置；填写 HTTP 代理后优先使用指定地址。")))
+                .child(Switch::new("system-proxy").checked(self.system_proxy)
+                    .accessibility_label("使用系统代理").disabled(self.busy)
+                    .on_change(cx.listener(|view, checked, _, cx| { view.system_proxy = *checked; cx.notify(); }))))
+            .child(field("HTTP 代理", &self.http_proxy, self.busy))
+            .child(muted("留空时使用系统代理开关的选择。支持 HTTP 和 SOCKS 代理。"))
+            .child(field("GitHub 代理", &self.github_proxy, self.busy))
+            .child(muted("留空直接访问 GitHub。填写 HTTPS 前缀地址后，GitHub 请求按“代理地址/原始 URL”转发；仍保留包校验。"))
+            .when(self.error.is_some(), |this| this.child(div().text_color(rgb(0xf7a7a7)).child(self.error.clone().unwrap())))
+            .child(div().flex().justify_end().child(Button::new("save-proxy").primary().label("保存")
+                .disabled(self.busy).on_click(cx.listener(|view, _, _, cx| view.save_proxy(cx)))))
             .into_any_element()
     }
     fn release_page(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1037,7 +1055,8 @@ impl Render for Installer {
         let body = match self.page {
             0 => self.device_page(cx),
             1 => self.release_page(cx),
-            _ => self.maintenance_page(cx),
+            2 => self.maintenance_page(cx),
+            _ => self.settings_page(cx),
         };
         let navigation = div()
             .flex()
@@ -1053,6 +1072,7 @@ impl Render for Installer {
                     ("连接设备", IconName::Monitor),
                     ("选择版本", IconName::Package),
                     ("安装与维护", IconName::Wrench),
+                    ("设置", IconName::Settings),
                 ]
                 .into_iter()
                 .enumerate()
@@ -1161,7 +1181,7 @@ impl Render for Installer {
                         view.navigate(next, cx);
                     })),
             );
-        } else {
+        } else if self.page == 2 {
             if let Some(url) = self.manager_url() {
                 footer = footer.child(
                     Button::new("manager")

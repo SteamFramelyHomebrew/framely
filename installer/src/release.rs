@@ -30,27 +30,29 @@ pub fn validate_repo(repo: &str) -> Result<()> {
     );
     Ok(())
 }
-fn agent(url: &url::Url) -> Result<ureq::Agent> {
+fn agent(url: &url::Url, settings: &crate::proxy::DownloadSettings) -> Result<ureq::Agent> {
     let mut builder = ureq::AgentBuilder::new()
         .try_proxy_from_env(false)
         .timeout(Duration::from_secs(120))
         .redirects(0);
-    if let Some(proxy) = crate::proxy::for_url(url)? {
+    if let Some(proxy) = settings.proxy_for(url)? {
         builder = builder.proxy(proxy);
     }
     Ok(builder.build())
 }
 fn get(url: &str) -> Result<ureq::Response> {
+    let settings = crate::proxy::current();
     let mut url = url::Url::parse(url)?;
     for _ in 0..=5 {
         ensure!(url.scheme() == "https", "下载地址必须使用 HTTPS");
         // Re-evaluate bypass rules for every redirect target.
-        let response = agent(&url)?
-            .get(url.as_str())
+        let routed = settings.route(&url);
+        let response = agent(&routed, &settings)?
+            .get(routed.as_str())
             .set("User-Agent", "Framely-Installer")
             .call()?;
         if (300..400).contains(&response.status()) {
-            url = url.join(response.header("Location").context("重定向缺少地址")?)?;
+            url = routed.join(response.header("Location").context("重定向缺少地址")?)?;
         } else {
             return Ok(response);
         }
