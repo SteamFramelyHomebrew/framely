@@ -51,3 +51,7 @@ The result shows RMS target bias and the worst target bias in degrees. Each targ
 After substantial changes to headset fit or the window distance, run calibration again.
 
 Press feedback appears only after holding for 200 ms. The Dock entry uses a blue border indicator and opens the quick panel at 600 ms. Launcher icons show a translucent white circular progress border: the halfway tick opens the menu at 400 ms; continuing to 800 ms enters icon editing. Release or cancellation removes the indicator.
+
+### Remote Steam games
+
+The Steam category also shows apps installed on a connected Remote Play computer. A small Remote Play badge appears at the bottom right of their icons. The list refreshes in the background; disconnected hosts disappear, and each App ID has one icon. If both local and remote installations are available, clicking it opens a choice between launching locally and Remote Play. Favorites and manual ordering remain shared for that game. Clicking a remote icon asks Steam to stream from its current host and checks availability again before launching. Artwork uses the local Steam cache, with a placeholder when unavailable. The integration uses the running Steam client UI; if that interface is unavailable, local games remain usable.

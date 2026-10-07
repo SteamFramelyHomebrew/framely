@@ -1,4 +1,5 @@
-//! Local Steam library discovery. No account API or network access is needed.
+//! Local Steam libraries and connected Remote Play hosts.
+mod remote;
 use anyhow::{ensure, Context, Result};
 use serde::Serialize;
 use std::{
@@ -9,6 +10,9 @@ use std::{
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct App {
+    pub remote: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_client: Option<String>,
     pub id: u32,
     pub name: String,
     pub kind: &'static str,
@@ -202,77 +206,13 @@ pub fn discover(home: &Path) -> Vec<App> {
             {
                 continue;
             }
-            let dir = steam.join("appcache/librarycache").join(id.to_string());
-            let mut candidates: Vec<_> = fs::read_dir(dir)
-                .ok()
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|e| e.path())
-                .collect();
-            // Newer Steam clients keep named artwork one level below a content hash.
-            let nested: Vec<_> = candidates
-                .iter()
-                .filter(|p| p.is_dir())
-                .take(16)
-                .cloned()
-                .collect();
-            for path in nested {
-                candidates.extend(
-                    fs::read_dir(path)
-                        .ok()
-                        .into_iter()
-                        .flatten()
-                        .flatten()
-                        .take(32)
-                        .map(|e| e.path()),
-                );
-            }
-            for suffix in ["icon.jpg", "icon.png", "library_600x900.jpg", "header.jpg"] {
-                candidates.push(
-                    steam
-                        .join("appcache/librarycache")
-                        .join(format!("{id}_{suffix}")),
-                );
-            }
-            let artwork_fit = |p: &Path| {
-                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-                if name.contains("600x900") || name == "library_capsule.jpg" {
-                    (0, "cover")
-                } else if name.contains("header") {
-                    (1, "cover")
-                } else if name == "logo.png" {
-                    (2, "contain")
-                } else {
-                    (3, "contain")
-                }
-            };
-            candidates.sort_by_key(|p| (artwork_fit(p).0, p.clone()));
-            let icon = candidates.into_iter().take(32).find_map(|p| {
-                if fs::metadata(&p).ok()?.len() > 1024 * 1024 {
-                    return None;
-                }
-                let b = fs::read(&p).ok()?;
-                let mime = if b.starts_with(b"\x89PNG\r\n\x1a\n") {
-                    "image/png"
-                } else if b.starts_with(&[0xff, 0xd8, 0xff]) {
-                    "image/jpeg"
-                } else {
-                    return None;
-                };
-                use base64::Engine;
-                Some((
-                    format!(
-                        "data:{mime};base64,{}",
-                        base64::engine::general_purpose::STANDARD.encode(b)
-                    ),
-                    artwork_fit(&p).1,
-                ))
-            });
+            let icon = cached_artwork(&steam, id);
             apps.insert(
                 id,
                 App {
                     id,
+                    remote: false,
+                    remote_client: None,
                     name: name.into(),
                     kind: if text(v, "installdir").is_some_and(|dir| {
                         fs::read_dir(library.join("steamapps/common").join(dir)).is_ok_and(
@@ -295,6 +235,117 @@ pub fn discover(home: &Path) -> Vec<App> {
     }
     apps.into_values().collect()
 }
+fn cached_artwork(steam: &Path, id: u32) -> Option<(String, &'static str)> {
+    let dir = steam.join("appcache/librarycache").join(id.to_string());
+    let mut candidates: Vec<_> = fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    // Newer Steam clients keep named artwork one level below a content hash.
+    let nested: Vec<_> = candidates
+        .iter()
+        .filter(|p| p.is_dir())
+        .take(16)
+        .cloned()
+        .collect();
+    for path in nested {
+        candidates.extend(
+            fs::read_dir(path)
+                .ok()
+                .into_iter()
+                .flatten()
+                .flatten()
+                .take(32)
+                .map(|e| e.path()),
+        );
+    }
+    for suffix in ["icon.jpg", "icon.png", "library_600x900.jpg", "header.jpg"] {
+        candidates.push(
+            steam
+                .join("appcache/librarycache")
+                .join(format!("{id}_{suffix}")),
+        );
+    }
+    let artwork_fit = |p: &Path| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        if name.contains("600x900") || name == "library_capsule.jpg" {
+            (0, "cover")
+        } else if name.contains("header") {
+            (1, "cover")
+        } else if name == "logo.png" {
+            (2, "contain")
+        } else {
+            (3, "contain")
+        }
+    };
+    candidates.sort_by_key(|p| (artwork_fit(p).0, p.clone()));
+    candidates.into_iter().take(32).find_map(|p| {
+        if fs::metadata(&p).ok()?.len() > 1024 * 1024 {
+            return None;
+        }
+        let b = fs::read(&p).ok()?;
+        let mime = if b.starts_with(b"\x89PNG\r\n\x1a\n") {
+            "image/png"
+        } else if b.starts_with(&[0xff, 0xd8, 0xff]) {
+            "image/jpeg"
+        } else {
+            return None;
+        };
+        use base64::Engine;
+        Some((
+            format!(
+                "data:{mime};base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(b)
+            ),
+            artwork_fit(&p).1,
+        ))
+    })
+}
+
+pub fn remote_snapshot() -> serde_json::Value {
+    serde_json::json!(remote::cached())
+}
+pub fn discover_launcher(home: &Path) -> Vec<App> {
+    merge_remote(home, discover(home), remote::cached())
+}
+fn merge_remote(home: &Path, local: Vec<App>, remote: Vec<remote::RemoteApp>) -> Vec<App> {
+    let mut apps: BTreeMap<_, _> = local.into_iter().map(|a| (a.id, a)).collect();
+    let steam = home.join(".local/share/Steam");
+    let steam = if steam.exists() {
+        steam
+    } else {
+        home.join(".steam/steam")
+    };
+    for a in remote {
+        if let Some(existing) = apps.get_mut(&a.id) {
+            // Keep local metadata and a single stable icon, but expose both launch targets.
+            if existing.remote_client.is_none() {
+                existing.remote_client = Some(a.client);
+            }
+            continue;
+        }
+        apps.entry(a.id).or_insert_with(|| {
+            let icon = cached_artwork(&steam, a.id);
+            App {
+                id: a.id,
+                name: a.name,
+                kind: "steam",
+                icon_fit: icon.as_ref().map(|v| v.1).unwrap_or("contain"),
+                icon: icon.map(|v| v.0),
+                remote: true,
+                remote_client: Some(a.client),
+            }
+        });
+    }
+    apps.into_values().collect()
+}
+pub fn launch_remote(id: u32, client: &str) -> Result<()> {
+    remote::launch(id, client)
+}
+
 pub fn home() -> Result<PathBuf> {
     ensure!(
         unsafe { libc::geteuid() } != 0,
@@ -321,6 +372,43 @@ fn launch_installed(home: &Path, id: u32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remote_inventory_merges_launch_choices_without_duplicate_icons() {
+        let home = tempfile::tempdir().unwrap();
+        let local = vec![App {
+            id: 42,
+            name: "Local".into(),
+            kind: "steam",
+            icon: None,
+            icon_fit: "contain",
+            remote: false,
+            remote_client: None,
+        }];
+        let rows = vec![
+            remote::RemoteApp {
+                id: 42,
+                name: "Same remote".into(),
+                client: "12".into(),
+            },
+            remote::RemoteApp {
+                id: 43,
+                name: "Remote".into(),
+                client: "12".into(),
+            },
+            remote::RemoteApp {
+                id: 43,
+                name: "Other host".into(),
+                client: "13".into(),
+            },
+        ];
+        let apps = merge_remote(home.path(), local, rows);
+        assert_eq!(apps.len(), 2);
+        assert!(!apps[0].remote);
+        assert_eq!(apps[0].name, "Local");
+        assert_eq!(apps[0].remote_client.as_deref(), Some("12"));
+        assert!(apps[1].remote);
+        assert_eq!(apps[1].remote_client.as_deref(), Some("12"));
+    }
     #[test]
     fn nested_escaped_and_invalid() {
         let t = tokens("\"libraryfolders\" { \"0\" { \"path\" \"/a\\\\b\" } }").unwrap();

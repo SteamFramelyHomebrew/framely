@@ -195,3 +195,8 @@
 @keyframes launch-hold-fill{to{stroke-dashoffset:0}}
 
 @media(max-width:900px){.launch-hold-progress{width:94px;height:94px}}
+
+.launch-remote-mark{position:absolute;right:18px;bottom:11px;width:29px;height:29px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:#252525e8;color:#f0f0f0;box-shadow:0 2px 6px #0005;pointer-events:none;z-index:2}
+@media(max-width:900px){.launch-remote-mark{right:1px;bottom:1px}}
+
+.launch-choice-actions{display:flex;gap:14px;margin:24px 0}.launch-choice-actions button{flex:1;display:flex;align-items:center;justify-content:center;gap:12px;min-height:64px}

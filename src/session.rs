@@ -953,14 +953,26 @@ impl Agent {
                 }
                 Ok(json!(true))
             }
-            "steam.list" => Ok(json!(crate::steam::discover(&crate::steam::home()?))),
+            "steam.list" => {
+                if p["remoteOnly"] == true {
+                    Ok(crate::steam::remote_snapshot())
+                } else {
+                    Ok(json!(crate::steam::discover_launcher(
+                        &crate::steam::home()?
+                    )))
+                }
+            }
             "steam.launch" => {
                 let launcher_session = p["launcherSession"].as_u64();
                 let id = p["app"]
                     .as_u64()
                     .filter(|v| *v > 0 && *v <= u32::MAX as u64)
                     .context("Invalid Steam app")? as u32;
-                crate::steam::launch(id)?;
+                if let Some(client) = p["remoteClient"].as_str() {
+                    crate::steam::launch_remote(id, client)?;
+                } else {
+                    crate::steam::launch(id)?;
+                }
                 push(
                     &self.commands,
                     json!({"kind":"launcher.close","handoff":true,"launcherSession":launcher_session}),
