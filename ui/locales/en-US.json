@@ -999,6 +999,7 @@
     "适应窗口": "Fit to window",
     "上一个文件": "Previous file",
     "下一个文件": "Next file",
-    "滚轮缩放 · 拖动移动 · ← → 切换 · Esc 关闭": "Scroll to zoom · Drag to pan · ← → Browse · Esc Close"
+    "滚轮缩放 · 拖动移动 · ← → 切换 · Esc 关闭": "Scroll to zoom · Drag to pan · ← → Browse · Esc Close",
+    "预览操作": "Preview controls"
   }
 }

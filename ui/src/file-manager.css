@@ -185,22 +185,29 @@
 .file-manager .file-thumbnail{position:relative;width:100%;height:100%;display:grid;place-items:center}
 .file-manager .file-media-thumbnail{width:100%;height:100%;object-fit:contain;border-radius:5px;user-select:none;pointer-events:none}
 .file-manager .file-video-marker{position:absolute;bottom:2px;left:2px;color:#f4f4f6;filter:drop-shadow(0 1px 2px #000);pointer-events:none}
-/* Media viewer covers the entire panel or browser, independently of file layout. */
+/* Preserve Framely dark theme. DESIGN_VARIANCE: 4, MOTION_INTENSITY: 2, VISUAL_DENSITY: 2.
+   Bottom capsule uses a CSS glass approximation, not an Apple platform material. */
 .file-manager.file-media-overlay{position:fixed;inset:0;z-index:150;display:flex;flex-direction:column;background:#111113f5;color:#ededf0;outline:none;--file-text:#ededf0;--file-muted:#a6a6af}
-.file-media-header{position:relative;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 20px;border-bottom:1px solid #ffffff12;background:#19191b}
-.file-media-header>div:first-child{display:flex;align-items:baseline;gap:14px;min-width:0}
-.file-media-header strong{font-size:16px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.file-media-header span,.file-media-actions output{color:#a6a6af;font-size:13px;white-space:nowrap}
-.file-media-actions{display:flex;align-items:center;gap:5px;flex-shrink:0}
-.file-manager .file-media-actions button,.file-manager .file-media-prev,.file-manager .file-media-next{display:grid;place-items:center;width:40px;height:40px;padding:0;border:1px solid #ffffff14;border-radius:10px;background:#29292de0;color:#ececef}
-.file-media-actions output{min-width:44px;text-align:center;font-variant-numeric:tabular-nums}
 .file-media-stage{position:relative;flex:1;min-height:0;overflow:hidden;touch-action:none;user-select:none;cursor:grab}
 .file-media-stage:active{cursor:grabbing}
 .file-media-canvas{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;transform-origin:center;will-change:transform;pointer-events:none}
-.file-media-canvas img,.file-media-canvas video{max-width:calc(100% - 120px);max-height:calc(100% - 32px);object-fit:contain;display:block}
+.file-media-canvas img,.file-media-canvas video{max-width:calc(100% - 48px);max-height:calc(100% - 40px);object-fit:contain;display:block}
+.file-media-canvas img{pointer-events:auto;}
 .file-media-canvas video{pointer-events:auto;cursor:auto;touch-action:auto}
 .file-media-loading,.file-media-error{position:absolute;inset:0;display:flex;flex-direction:column;gap:14px;align-items:center;justify-content:center;padding:40px;text-align:center;color:#b1b1bb;cursor:default}
-.file-manager .file-media-prev,.file-manager .file-media-next{position:absolute;top:50%;z-index:3;width:44px;height:52px}
-.file-media-prev{left:16px}.file-media-next{right:16px}
-.file-media-footer{padding:9px 16px;text-align:center;font-size:12px;color:#9999a5;border-top:1px solid #ffffff0a}
-@media(max-width:700px){.file-media-header{flex-wrap:wrap;padding:10px 12px;gap:8px}.file-media-header>div:first-child{width:100%;justify-content:space-between}.file-media-actions{margin-left:auto}.file-media-canvas img,.file-media-canvas video{max-width:calc(100% - 76px)}.file-media-prev{left:6px}.file-media-next{right:6px}.file-manager .file-media-prev,.file-manager .file-media-next{width:32px;height:44px}.file-media-footer{font-size:11px}}
+.file-media-dock{display:flex;flex-direction:column;align-items:center;gap:14px;flex-shrink:0;padding:8px 16px max(20px,env(safe-area-inset-bottom));}
+.file-media-actions{display:flex;align-items:center;gap:3px;max-width:100%;padding:7px 9px;border-radius:999px;border:1px solid #ffffff1f;background:#2a2a2dd9;backdrop-filter:blur(16px);box-shadow:inset 0 1px 0 #ffffff12,0 8px 30px #05050750;}
+.file-manager .file-media-actions button{display:grid;place-items:center;width:42px;height:42px;flex-shrink:0;padding:0;border:0;border-radius:50%;background:transparent;color:#ececef;box-shadow:none;transition:background .16s ease,transform .16s ease;}
+.file-manager .file-media-actions button:hover:not(:disabled){background:#ffffff12;}
+.file-manager .file-media-actions button:active:not(:disabled){transform:scale(.94);background:#ffffff1b;}
+.file-manager .file-media-actions button:focus-visible{outline:2px solid #c5c5cc;outline-offset:1px;}
+.file-manager .file-media-actions button:disabled{color:#77777f;opacity:1;cursor:default;}
+.file-media-actions output{min-width:46px;text-align:center;color:#c5c5cd;font-size:12px;font-variant-numeric:tabular-nums;}
+.file-media-divider{height:18px;width:1px;background:#ffffff18;margin:0 6px;flex-shrink:0;}
+.file-media-caption{max-width:min(720px,90vw);text-align:center;}
+.file-media-caption p{margin:0;color:#e1e1e7;font-size:15px;font-weight:500;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.file-media-caption>span{display:block;margin-top:4px;color:#a6a6b0;font-size:12px;font-variant-numeric:tabular-nums;}
+@media(max-width:640px){.file-media-dock{padding-left:10px;padding-right:10px;gap:11px}.file-media-actions{gap:0;padding:5px 7px}.file-manager .file-media-actions button{width:36px;height:36px}.file-media-actions output{min-width:38px;font-size:11px}.file-media-divider{margin:0 4px}.file-media-caption p{font-size:13px}.file-media-canvas img,.file-media-canvas video{max-width:calc(100% - 24px);max-height:calc(100% - 24px)}}
+@media(max-width:360px){.file-manager .file-media-actions button{width:33px;height:36px}.file-media-divider{margin:0 3px}.file-media-actions output{min-width:34px}}
+@media(prefers-reduced-transparency:reduce){.file-media-actions{background:#2a2a2d;backdrop-filter:none}.file-manager.file-media-overlay{background:#111113}}
+@media(prefers-reduced-motion:reduce){.file-manager .file-media-actions button{transition:none;}}
