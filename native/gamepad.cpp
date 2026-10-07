@@ -16,7 +16,7 @@
 #include <thread>
 static volatile sig_atomic_t stopped=0;
 static void stop(int){stopped=1;}
-static const int keys[]={BTN_SOUTH,BTN_EAST,BTN_WEST,BTN_NORTH,BTN_TL,BTN_TR,BTN_SELECT,BTN_START,BTN_THUMBL,BTN_THUMBR};
+#include "gamepad_mapping.h"
 static const int axes[]={ABS_X,ABS_Y,ABS_RX,ABS_RY,ABS_Z,ABS_RZ,ABS_HAT0X,ABS_HAT0Y};
 static bool event(int fd,int type,int code,int value){input_event e{};e.type=type;e.code=code;e.value=value;return write(fd,&e,sizeof e)==sizeof e;}
 static bool send(int fd,const int* state){bool ok=true;for(int k=0;k<10;k++)ok=event(fd,EV_KEY,keys[k],state[k])&&ok;for(int k=0;k<8;k++)ok=event(fd,EV_ABS,axes[k],state[10+k])&&ok;return event(fd,EV_SYN,SYN_REPORT,0)&&ok;}
