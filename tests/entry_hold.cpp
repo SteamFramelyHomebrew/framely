@@ -16,10 +16,10 @@ int main(){
  }
  EntryHold hold;
  hold.event(true,1,1,true,true,start);
- assert(hold.progress(start+milliseconds(99))==0);
- assert(hold.tick(start+milliseconds(100),true,true)==A::Idle);
- assert(hold.progress(start+milliseconds(100))>0&&hold.progress(start+milliseconds(100))<.01f);
- assert(std::abs(hold.progress(start+milliseconds(300))-.4f)<.001f);
+ assert(hold.progress(start+milliseconds(199))==0);
+ assert(hold.tick(start+milliseconds(200),true,true)==A::Idle);
+ assert(hold.progress(start+milliseconds(200))>0&&hold.progress(start+milliseconds(200))<.01f);
+ assert(std::abs(hold.progress(start+milliseconds(400))-.5f)<.001f);
  assert(hold.tick(start+milliseconds(599),true,true)==A::Idle);
  assert(hold.progress(start+milliseconds(599))<1);
  assert(hold.tick(start+milliseconds(600),true,true)==A::QuickPanel);
@@ -59,7 +59,7 @@ int main(){
  const auto received=start+seconds(1);
  hold.event(true,1,1,true,true,entry_event_time(received,1.f),received);
  assert(hold.tick(received,true,true)==A::Idle);
- assert(hold.progress(received+milliseconds(99))==0);
+ assert(hold.progress(received+milliseconds(199))==0);
  assert(hold.event(false,1,1,true,true,entry_event_time(received,.92f),received)==A::Launcher);
  // A missing overlay release cannot leave a delayed quick-panel activation.
  hold.event(true,1,1,true,true,start);

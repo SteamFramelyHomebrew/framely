@@ -16,7 +16,7 @@ struct EntryHold {
  using Clock=std::chrono::steady_clock;
  enum class Action { Idle, Launcher, QuickPanel };
  static constexpr auto quick_panel_delay=std::chrono::milliseconds(600);
- static constexpr auto feedback_delay=std::chrono::milliseconds(100);
+ static constexpr auto feedback_delay=std::chrono::milliseconds(200);
  bool pressed=false,fired=false;
  unsigned device=~0u,button=0;
  Clock::time_point started{},armed_since{},last_inside{};
