@@ -12,6 +12,8 @@ use std::{
 };
 #[derive(Clone)]
 pub struct Mount {
+    pub direct: bool,
+    pub source: String,
     pub context: String,
     pub token: String,
     pub event: PathBuf,
@@ -143,7 +145,7 @@ pub fn prepare(
     threshold: u8,
 ) -> Result<Mount> {
     ensure!(
-        matches!(source, "steam" | "frame"),
+        matches!(source, "steam" | "frame" | "steam-direct"),
         "Invalid gamepad input source"
     );
     ensure!(SESSION.load(std::sync::atomic::Ordering::Relaxed),"Gamepad launch requires the UI session; open the APK from the management panel or launcher");
@@ -168,6 +170,10 @@ pub fn prepare(
         }
     }
     if let Some(mount) = current {
+        ensure!(
+            mount.source == source,
+            "Controller source changed; close and restart this container"
+        );
         return Ok(mount);
     }
     let exe = std::env::current_exe()?;
@@ -178,7 +184,12 @@ pub fn prepare(
     let helper = distribution.join("lib/openvr/framely-gamepad");
     let grab = distribution.join("lib/openvr/libframely-gamepad-grab.so");
     let manifest = distribution.join("share/input/gamepad/actions.json");
-    let layout = distribution.join("share/input/gamepad/Vendor_0001_Product_f001.kl");
+    let direct = source == "steam-direct";
+    let layout = distribution.join(if direct {
+        "share/input/gamepad/Vendor_28de_Product_11ff.kl"
+    } else {
+        "share/input/gamepad/Vendor_0001_Product_f001.kl"
+    });
     ensure!(
         helper.is_file() && grab.is_file() && manifest.is_file() && layout.is_file(),
         "Gamepad input runtime is missing; install a complete Framely build"
@@ -211,6 +222,7 @@ pub fn prepare(
     };
     let mut child = Command::new(helper)
         .env("FRAMELY_GAMEPAD_SOURCE", source)
+        .env("FRAMELY_GAMEPAD_READY", &ready)
         .env("FRAMELY_GAMEPAD_TRIGGER_THRESHOLD", threshold.to_string())
         .env("FRAMELY_GAMEPAD_RUMBLE", if rumble { "1" } else { "0" })
         .env(
@@ -246,6 +258,8 @@ pub fn prepare(
         .map(|s| PathBuf::from(s.trim()));
     let mut bridge = Bridge {
         mount: Mount {
+            direct,
+            source: source.into(),
             context: context.into(),
             token,
             event: PathBuf::new(),
@@ -325,7 +339,7 @@ pub fn activate(context: &str, package: &str) -> Result<()> {
     }
     ensure!(
         claimed(&mount.ready),
-        "Android did not claim the virtual gamepad; restart the container and retry"
+        "Android did not register the gamepad; restart the container and retry"
     );
     select_target(context, package)
 }
@@ -384,6 +398,8 @@ mod tests {
         let id = child.id();
         let mut bridge = Bridge {
             mount: Mount {
+                direct: false,
+                source: "steam".into(),
                 context: "test".into(),
                 token: "same-device".into(),
                 event: PathBuf::from("/dev/input/event999"),

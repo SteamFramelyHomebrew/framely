@@ -123,6 +123,28 @@ Steam Input loads SDL3 from Steam’s bundled ARM64 runtime and reads Steam’s 
 
 桥接以 Steam 会话用户运行，使用 Steam 随附的 ARM64 SDL3，仅读取 Steam 虚拟手柄。Framely 输出设备使用独立标识并排除自身，避免反馈循环。仅把专用事件节点及只读按键布局挂载进容器，不修改系统或 Steam 安装文件。Frame 直连使用独立的 SteamVR 身份；Steam Input 不注册 OpenVR 输入动作，避免影响 SDL 的虚拟手柄枚举。SDL3 不可用时明确报错，可手动选择 Frame 直连。日志位于 `~/.local/share/framely/apk-manager/logs/gamepad.log`，不记录按键。APK 必须从管理面板或启动台启动，单次 CLI 不能持有持续桥接。
 
+
+### Steam Input passthrough
+
+**APK → Settings → Controller input source → Steam Input passthrough** mounts one Steam-generated event device directly into Android with the correct Steam key layout. It does not create another virtual gamepad or use SDL/OpenVR to remap input. The existing Steam Input bridge remains the default; Frame direct input remains available.
+
+Passthrough chooses the lowest valid Steam controller slot, excluding Framely's own bridge output. It preserves both sticks, analog triggers, buttons and hats. Steam's native node does not supply digital L2/R2: use the bridge if a game needs these buttons or automatic switching between several controllers. The trigger threshold applies only to bridge modes.
+
+A small Android input guard neutralizes background events and gates game-requested force feedback using the same controller-input and rumble switches. Expiring control leases stop input and feedback if the session helper disappears. Native force feedback goes directly to Steam's device; games must request controller vibration. Bridge-specific strength and duration limits do not apply to passthrough.
+
+Only the selected device is mounted, not the entire host input directory. No SteamOS or Lepton installation files are changed. If the device node or Steam controller ownership changes, input stops; close and restart that container after reconnecting the controller. Framely never silently remounts another device or restarts a running game. Diagnostics are written to `~/.local/share/framely/apk-manager/logs/gamepad.log` without recording button events.
+
+
+### Steam Input 直通
+
+在 **APK → 设置 → 手柄输入来源 → Steam Input 直通** 中选择。仅将 Steam 生成的一只手柄事件设备及正确按键布局挂载进 Android，不创建第二只虚拟手柄，也不通过 SDL/OpenVR 重映射。现有 Steam Input 桥接仍为默认，Frame 直连保持可用。
+
+直通选择编号最小的有效 Steam 手柄槽位，排除 Framely 自己生成的桥接输出。支持双摇杆、线性扳机、按键及十字键。Steam 原节点没有数字 L2/R2；需要这两个按键或多手柄自动切换的游戏可继续使用桥接。扳机阈值仅对桥接模式生效。
+
+Android 输入保护层清零后台输入，并使用现有输入及震动开关控制游戏请求的力反馈。控制租约到期后停止输入和震动，避免会话辅助进程退出后继续响应。直通震动直接交给 Steam 原设备；游戏本身必须发出手柄震动请求。桥接专用的强度及持续时间限制不适用于直通。
+
+只挂载选中的设备，不暴露整个主机输入目录，不修改 SteamOS 或 Lepton 安装文件。设备节点重建或 Steam 手柄归属变化后停止输入；重新连接后需关闭并重启该容器，不会静默切换到其他设备或重启游戏。日志位于 `~/.local/share/framely/apk-manager/logs/gamepad.log`，不记录按键事件。
+
 ## Container lifecycle
 
 The APK page provides two persistent switches. **Stop container after app exits** defaults off: after a confirmed launch, all target app processes must remain absent for 15 seconds before the container stops. Background apps and services keep it alive. **Stop container when closing its window** defaults on: a confirmed system window-close signal stops the associated container (normally within a few seconds). Switching windows, minimizing, and opening the launcher do not count as closing.

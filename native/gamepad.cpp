@@ -19,6 +19,7 @@ static void stop(int){stopped=1;}
 #include "gamepad_mapping.h"
 #include "gamepad_steam.h"
 #include "gamepad_feedback.h"
+#include "gamepad_direct.h"
 static const int axes[]={ABS_X,ABS_Y,ABS_RX,ABS_RY,ABS_Z,ABS_RZ,ABS_HAT0X,ABS_HAT0Y};
 static bool event(int fd,int type,int code,int value){input_event e{};e.type=type;e.code=code;e.value=value;return write(fd,&e,sizeof e)==sizeof e;}
 static GamepadTriggers triggers;
@@ -29,6 +30,8 @@ int main(int argc,char**argv){
  // follows that thread's lifetime, so it destroys the pad as soon as prepare
  // returns. The session-owned stdin pipe and parent process own this helper.
  const auto parent=getppid();
+ signal(SIGTERM,stop);signal(SIGINT,stop);signal(SIGPIPE,SIG_IGN);
+ if(const char* mode=getenv("FRAMELY_GAMEPAD_SOURCE");mode&&std::string(mode)=="steam-direct")return steam_direct(getenv("FRAMELY_STEAM_GAMEPAD_INFO"),getenv("FRAMELY_GAMEPAD_READY"));
  const bool steamMode=std::getenv("FRAMELY_GAMEPAD_SOURCE")&&std::string(std::getenv("FRAMELY_GAMEPAD_SOURCE"))=="steam";
  SteamGamepad steam;
  if(steamMode&&!steam.start(std::getenv("FRAMELY_STEAM_SDL_LIBRARY"),std::getenv("FRAMELY_STEAM_GAMEPAD_INFO"))){fprintf(stderr,"Steam Input SDL3 runtime unavailable; select Frame direct input in APK settings.\n");return 1;}

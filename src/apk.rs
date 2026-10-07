@@ -1286,7 +1286,12 @@ if [[ -n "${FRAMELY_GAMEPAD_EVENT:-}" ]]; then
         podman_mount_entry "${FRAMELY_GAMEPAD_EVENT:?}" /dev/input/event250 rw
         podman_mount_entry "${FRAMELY_GAMEPAD_GRAB:?}" /vendor/lib64/libframely_gamepad_grab.so ro
         if [[ -n "${FRAMELY_GAMEPAD_LAYOUT:-}" ]]; then
-            podman_mount_entry "$FRAMELY_GAMEPAD_LAYOUT" /system/usr/keylayout/Vendor_0001_Product_f001.kl ro
+            local layout=/system/usr/keylayout/Vendor_0001_Product_f001.kl
+            if [[ "${FRAMELY_GAMEPAD_DIRECT:-0}" == 1 ]]; then
+                layout=/system/usr/keylayout/Vendor_28de_Product_11ff.kl
+                podman_mount_entry "${FRAMELY_GAMEPAD_READY:?}/control" /framely-gamepad-control ro
+            fi
+            podman_mount_entry "$FRAMELY_GAMEPAD_LAYOUT" "$layout" ro
         fi
         podman_mount_entry "${FRAMELY_GAMEPAD_READY:?}" /framely-gamepad-ready rw
     }
@@ -1610,11 +1615,15 @@ fn start_oriented_container_for(
         cmd.env_remove("FRAMELY_STEAM_APP_ID");
     }
     if let Some(mount) = gamepad {
-        cmd.env("FRAMELY_GAMEPAD_EVENT", &mount.event)
-            .env("FRAMELY_GAMEPAD_GRAB", &mount.grab)
-            .env("FRAMELY_GAMEPAD_LAYOUT", &mount.layout)
-            .env("FRAMELY_GAMEPAD_READY", &mount.ready)
-            .env("FRAMELY_GAMEPAD_TOKEN", &mount.token);
+        cmd.env(
+            "FRAMELY_GAMEPAD_DIRECT",
+            if mount.direct { "1" } else { "0" },
+        )
+        .env("FRAMELY_GAMEPAD_EVENT", &mount.event)
+        .env("FRAMELY_GAMEPAD_GRAB", &mount.grab)
+        .env("FRAMELY_GAMEPAD_LAYOUT", &mount.layout)
+        .env("FRAMELY_GAMEPAD_READY", &mount.ready)
+        .env("FRAMELY_GAMEPAD_TOKEN", &mount.token);
     }
     if c.id.starts_with("external-") || c.name != c.id {
         cmd.env(
@@ -2588,7 +2597,7 @@ fn operate_internal(
                 }
                 .to_owned();
                 ensure!(
-                    matches!(source.as_str(), "steam" | "frame"),
+                    matches!(source.as_str(), "steam" | "frame" | "steam-direct"),
                     "Invalid gamepad input source"
                 );
                 let rumble = if p.get("rumble").is_some() {
@@ -3545,7 +3554,7 @@ mod tests {
         )
         .is_err());
         assert!(!load(home).unwrap().gamepad_enabled);
-        for source in ["frame", "steam"] {
+        for source in ["frame", "steam", "steam-direct"] {
             operate(
                 home,
                 "gamepad.settings",
@@ -3680,6 +3689,28 @@ setup_props
         assert!(fs::read_to_string(dir.path().join("props"))
             .unwrap()
             .contains("framely.gamepad.bridge=token"));
+        fs::write(dir.path().join("mounts"), "").unwrap();
+        let status = Command::new("bash")
+            .arg(&path)
+            .env("FRAMELY_LEPTON_DIR", library.parent().unwrap())
+            .env("TEST_PROPS", dir.path().join("props"))
+            .env("TEST_PREFIX", dir.path())
+            .env("TEST_MOUNTS", dir.path().join("mounts"))
+            .env("FRAMELY_GAMEPAD_EVENT", "/dev/input/event5")
+            .env("FRAMELY_GAMEPAD_GRAB", "/runtime/grab.so")
+            .env("FRAMELY_GAMEPAD_LAYOUT", "/runtime/steam.kl")
+            .env("FRAMELY_GAMEPAD_READY", "/private/gamepad")
+            .env("FRAMELY_GAMEPAD_DIRECT", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let mounts = fs::read_to_string(dir.path().join("mounts")).unwrap();
+        assert_eq!(mounts.lines().count(), 5);
+        assert!(mounts.contains("/dev/input/event5|/dev/input/event250|rw"));
+        assert!(mounts
+            .contains("/runtime/steam.kl|/system/usr/keylayout/Vendor_28de_Product_11ff.kl|ro"));
+        assert!(mounts.contains("/private/gamepad/control|/framely-gamepad-control|ro"));
+        assert!(!mounts.contains("/dev/input|"));
     }
     #[test]
     fn direct_boot_preserves_context_and_controls_window_visibility() {

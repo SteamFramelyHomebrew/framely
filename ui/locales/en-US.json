@@ -1000,6 +1000,9 @@
     "上一个文件": "Previous file",
     "下一个文件": "Next file",
     "滚轮缩放 · 拖动移动 · ← → 切换 · Esc 关闭": "Scroll to zoom · Drag to pan · ← → Browse · Esc Close",
-    "预览操作": "Preview controls"
+    "预览操作": "Preview controls",
+    "Steam Input 直通": "Steam Input passthrough",
+    "Steam Input 桥接（兼容模式）": "Steam Input bridge (compatibility)",
+    "来源切换需关闭容器后重新启动。直通使用 Steam 的第一只有效手柄，保留线性扳机，不补充数字 L2/R2；设备节点重建后需重启容器。桥接支持多手柄切换和数字扳机。": "Close and restart the container to change sources. Passthrough uses the first valid Steam controller and retains analog triggers without synthesizing digital L2/R2. Restart the container if its device node is recreated. The bridge supports controller switching and digital triggers."
   }
 }
