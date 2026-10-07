@@ -2636,6 +2636,13 @@ mod notification_tests {
     #[test]
     fn framely_notification_preferences_control_update_reminders_and_survive_reload() {
         let root = tempfile::tempdir().unwrap();
+        // Model an installed release independently of the build's package version.
+        fs::create_dir(root.path().join("current")).unwrap();
+        fs::write(
+            root.path().join("current/VERSION"),
+            "0.4.2-preview.12-012345abcdef\n",
+        )
+        .unwrap();
         let mut core = crate::tests::accepted_service(root.path(), 1000).unwrap();
         plugin(&mut core);
         send(&mut core, "saved", json!({"inbox":true}));
@@ -2823,6 +2830,13 @@ mod notification_tests {
     #[test]
     fn automatic_update_notifications_ignore_old_versions_and_deduplicate_after_reload() {
         let root = tempfile::tempdir().unwrap();
+        // Model an installed release independently of the build's package version.
+        fs::create_dir(root.path().join("current")).unwrap();
+        fs::write(
+            root.path().join("current/VERSION"),
+            "0.4.2-preview.12-012345abcdef\n",
+        )
+        .unwrap();
         let mut core = crate::tests::accepted_service(root.path(), 1000).unwrap();
         let source = UpdateSource {
             url: "https://example.org/framely-release.json".into(),
@@ -2876,6 +2890,13 @@ mod notification_tests {
     #[test]
     fn automatic_update_schedule_settings_and_stale_completions() {
         let root = tempfile::tempdir().unwrap();
+        // Model an installed release independently of the build's package version.
+        fs::create_dir(root.path().join("current")).unwrap();
+        fs::write(
+            root.path().join("current/VERSION"),
+            "0.4.2-preview.12-012345abcdef\n",
+        )
+        .unwrap();
         let mut core = crate::tests::accepted_service(root.path(), 1000).unwrap();
         let source = UpdateSource {
             url: "https://example.org/framely-release.json".into(),
