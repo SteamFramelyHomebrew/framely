@@ -470,10 +470,13 @@ static void entry_actions(vr::VROverlayHandle_t button,bool available){
  if(!entry_actions_ready)return;auto* input=vr::VRInput();vr::VRActiveActionSet_t sets[2]{};sets[0].ulActionSet=entry_set;sets[1].ulActionSet=gaze_set;
  // Only the eye action participates in overlay priority. Controller bindings
  // keep their existing priority so Steam laser and Dock controls are preserved.
- if(launcher_gaze_allowed())sets[1].nPriority=vr::k_nActionSetOverlayGlobalPriorityMin;
+ if(launcher_gaze_allowed()&&!entry_hold.pressed&&!(available&&(entry_pointer.inside||overlays->IsHoverTargetOverlay(button))))sets[1].nPriority=vr::k_nActionSetOverlayGlobalPriorityMin;
  if(input->UpdateActionState(sets,sizeof(sets[0]),gaze_set?2:1)!=vr::VRInputError_None)return;
  auto now=std::chrono::steady_clock::now();
- const bool gaze_allowed=launcher_gaze_allowed();bool gaze_connected[2]{},gaze_buttons[2]{};
+ // Dock ownership must be checked before reading confirm edges. Gaze focus
+ // alone does not own a trigger aimed at the entry, even before mouse-down
+ // arrives. Disabling gaze disarms it until all confirm inputs are released.
+ bool gaze_allowed=launcher_gaze_allowed()&&!entry_hold.pressed&&!(available&&(entry_pointer.inside||overlays->IsHoverTargetOverlay(button)));bool gaze_connected[2]{},gaze_buttons[2]{};
  float stick_x=0,stick_y=0;bool stick_active=false;vr::TrackedDeviceIndex_t stick_device=vr::k_unTrackedDeviceIndexInvalid;
  for(int hand=0;hand<2;hand++){
   vr::InputPoseActionData_t pose{};auto device=vr_system->GetTrackedDeviceIndexForControllerRole(hand?vr::TrackedControllerRole_RightHand:vr::TrackedControllerRole_LeftHand);bool hit=available&&entry_pointer.hit(device);
@@ -488,6 +491,7 @@ static void entry_actions(vr::VROverlayHandle_t button,bool available){
   }
   if(pose_ok){auto& m=pose.pose.mDeviceToAbsoluteTracking;vr::VROverlayIntersectionParams_t params{};params.eOrigin=vr::TrackingUniverseStanding;for(int r=0;r<3;r++){params.vSource.v[r]=m.m[r][3];params.vDirection.v[r]=-m.m[r][2];}vr::VROverlayIntersectionResults_t result{};hit=hit||(overlays->IsHoverTargetOverlay(button)&&overlays->ComputeOverlayIntersection(button,&params,&result)&&result.vUVs.v[0]>=float(dock_icon_left)/dock_canvas_width&&result.vUVs.v[0]<=float(dock_icon_left+128)/dock_canvas_width);}
 
+  if(hit)gaze_allowed=false;
   gaze_connected[hand]=device!=vr::k_unTrackedDeviceIndexInvalid&&vr_system->IsTrackedDeviceConnected(device);
   if(gaze_connected[hand]){vr::InputDigitalActionData_t confirm{};bool active=input->GetDigitalActionData(confirm_action,&confirm,sizeof(confirm),hands[hand])==vr::VRInputError_None&&confirm.bActive;gaze_buttons[hand]=active&&confirm.bState;
    if(!active){char model[256]{};vr_system->GetStringTrackedDeviceProperty(device,vr::Prop_RenderModelName_String,model,sizeof(model));vr::RenderModel_ControllerMode_State_t mode{};vr::RenderModel_ComponentState_t state{};
@@ -620,6 +624,11 @@ int main(int argc,char** argv){
    if(event.eventType==vr::VREvent_MouseMove||event.eventType==vr::VREvent_MouseButtonDown||event.eventType==vr::VREvent_MouseButtonUp)entry_pointer.move(event.trackedDeviceIndex,event.data.mouse.x,event.data.mouse.y);
    if(event.eventType==vr::VREvent_FocusLeave)entry_pointer.leave();
    if(event.eventType==vr::VREvent_MouseButtonDown||event.eventType==vr::VREvent_MouseButtonUp){
+    // Cancel any existing gaze gesture before toggling views. This also
+    // covers a complete down/up pair drained in one frame and unknown devices.
+    if(event.eventType==vr::VREvent_MouseButtonDown&&anchor_ok&&entry_pointer.inside){
+     auto edge=gaze_press.cancel();if(gaze_active||edge==LauncherGazePress::Cancel)launcher_gaze_event({{"valid",false},{"phase","cancel"}});gaze_active=false;
+    }
     const auto received=std::chrono::steady_clock::now();const bool was_pressed=entry_hold.pressed;const auto previous_started=entry_hold.started;
     activate_entry(entry_hold.event(event.eventType==vr::VREvent_MouseButtonDown,event.trackedDeviceIndex,event.data.mouse.button,anchor_ok&&(event.trackedDeviceIndex==vr::k_unTrackedDeviceIndexInvalid||vr_system->IsTrackedDeviceConnected(event.trackedDeviceIndex)),entry_pointer.inside,entry_event_time(received,event.eventAgeSeconds),received));
     if(entry_hold.pressed&&(!was_pressed||entry_hold.started!=previous_started)){

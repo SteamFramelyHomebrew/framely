@@ -13,8 +13,9 @@ inline bool launcher_gaze_ray(const vr::VREyeTrackingData_t& eye,vr::VROverlayIn
 struct LauncherGazePress {
  bool ready=false,held=false;int owner=-1;
  enum Edge {None,Down,Up,Cancel};
+ Edge cancel(){auto edge=held?Cancel:None;ready=false;held=false;owner=-1;return edge;}
  Edge update(bool enabled,const bool (&connected)[2],const bool (&buttons)[2]){
-  if(!enabled|| (held&&(owner<0||!connected[owner]))){auto edge=held?Cancel:None;ready=false;held=false;owner=-1;return edge;}
+  if(!enabled|| (held&&(owner<0||!connected[owner]))){return cancel();}
   if(held){if(buttons[owner])return None;held=false;owner=-1;ready=!buttons[0]&&!buttons[1];return Up;}
   if(!buttons[0]&&!buttons[1]){ready=true;return None;}
   if(!ready)return None;ready=false;for(int hand=0;hand<2;hand++)if(connected[hand]&&buttons[hand]){owner=hand;held=true;return Down;}return None;

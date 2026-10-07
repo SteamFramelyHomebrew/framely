@@ -18,4 +18,22 @@ int main(){
  buttons[1]=false;p.update(true,connected,buttons);buttons[0]=true;assert(p.update(true,connected,buttons)==LauncherGazePress::Down);
  assert(p.update(false,connected,buttons)==LauncherGazePress::Cancel);
  assert(p.update(true,connected,buttons)==LauncherGazePress::None);
+ // A laser aimed at the Dock entry owns this press even if gaze previously
+ // focused a launcher icon. Moving away while held must not become gaze-down.
+ for(int hand=0;hand<2;hand++){
+  LauncherGazePress dock;bool online[2]{true,true},pressed[2]{false,false};
+  dock.update(true,online,pressed);pressed[hand]=true;
+  assert(dock.update(false,online,pressed)==LauncherGazePress::None);
+  assert(dock.update(true,online,pressed)==LauncherGazePress::None);
+  pressed[hand]=false;assert(dock.update(true,online,pressed)==LauncherGazePress::None);
+  pressed[hand]=true;assert(dock.update(true,online,pressed)==LauncherGazePress::Down);
+  // Dock mouse-down cancels an already-held gaze target instead of releasing
+  // it (release would click). Same-frame down/up remains disarmed while held.
+  assert(dock.cancel()==LauncherGazePress::Cancel);
+  assert(!dock.ready&&!dock.held&&dock.owner==-1);
+  assert(dock.update(true,online,pressed)==LauncherGazePress::None);
+  pressed[hand]=false;assert(dock.update(true,online,pressed)==LauncherGazePress::None);
+  pressed[hand]=true;assert(dock.update(true,online,pressed)==LauncherGazePress::Down);
+  pressed[hand]=false;assert(dock.update(true,online,pressed)==LauncherGazePress::Up);
+ }
 }
