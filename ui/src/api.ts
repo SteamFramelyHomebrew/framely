@@ -6,7 +6,7 @@ export function viewKey(){const p=location.pathname.split('/');return p[1]==='ma
 installKeyboard(params=>api('host.keyboard',{view:viewKey(),...params}));
 
 
-installHoverFeedback(()=>{void api('host.haptic',{view:viewKey()}).catch(console.error);});
+installHoverFeedback(feedback=>{void api('host.haptic',{view:viewKey(),feedback}).catch(console.error);});
 
 export async function uploadChunk(upload:string,offset:number,chunk:Blob,signal:AbortSignal):Promise<void>{
  const r=await fetch(`/api/upload/${encodeURIComponent(upload)}/${offset}`,{method:'POST',body:chunk,signal});

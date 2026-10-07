@@ -26,7 +26,7 @@ export function PluginFrame({plugin,entry='quick',actionContext,onActionDone}:{p
      else result=await api('window.close',{plugin,window:entry});
     }
     else if(op==='ui.visibility.get')result=await api('ui.visibility.get',{view:viewKey()});
-    else if(op==='haptic')result=await api('host.haptic',{view:viewKey()});
+    else if(op==='haptic')result=await api('host.haptic',{view:viewKey(),feedback:params?.feedback});
     else if(op==='keyboard')result=await api('host.keyboard',{...params,view:viewKey()});
     else{const method=methods[op];if(!method)throw new Error(t('插件请求不支持的能力'));result=await api(method,{...params,plugin,...(op==='window.open'&&actionContext?{launchContext:actionContext}:{})});}
     if(live)ref.current?.contentWindow?.postMessage({channel:'framely.reply',id,result},'*');

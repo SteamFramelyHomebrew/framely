@@ -12,6 +12,6 @@ installKeyboard(params=>request('keyboard',params));
 
 window.addEventListener('pagehide',()=>{for(const p of pending.values()){clearTimeout(p.timer);p.reject(new Error('Plugin page closed'));}pending.clear();});
 
-installHoverFeedback(()=>{void request('haptic').catch(console.error);});
+installHoverFeedback(feedback=>{void request('haptic',{feedback}).catch(console.error);});
 
 installScrollbars();

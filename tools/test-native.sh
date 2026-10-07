@@ -7,3 +7,5 @@ for test in gamepad_mapping gamepad_steam entry_hold menu_geometry keyboard_stat
   "${CXX:-g++}" -std=c++17 -O2 -pthread -Inative -Inative/vendor/openvr "tests/$test.cpp" -ldl -o "target/tests/$test"
   "target/tests/$test"
 done
+
+python3 "$base/tests/test_ui_feedback.py"

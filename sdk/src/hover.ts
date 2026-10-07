@@ -1,5 +1,5 @@
 // Shared by the host page and isolated plugin frames.
-export function installHoverFeedback(pulse:()=>void){
+export function installHoverFeedback(pulse:(kind:'hover'|'activate')=>void){
  let hovered:Element|null=null;
  function interactive(target:EventTarget|null):Element|null{
   const element=target instanceof Element?target:null;
@@ -14,8 +14,9 @@ export function installHoverFeedback(pulse:()=>void){
   }
   return pointer;
  }
- function enter(e:Event){const next=interactive(e.target);if(next!==hovered){hovered=next;if(next)pulse();}}
+ function enter(e:Event){const next=interactive(e.target);if(next!==hovered){hovered=next;if(next)pulse('hover');}}
  document.addEventListener('pointerover',enter);
+ document.addEventListener('click',e=>{if(interactive(e.target))pulse('activate');});
  document.addEventListener('pointerout',e=>{if(interactive(e.relatedTarget)!==hovered)hovered=null;});
  window.addEventListener('blur',()=>{hovered=null;});
 }

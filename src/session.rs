@@ -370,9 +370,14 @@ impl Agent {
             let badge = self
                 .core("host.notification.badge", json!({}))
                 .unwrap_or(json!(0));
+            let database = self
+                .core("status", json!({}))
+                .ok()
+                .map(|v| v["database"].clone())
+                .unwrap_or(json!({}));
             return send_json(
                 r,
-                json!({"commands":commands,"notificationBadge":badge,"gazeCalibration":self.core("launcher.gaze.calibration.get",json!({})).unwrap_or(Value::Null),"launcher":self.core("status",json!({})).ok().map(|v|v["database"]["launcher"].clone()).unwrap_or(json!({}))}),
+                json!({"feedback":database["feedback"],"commands":commands,"notificationBadge":badge,"gazeCalibration":self.core("launcher.gaze.calibration.get",json!({})).unwrap_or(Value::Null),"launcher":database["launcher"]}),
             );
         }
         if let Some(rel) = path.strip_prefix("/plugin-assets/") {
@@ -1245,13 +1250,17 @@ impl Agent {
                         ) || view.starts_with("framely.window.")),
                     "Invalid haptic view"
                 );
+                let feedback = p["feedback"].as_str().unwrap_or("hover");
+                ensure!(
+                    matches!(feedback, "hover" | "activate"),
+                    "Invalid feedback kind"
+                );
                 let mut commands = self.commands.lock().unwrap();
-                if !commands
-                    .iter()
-                    .any(|c| c["kind"] == "haptic" && c["view"] == view)
-                {
+                if !commands.iter().any(|c| {
+                    c["kind"] == "haptic" && c["view"] == view && c["feedback"] == feedback
+                }) {
                     ensure!(commands.len() < 256, "Native command queue full");
-                    commands.push_back(json!({"kind":"haptic","view":view}));
+                    commands.push_back(json!({"kind":"haptic","view":view,"feedback":feedback}));
                 }
                 Ok(json!(true))
             }
@@ -1286,6 +1295,7 @@ impl Agent {
             | "plugin.launch.context"
             | "plugin.launch"
             | "plugin.launcher.action"
+            | "feedback.settings.save"
             | "launcher.settings.save"
             | "launcher.gaze.calibration.get"
             | "launcher.gaze.calibration.save"
@@ -1794,6 +1804,15 @@ pub fn serve(
                     "--no-default-browser-check",
                 ])
                 .env("FRAMELY_NATIVE_TOKEN", &native_key)
+                .env("FRAMELY_STEAM_ROOT", {
+                    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+                    let steam = home.join(".local/share/Steam");
+                    if steam.is_dir() {
+                        steam
+                    } else {
+                        home.join(".steam/steam")
+                    }
+                })
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit())
                 .status();

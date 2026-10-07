@@ -1068,6 +1068,11 @@ impl Service {
                 self.save()?;
                 Ok(json!(true))
             }
+            "feedback.settings.save" => {
+                self.db.feedback = serde_json::from_value(p)?;
+                self.save()?;
+                Ok(json!(true))
+            }
             "launcher.settings.save" => {
                 let settings: LauncherSettings = serde_json::from_value(p)?;
                 settings.validate()?;
@@ -2950,5 +2955,41 @@ mod notification_tests {
             core.next_update_check.duration_since(Instant::now())
                 > Duration::from_secs(12 * 3600 - 2)
         );
+    }
+}
+
+#[cfg(test)]
+mod feedback_tests {
+    use super::*;
+    #[test]
+    fn feedback_defaults_persist_and_reject_invalid_settings() {
+        let root = tempfile::tempdir().unwrap();
+        let mut core = crate::tests::accepted_service(root.path(), 1000).unwrap();
+        assert!(core.db.feedback.haptics && core.db.feedback.sounds);
+        core.handle(
+            "feedback.settings.save",
+            json!({"haptics":false,"sounds":true}),
+        )
+        .unwrap();
+        let mut reloaded = Service::load(root.path(), 1000).unwrap();
+        assert!(!reloaded.db.feedback.haptics && reloaded.db.feedback.sounds);
+        assert!(reloaded
+            .handle("feedback.settings.save", json!({"haptics":"off"}))
+            .is_err());
+        assert!(reloaded
+            .handle("feedback.settings.save", json!({"other":true}))
+            .is_err());
+        assert!(!reloaded.db.feedback.haptics && reloaded.db.feedback.sounds);
+        reloaded
+            .handle(
+                "feedback.settings.save",
+                json!({"haptics":false,"sounds":false}),
+            )
+            .unwrap();
+        let reloaded = Service::load(root.path(), 1000).unwrap();
+        assert!(!reloaded.db.feedback.haptics && !reloaded.db.feedback.sounds);
+        let old: Database =
+            serde_json::from_value(json!({"plugins":{},"sources":[],"safeMode":false})).unwrap();
+        assert!(old.feedback.haptics && old.feedback.sounds);
     }
 }

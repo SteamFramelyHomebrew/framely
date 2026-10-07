@@ -178,6 +178,23 @@ pub struct LauncherAction {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FeedbackSettings {
+    #[serde(default = "yes")]
+    pub haptics: bool,
+    #[serde(default = "yes")]
+    pub sounds: bool,
+}
+impl Default for FeedbackSettings {
+    fn default() -> Self {
+        Self {
+            haptics: true,
+            sounds: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LauncherSettings {
     #[serde(default = "yes")]
     pub prioritize_ui: bool,
@@ -831,6 +848,8 @@ pub struct Database {
     pub notification_inbox: BTreeMap<String, NotificationEntry>,
     #[serde(default)]
     pub notification_settings: NotificationSettings,
+    #[serde(default)]
+    pub feedback: FeedbackSettings,
     #[serde(default)]
     pub launcher: LauncherSettings,
     #[serde(default)]

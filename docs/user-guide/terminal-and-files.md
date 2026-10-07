@@ -10,6 +10,10 @@ The top switcher contains **Plugin / APK / Terminal / Files / Settings**. Openin
 
 Plugin contains installed plugins, the plugin library, sources and notification settings, including Framely's notifications. Plugin-specific settings remain in each plugin's management dialog. APK keeps its apps, containers and retained-data cleanup. Settings contains General, Launcher, Updates and About.
 
+## Interaction feedback
+
+In **Settings → General → Interaction feedback**, Haptic feedback and Sound feedback are enabled by default and saved across restarts. Haptic feedback controls laser hover and launcher gaze-focus vibration across Framely and plugin pages; it does not change APK game rumble. Sound feedback uses Steam’s installed navigation and activation sounds for focus and clicks. It requires the local Steam sound files and audio runtime; no sound files are bundled or downloaded.
+
 ## Terminal
 
 Create a terminal to open the configured Steam session user's login shell in their home directory, normally `steamos`. This is a real PTY: Ctrl-C, Tab completion, arrows, Unicode input, window resizing and full-screen programs such as Vim and top work. Use `sudo` inside the terminal when administrator privileges are needed; the panel password is separate from the user's sudo password.
