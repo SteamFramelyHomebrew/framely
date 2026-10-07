@@ -1305,7 +1305,21 @@ fi
 user=$(am get-started-user-state 0)
 echo FRAMELY_USER=$user
 storage=0
-if [ -d /storage/emulated/0 ] && sm list-volumes all | grep -Eq '^emulated(;0)? mounted( |$)'; then storage=1; fi
+if [ -d /storage/emulated/0 ]; then
+    volumes=$(sm list-volumes all 2>/dev/null)
+    if printf '%s\n' "$volumes" | grep -Eq '^emulated(;0)? mounted( |$)'; then
+        storage=1
+    elif ! printf '%s\n' "$volumes" | grep -Eq '^emulated(;0)? '; then
+        # Some Lepton images return success but no emulated volume from sm.
+        # Inspect only user 0's emulated volume, never the mounted /data volume.
+        volume_state=$(dumpsys mount 2>/dev/null | awk '
+            /^[[:space:]]*VolumeInfo\{/ { target = ($0 ~ /^[[:space:]]*VolumeInfo\{emulated(;0)?\}:/) }
+            target && /state=/ { print; exit }
+        ')
+        echo "FRAMELY_STORAGE_VOLUME=$volume_state"
+        if printf '%s\n' "$volume_state" | grep -Eq '(^|[[:space:]])state=MOUNTED([[:space:]]|$)'; then storage=1; fi
+    fi
+fi
 echo FRAMELY_STORAGE=$storage
 [ "$boot" = 1 ] && [ "$pm_ready" = 1 ] && [ "$user" = RUNNING_UNLOCKED ] && [ "$storage" = 1 ] && echo FRAMELY_ANDROID_READY
 exit 0
@@ -5481,7 +5495,7 @@ esac
     fn android_ready_probe_uses_operation_specific_checks_and_accepts_volume_output() {
         let dir = tempfile::tempdir().unwrap();
         let run = |mode: &str, user: &str, volume: &str| {
-            let mocks = format!("getprop() {{ echo 1; }}; pm() {{ echo package:/system/framework/framework-res.apk; }}; am() {{ echo {user}; }}; sm() {{ echo '{volume}'; }};\n");
+            let mocks = format!("getprop() {{ echo 1; }}; pm() {{ echo package:/system/framework/framework-res.apk; }}; am() {{ echo {user}; }}; sm() {{ echo '{volume}'; }}; dumpsys() {{ :; }};\n");
             let probe = ANDROID_READY_PROBE
                 .replace("/storage/emulated/0", &dir.path().display().to_string());
             let mut command = Command::new("/bin/sh");
@@ -5502,6 +5516,50 @@ esac
             .contains("FRAMELY_ANDROID_READY"));
         assert!(run("full", "RUNNING_UNLOCKED", "emulated mounted null")
             .contains("FRAMELY_ANDROID_READY"));
+    }
+    #[test]
+    fn android_ready_probe_handles_lepton_empty_sm_without_accepting_other_volumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mounted = "Volumes:\n  VolumeInfo{private}:\n    state=MOUNTED\n  VolumeInfo{emulated;0}:\n    mountUserId=0 state=MOUNTED \n";
+        let run = |sm: &str, dump: &str, exists: bool| {
+            let mocks = format!("getprop() {{ echo 1; }}; pm() {{ echo package:/android; }}; am() {{ echo RUNNING_UNLOCKED; }}; sm() {{ printf '%s\n' '{sm}'; }}; dumpsys() {{ printf '%s\n' '{dump}'; }};\n");
+            let path = if exists {
+                dir.path().to_path_buf()
+            } else {
+                dir.path().join("missing")
+            };
+            let probe =
+                ANDROID_READY_PROBE.replace("/storage/emulated/0", &path.display().to_string());
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", &(mocks + &probe), "probe", "full"]);
+            output(command, Duration::from_secs(2), None)
+                .unwrap()
+                .contains("FRAMELY_ANDROID_READY")
+        };
+        assert!(run("", mounted, true));
+        assert!(run("", &mounted.replace("emulated;0", "emulated"), true));
+        assert!(!run("", mounted, false));
+        assert!(!run("emulated;0 unmounted null", mounted, true));
+        assert!(!run(
+            "",
+            &mounted.replace(
+                "mountUserId=0 state=MOUNTED",
+                "mountUserId=0 state=UNMOUNTED"
+            ),
+            true
+        ));
+        assert!(!run(
+            "",
+            &mounted.replace("emulated;0", "emulated;10"),
+            true
+        ));
+        assert!(!run("", "VolumeInfo{private}:\n state=MOUNTED\n", true));
+        assert!(!run(
+            "",
+            "VolumeInfo{emulated;0}:\n state=CHECKING\nVolumeInfo{private}:\n state=MOUNTED\n",
+            true
+        ));
+        assert!(!run("", "", true));
     }
     #[test]
     fn android_ready_errors_identify_the_blocked_stage() {
