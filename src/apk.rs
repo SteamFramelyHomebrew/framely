@@ -2497,6 +2497,9 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
  let sdk=podman(&["exec",&format!("lepton-{}",c.name),"getprop","ro.build.version.sdk"],Some(&log))?.trim().parse::<u32>()?;ensure!(metadata.min_sdk<=sdk,"APK requires Android SDK {}, container provides {}",metadata.min_sdk,sdk);
  progress(json!({"phase":"installing","cancellable":false}));install_package(&c,&review.join("base.apk"),&log)?;
  progress(json!({"phase":"verifying"}));let path=podman(&["exec",&format!("lepton-{}",c.name),"pm","path",&metadata.package],Some(&log))?;ensure!(path.contains("package:"),"Android did not report the installed APK");let dest=r.join("apks").join(hash(&app_id));store_apk(&review.join("base.apk"),&dest)?;
+ // Installation boots a headless container solely for the package manager.
+ // Finish that runtime before Steam takes ownership of the first app launch.
+ stop(&c,&log)?;
  let rec=db.records.get_mut(&app_id).unwrap();rec.metadata=metadata.clone();rec.removed=false;rec.pending=None;rec.show_window=settings.show_window;save(home,&db)?;fs::remove_dir_all(review)?;
  // Mirror the operation log under the stable application id for newly installed apps.
  if id!=app_id {let _=fs::copy(&log,r.join("logs").join(format!("{}-{}.log",hash(&app_id),now())));}
@@ -3647,7 +3650,13 @@ case "$1" in
     clear) echo Success;;
    esac
   elif [ "$3" = sh ]; then
-   if [ "$6" = framely-lifecycle ]; then
+   if [ "$6" = framely-lifecycle-idle ]; then
+    if [ -f '{bad_probe}' ]; then echo incomplete; exit 0; fi
+    echo 'ACTIVITY MANAGER RUNNING PROCESSES (dumpsys activity processes)'
+    if [ ! -f '{dead}' ]; then echo 'packageList={{com.example.app}}'; fi
+    if [ -f '{other}' ]; then echo 'packageList={{com.example.extra}}'; fi
+    echo FRAMELY_IDLE_DONE
+   elif [ "$6" = framely-lifecycle ]; then
     echo FRAMELY_ACTIVE=com.example.app
     if [ -f '{closed}' ]; then echo FRAMELY_WINDOW=none; else echo FRAMELY_WINDOW=Waydroid; fi
     if [ -f '{bad_probe}' ]; then echo incomplete; exit 0; fi
@@ -4360,6 +4369,10 @@ setup_props
             )
             .unwrap();
             assert_eq!(load(&f.home).unwrap().records[id].show_window, Some(show));
+            assert!(
+                !running("test"),
+                "installation must finish its headless runtime"
+            );
             assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
             let props = fs::read_to_string(f.dir.path().join("props")).unwrap();
             assert!(props.contains("lepton.headless=true"));
@@ -4620,6 +4633,40 @@ setup_props
         );
         drop(ownership);
         assert!(native::prepare(&f.home, id, 0x92345678).is_ok());
+
+        // An idle installation runtime from an older release can be handed
+        // over, but incomplete probes and another running app must not stop it.
+        fs::write(f.dir.path().join("running"), "true").unwrap();
+        fs::write(f.dir.path().join("dead-process"), "").unwrap();
+        fs::write(f.dir.path().join("bad-probe"), "").unwrap();
+        assert!(native::prepare(&f.home, id, 0x92345678).is_err());
+        assert!(running("test"));
+        fs::remove_file(f.dir.path().join("bad-probe")).unwrap();
+        let xml = baked.join("data_overlay/system/packages.xml");
+        let text = fs::read_to_string(&xml).unwrap().replace(
+            "</packages>",
+            "<package name=\"com.example.extra\" codePath=\"/data/app/extra\"/></packages>",
+        );
+        fs::write(&xml, text).unwrap();
+        fs::write(f.dir.path().join("other-process"), "").unwrap();
+        assert!(native::prepare(&f.home, id, 0x92345678).is_err());
+        assert!(running("test"));
+        fs::remove_file(f.dir.path().join("other-process")).unwrap();
+        assert!(native::prepare(&f.home, id, 0x92345678).is_ok());
+        assert!(!running("test"));
+        assert_eq!(fs::read(f.save_file()).unwrap(), b"saved progress");
+
+        let ticket = f.review(43);
+        f.operation(
+            "install",
+            json!({"ticket":ticket,"context":"test","app":id,"approve":true}),
+        )
+        .unwrap();
+        assert!(!running("test"));
+        let (_, installed, _, _ownership) = native::prepare(&f.home, id, 0x92345678).unwrap();
+        assert_eq!(installed.id, id);
+        assert_eq!(load(&f.home).unwrap().records[id].metadata.version_code, 43);
+        assert_eq!(fs::read(f.save_file()).unwrap(), b"saved progress");
     }
     #[test]
     fn unreadable_state_is_not_uninstallation_or_a_launch_target() {

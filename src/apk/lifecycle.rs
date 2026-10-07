@@ -124,6 +124,29 @@ fn packages(c: &Container) -> Result<BTreeSet<String>> {
     ensure!(!out.is_empty(), "No known application packages");
     Ok(out)
 }
+pub(super) fn idle_instance(c: &Container) -> Result<String> {
+    let identity = instance(c)?;
+    let known = packages(c)?;
+    let text = short(&[
+        "exec",
+        &format!("lepton-{}", c.name),
+        "sh",
+        "-c",
+        "dumpsys activity processes || exit 1; printf '\\nFRAMELY_IDLE_DONE\\n'",
+        "framely-lifecycle-idle",
+    ])?;
+    ensure!(
+        text.starts_with("ACTIVITY MANAGER RUNNING PROCESSES")
+            && text.ends_with("FRAMELY_IDLE_DONE\n"),
+        "Cannot verify whether applications are running"
+    );
+    ensure!(
+        !known.iter().any(|p| gamepad_present(&text, p)),
+        "An application is still running in this container; close it before Steam launch"
+    );
+    ensure!(instance(c)? == identity, "Container changed during launch");
+    Ok(identity)
+}
 pub(super) fn sample(c: &Container) -> Result<Sample> {
     let identity = instance(c)?;
     let text = short(&[

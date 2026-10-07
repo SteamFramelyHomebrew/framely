@@ -98,7 +98,6 @@ pub(super) fn prepare(
         "APK installation is unavailable or an operation is pending"
     );
     let component = launch_component(&a)?;
-    ensure!(!running(&c.name),"Close the running container before native Steam launch; it will not be restarted automatically");
     // Also guard the original name: registration can occur while the old launch
     // is still running, and two runtime names must never share an overlay.
     let original = if c.id.starts_with("external-") {
@@ -110,9 +109,16 @@ pub(super) fn prepare(
         c.id.clone()
     };
     ensure!(
-        !running(&original),
-        "Close the running container before native Steam launch"
+        c.name == original || !running(&c.name),
+        "This application is already running through Steam"
     );
+    let mut installer = c.clone();
+    installer.name = original;
+    let idle = if running(&installer.name) {
+        Some(lifecycle::idle_instance(&installer)?)
+    } else {
+        None
+    };
     c.name = format!("steamlaunch-{app_id}");
     c.steam = false;
     let xml = fs::read_to_string(c.baked.join("data_overlay/system/packages.xml"))?;
@@ -170,6 +176,20 @@ pub(super) fn prepare(
         env["FRAMELY_NATIVE_OVERLAY"] = json!(c
             .baked
             .join(format!("native-apk-{}", hash(&a.metadata.package))));
+    }
+    // Older releases left the headless installation container alive. Transfer
+    // only an unchanged, idle instance after validating the native launch setup.
+    if let Some(identity) = idle {
+        ensure!(
+            lifecycle::idle_instance(&installer)? == identity,
+            "Container changed during launch"
+        );
+        stop(
+            &installer,
+            &root(home)
+                .join("logs")
+                .join(format!("{}-native-handoff.log", hash(id))),
+        )?;
     }
     if db.gamepad_enabled {
         let m =
