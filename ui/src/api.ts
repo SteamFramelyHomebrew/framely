@@ -13,3 +13,14 @@ export async function uploadChunk(upload:string,offset:number,chunk:Blob,signal:
  if(!r.ok)throw new Error(t('服务请求失败：{0}',{0:r.status}));const v=await r.json();if(v.error)throw new Error(t(v.error));
  if(v.result?.received!==offset+chunk.size)throw new Error('Upload offset mismatch');
 }
+
+export async function exportDiagnosticLogs():Promise<string>{
+ const v=await api<{name:string;path?:string;data?:string}>('diagnostics.export');
+ if(v.path)return t('日志已保存到：{0}',{0:v.path});
+ if(!v.data)throw Error(t('日志包缺少数据'));
+ const bytes=Uint8Array.from(atob(v.data),c=>c.charCodeAt(0));
+ const url=URL.createObjectURL(new Blob([bytes],{type:'application/zip'}));
+ const link=document.createElement('a');link.href=url;link.download=v.name;
+ document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+ return t('日志包已生成，请查看浏览器下载。');
+}

@@ -1286,17 +1286,64 @@ fn start_container(
 ) -> Result<()> {
     start_oriented_container(home, c, show, direct, None, None, None, log)
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum AndroidReadiness {
+    Full,
+    PackageManager,
+    RemovalWithData,
+}
 const ANDROID_READY_PROBE: &str = r#"
-[ "$(getprop sys.boot_completed)" = 1 ] &&
-[ "$(am get-started-user-state 0)" = RUNNING_UNLOCKED ] &&
-[ -d /storage/emulated/0 ] &&
-dumpsys mount | grep -q 'mountUserId=0 state=MOUNTED' &&
-pm path android | grep -q '^package:' &&
-echo FRAMELY_ANDROID_READY
+boot=$(getprop sys.boot_completed)
+echo FRAMELY_BOOT=$boot
+pm_ready=0
+pm path android | grep -q '^package:' && pm_ready=1
+echo FRAMELY_PM=$pm_ready
+if [ "$1" = package ]; then
+    [ "$boot" = 1 ] && [ "$pm_ready" = 1 ] && echo FRAMELY_ANDROID_READY
+    exit 0
+fi
+user=$(am get-started-user-state 0)
+echo FRAMELY_USER=$user
+storage=0
+if [ -d /storage/emulated/0 ] && sm list-volumes all | grep -Eq '^emulated(;0)? mounted( |$)'; then storage=1; fi
+echo FRAMELY_STORAGE=$storage
+[ "$boot" = 1 ] && [ "$pm_ready" = 1 ] && [ "$user" = RUNNING_UNLOCKED ] && [ "$storage" = 1 ] && echo FRAMELY_ANDROID_READY
+exit 0
 "#;
-fn wait_android_ready(c: &Container) -> Result<()> {
+fn android_readiness_failure(snapshot: &str, requirement: AndroidReadiness) -> &'static str {
+    if !snapshot.lines().any(|s| s.starts_with("FRAMELY_BOOT=")) {
+        "Android readiness probe did not respond; export logs and retry."
+    } else if !snapshot.lines().any(|s| s == "FRAMELY_BOOT=1") {
+        "Android startup timed out; export logs and retry."
+    } else if !snapshot.lines().any(|s| s == "FRAMELY_PM=1") {
+        "Android PackageManager did not become ready; export logs and retry."
+    } else if requirement != AndroidReadiness::PackageManager
+        && !snapshot
+            .lines()
+            .any(|s| s == "FRAMELY_USER=RUNNING_UNLOCKED")
+    {
+        "Android user did not unlock; export logs and retry."
+    } else {
+        "Android external storage did not mount; export logs and retry."
+    }
+}
+fn wait_android_ready_for(
+    c: &Container,
+    requirement: AndroidReadiness,
+    log: Option<&Path>,
+) -> Result<()> {
+    wait_android_ready_until(c, requirement, log, Duration::from_secs(60))
+}
+fn wait_android_ready_until(
+    c: &Container,
+    requirement: AndroidReadiness,
+    log: Option<&Path>,
+    timeout: Duration,
+) -> Result<()> {
     let began = Instant::now();
-    while began.elapsed() < Duration::from_secs(60) {
+    let mut last = String::new();
+    let mut seen_running = c.running;
+    while began.elapsed() < timeout {
         let mut command = crate::process::tool("podman");
         command.args([
             "exec",
@@ -1304,15 +1351,64 @@ fn wait_android_ready(c: &Container) -> Result<()> {
             "sh",
             "-c",
             ANDROID_READY_PROBE,
+            "framely-android-ready",
+            if requirement == AndroidReadiness::PackageManager {
+                "package"
+            } else {
+                "full"
+            },
         ]);
-        if output(command, Duration::from_secs(3), None)
-            .is_ok_and(|s| s.lines().any(|line| line.trim() == "FRAMELY_ANDROID_READY"))
+        let snapshot = output(command, Duration::from_secs(3), log)
+            .unwrap_or_else(|e| format!("Android readiness probe failed: {e}"));
+        if snapshot != last {
+            if let Some(log) = log {
+                let mut file = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .mode(0o600)
+                    .open(log)?;
+                writeln!(file, "Android readiness ({requirement:?}):\n{snapshot}")?;
+            }
+            last = snapshot;
+        }
+        if last
+            .lines()
+            .any(|line| line.trim() == "FRAMELY_ANDROID_READY")
         {
             return Ok(());
         }
+        let mut inspect = crate::process::tool("podman");
+        inspect.args([
+            "inspect",
+            "--format",
+            "{{.State.Running}}|{{.State.Pid}}|{{.State.Status}}|{{.State.ExitCode}}",
+            &format!("lepton-{}", c.name),
+        ]);
+        if let Ok(state) = output(inspect, Duration::from_secs(2), None) {
+            let fields: Vec<_> = state.trim().split('|').collect();
+            let alive = fields.first() == Some(&"true")
+                && fields.get(1).is_some_and(|pid| runtime_pid_alive(pid));
+            if alive {
+                seen_running = true;
+            } else if seen_running || began.elapsed() >= Duration::from_secs(30) {
+                if let Some(log) = log {
+                    let mut file = fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .mode(0o600)
+                        .open(log)?;
+                    writeln!(
+                        file,
+                        "Container stopped during Android readiness: {}",
+                        state.trim()
+                    )?;
+                }
+                bail!("Android container stopped before becoming ready; export logs and retry.");
+            }
+        }
         std::thread::sleep(Duration::from_millis(500));
     }
-    bail!("Android boot, user unlock or external storage did not become ready; inspect the container log")
+    bail!(android_readiness_failure(&last, requirement))
 }
 fn start_oriented_container(
     home: &Path,
@@ -1324,13 +1420,47 @@ fn start_oriented_container(
     steam_app_id: Option<u32>,
     log: &Path,
 ) -> Result<()> {
+    start_oriented_container_for(
+        home,
+        c,
+        show,
+        direct,
+        orientation,
+        gamepad,
+        steam_app_id,
+        AndroidReadiness::Full,
+        log,
+    )
+}
+fn start_oriented_container_for(
+    home: &Path,
+    c: &Container,
+    show: Option<bool>,
+    direct: bool,
+    orientation: Option<&str>,
+    gamepad: Option<&crate::gamepad::Mount>,
+    steam_app_id: Option<u32>,
+    readiness: AndroidReadiness,
+    log: &Path,
+) -> Result<()> {
     ensure!(
         orientation.is_none_or(|s| matches!(s, "auto" | "portrait" | "landscape")),
         "Invalid window orientation"
     );
     if running(&c.name) {
-        wait_android_ready(c)?;
-        return restore_package_mount(home, c, log);
+        wait_android_ready_for(
+            &Container {
+                running: true,
+                ..c.clone()
+            },
+            readiness,
+            Some(log),
+        )?;
+        return if readiness == AndroidReadiness::Full {
+            restore_package_mount(home, c, log)
+        } else {
+            Ok(())
+        };
     }
     let lock_dir = root(home).join("steam");
     fs::create_dir_all(&lock_dir)?;
@@ -1436,8 +1566,19 @@ fn start_oriented_container(
     });
     // PackageManager can respond before the user's external storage is ready.
     // Lepton's own app launcher also waits for boot and media mounting.
-    wait_android_ready(c)?;
-    restore_package_mount(home, c, log)
+    wait_android_ready_for(
+        &Container {
+            running: false,
+            ..c.clone()
+        },
+        readiness,
+        Some(log),
+    )?;
+    if readiness == AndroidReadiness::Full {
+        restore_package_mount(home, c, log)
+    } else {
+        Ok(())
+    }
 }
 fn wrapper_active(name: &str) -> bool {
     fs::read_dir("/proc")
@@ -2656,10 +2797,19 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                         Ok(json!({"containerDeleted":true}))
                     });
                 }
-                if kind == "purge" && !a.installed {
+                if !a.installed && (kind == "purge" || (kind == "uninstall" && p["purge"] == true))
+                {
                     ensure!(p["approve"] == true, "Confirm APK removal");
                     return cancel.commit(|| {
                         progress(json!({"cancellable":false}));
+                        if let Some(rec) = db.records.get_mut(id) {
+                            steam_shortcuts::unregister(home, rec)
+                                .context("APK was uninstalled, but Steam entry cleanup failed; retry to finish cleanup")?;
+                            rec.steam_launch = false;
+                            rec.steam_binding = None;
+                            rec.steam_app_id = None;
+                        }
+                        save(home, &db)?;
                         Ok(json!({"freedBytes":purge_retained(home,&mut db,id,&log)?}))
                     });
                 }
@@ -2817,41 +2967,48 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                             if db.records.get(id).and_then(native::runtime_name).is_some() {
                                 stop(&c, &log)?;
                             }
-                            if let Some(rec) = db.records.get_mut(id) {
-                                steam_shortcuts::unregister(home, rec)?;
-                                rec.steam_launch = false;
-                                rec.steam_binding = None;
-                                rec.steam_app_id = None;
-                                save(home, &db)?;
-                            }
-                            progress(json!({"phase":"uninstalling"}));
-                            start(home, &c, a.show_window, &log)?;
+                            progress(json!({"phase":"starting"}));
                             if a.installed {
-                                if let Some((_, apk)) = installed(home, &c)?
-                                    .into_iter()
-                                    .find(|(m, _)| m.package == a.metadata.package)
-                                {
-                                    let dest = r.join("apks").join(hash(id));
-                                    if apk.is_file() {
-                                        store_apk(&apk, &dest)?;
-                                    }
+                                let dest = r.join("apks").join(hash(id));
+                                if let Some((_, apk)) = installed(home, &Container { running:false, ..c.clone() })?
+                                    .into_iter().find(|(m, _)| m.package == a.metadata.package) {
+                                    if apk.is_file() { store_apk(&apk, &dest)?; }
                                 }
+                                let readiness = if kind == "uninstall" && p["purge"] != true {
+                                    AndroidReadiness::PackageManager
+                                } else { AndroidReadiness::RemovalWithData };
+                                start_oriented_container_for(home, &c, Some(false), true, None, None, None, readiness, &log)?;
+                                progress(json!({"phase":"uninstalling"}));
+                                if !live_installed(&c, &a.metadata.package, &log)? {
+                                    let cached = dest.join("base.apk");
+                                    ensure!(cached.is_file(), "Original APK is required to recover package registration before uninstall");
+                                    install_package(&c, &cached, &log)?;
+                                }
+                                let mut args = vec!["exec", "", "pm", "uninstall"];
+                                let name = format!("lepton-{}", c.name);
+                                args[1] = &name;
+                                if kind == "uninstall" && p["purge"] != true {
+                                    args.push("-k");
+                                }
+                                args.push(&a.metadata.package);
+                                let s = podman(&args, Some(&log))?;
+                                ensure!(
+                                    s.lines().any(|s| s.trim() == "Success"),
+                                    "Uninstall failed: {s}"
+                                );
                             }
-                            let mut args = vec!["exec", "", "pm", "uninstall"];
-                            let name = format!("lepton-{}", c.name);
-                            args[1] = &name;
-                            if kind == "uninstall" && p["purge"] != true {
-                                args.push("-k");
-                            }
-                            args.push(&a.metadata.package);
-                            let s = podman(&args, Some(&log))?;
-                            ensure!(
-                                s.lines().any(|s| s.trim() == "Success"),
-                                "Uninstall failed: {s}"
-                            );
                             let rec = db.records.get_mut(id).unwrap();
                             rec.removed = true;
                             rec.pending = None;
+                            // Persist Android success before touching Steam. If cleanup
+                            // fails, retry only cleanup rather than uninstalling twice.
+                            save(home, &db)?;
+                            let rec = db.records.get_mut(id).unwrap();
+                            steam_shortcuts::unregister(home, rec)
+                                .context("APK was uninstalled, but Steam entry cleanup failed; retry to finish cleanup")?;
+                            rec.steam_launch = false;
+                            rec.steam_binding = None;
+                            rec.steam_app_id = None;
                             if kind == "purge" || p["purge"] == true {
                                 db.records.remove(id);
                                 let path = r.join("apks").join(hash(id));
@@ -3701,7 +3858,7 @@ case "$1" in
     list) if [ -f '{apk}' ] && [ ! -f '{broken}' ] && [ ! -f '{removed}' ]; then echo package:com.example.app; fi;;
     path) if [ "$5" = android ] || [ -f '{apk}' ]; then echo package:/data/app/xyz/com.example.app/base.apk; fi;;
     install) if [ -f '{fail}' ]; then echo 'Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]'; else /bin/cp -f '{incoming}' '{apk}'; /bin/rm -f '{broken}' '{removed}'; echo '<package-restrictions><pkg name="com.example.app" installed="true"/></package-restrictions>' > '{restrictions}'; echo Success; fi;;
-    uninstall) touch '{removed}'; /bin/rm -f '{apk}'; echo '<package-restrictions><pkg name="com.example.app" installed="false"/></package-restrictions>' > '{restrictions}'; if [ "$5" != -k ]; then /bin/rm -rf '{data}'; fi; echo Success;;
+    uninstall) if [ -f '{uninstall_fail}' ]; then echo 'Failure [DELETE_FAILED_INTERNAL_ERROR]'; exit 0; fi; touch '{removed}'; /bin/rm -f '{apk}'; echo '<package-restrictions><pkg name="com.example.app" installed="false"/></package-restrictions>' > '{restrictions}'; if [ "$5" != -k ]; then /bin/rm -rf '{data}'; fi; echo Success;;
     clear) echo Success;;
    esac
   elif [ "$3" = sh ]; then
@@ -3727,7 +3884,13 @@ case "$1" in
     else echo FRAMELY_APP_PRESENT; fi
    else
     if [ -f '{not_ready}' ]; then /bin/rm -f '{not_ready}'; exit 1; fi
-    echo FRAMELY_ANDROID_READY;
+    if [ -f '{boot_crash}' ]; then
+     echo FRAMELY_BOOT=0; echo FRAMELY_PM=0;
+     if [ -f '{probe_seen}' ]; then echo false > '{state}'; else touch '{probe_seen}'; fi
+    elif [ -f '{blocked_storage}' ]; then
+     echo FRAMELY_BOOT=1; echo FRAMELY_PM=1; echo FRAMELY_USER=RUNNING_LOCKED; echo FRAMELY_STORAGE=0;
+     if [ "$7" = package ]; then echo FRAMELY_ANDROID_READY; fi
+    else echo FRAMELY_ANDROID_READY; fi;
    fi;
   elif [ "$3" = pidof ]; then
    if [ -f '{dead}' ] || {{ [ "$4" = com.example.app ] && [ -f '{custom}' ]; }} || {{ [ "$4" = surfaceflinger ] && [ -f '{headless}' ]; }}; then exit 1; else echo 1050; fi;
@@ -3752,6 +3915,10 @@ esac
                 state = state.display(),
                 commands = dir.path().join("commands").display(),
                 not_ready = dir.path().join("boot-not-ready").display(),
+                uninstall_fail = dir.path().join("uninstall-fail").display(),
+                boot_crash = dir.path().join("boot-crash").display(),
+                probe_seen = dir.path().join("probe-seen").display(),
+                blocked_storage = dir.path().join("blocked-storage").display(),
                 launch_fail = dir.path().join("launch-fail").display(),
                 dead = dir.path().join("dead-process").display(),
                 custom = dir.path().join("custom-process").display(),
@@ -4401,7 +4568,7 @@ setup_props
         start(&f.home, &c, None, &f.dir.path().join("launch.log")).unwrap();
         let commands = fs::read_to_string(f.dir.path().join("commands")).unwrap();
         let probes: Vec<_> = commands
-            .match_indices("echo FRAMELY_ANDROID_READY")
+            .match_indices("framely-android-ready full")
             .collect();
         assert_eq!(probes.len(), 2);
         let repair = commands
@@ -5219,6 +5386,142 @@ esac
             .unwrap();
         assert_eq!(result["containerDeleted"], true);
         assert!(!f.save_file().exists());
+    }
+    #[test]
+    fn retained_uninstall_does_not_wait_for_unlock_or_external_storage() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        fs::write(f.dir.path().join("blocked-storage"), "").unwrap();
+        let (_, c) = app(&f.home, &load(&f.home).unwrap(), "test/com.example.app").unwrap();
+        let error =
+            wait_android_ready_until(&c, AndroidReadiness::Full, None, Duration::from_millis(100))
+                .unwrap_err();
+        assert!(error.to_string().contains("user did not unlock"), "{error}");
+        f.operation(
+            "uninstall",
+            json!({"app":"test/com.example.app","approve":true}),
+        )
+        .unwrap();
+        assert!(f.save_file().exists());
+        assert!(load(&f.home).unwrap().records["test/com.example.app"].removed);
+    }
+    #[test]
+    fn failed_android_start_or_uninstall_preserves_steam_bindings_and_saves() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let id = "test/com.example.app";
+        let mut db = load(&f.home).unwrap();
+        db.records.get_mut(id).unwrap().steam_binding = Some(steam_shortcuts::Binding {
+            game_id: steam_shortcuts::game_id(id),
+            native: false,
+            revision: String::new(),
+        });
+        save(&f.home, &db).unwrap();
+        let before = fs::read(root(&f.home).join("state.json")).unwrap();
+        fs::write(f.dir.path().join("boot-crash"), "").unwrap();
+        let error = f
+            .operation("uninstall", json!({"app":id,"approve":true}))
+            .unwrap_err();
+        assert!(error.to_string().contains("container stopped"), "{error}");
+        assert_eq!(before, fs::read(root(&f.home).join("state.json")).unwrap());
+        assert!(f.save_file().exists());
+        assert!(!f.dir.path().join("removed").exists());
+        fs::remove_file(f.dir.path().join("boot-crash")).unwrap();
+        fs::write(f.dir.path().join("running"), "true").unwrap();
+        fs::write(f.dir.path().join("uninstall-fail"), "").unwrap();
+        let error = f
+            .operation("uninstall", json!({"app":id,"approve":true}))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("DELETE_FAILED_INTERNAL_ERROR"),
+            "{error}"
+        );
+        assert_eq!(before, fs::read(root(&f.home).join("state.json")).unwrap());
+        assert!(f.save_file().exists());
+    }
+    #[test]
+    fn steam_cleanup_failure_records_android_success_and_retry_does_not_uninstall_twice() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let id = "test/com.example.app";
+        let mut db = load(&f.home).unwrap();
+        db.records.get_mut(id).unwrap().steam_binding = Some(steam_shortcuts::Binding {
+            game_id: "invalid-binding".into(),
+            native: false,
+            revision: String::new(),
+        });
+        save(&f.home, &db).unwrap();
+        let error = f
+            .operation("uninstall", json!({"app":id,"approve":true}))
+            .unwrap_err();
+        assert!(error.to_string().contains("APK was uninstalled"), "{error}");
+        let mut db = load(&f.home).unwrap();
+        assert!(db.records[id].removed);
+        assert!(db.records[id].steam_binding.is_some());
+        assert!(f.save_file().exists());
+        let commands = f.dir.path().join("commands");
+        let count = fs::read_to_string(&commands)
+            .unwrap()
+            .matches("pm uninstall")
+            .count();
+        db.records.get_mut(id).unwrap().steam_binding = None;
+        save(&f.home, &db).unwrap();
+        f.operation("uninstall", json!({"app":id,"approve":true}))
+            .unwrap();
+        assert_eq!(
+            count,
+            fs::read_to_string(&commands)
+                .unwrap()
+                .matches("pm uninstall")
+                .count()
+        );
+        assert!(f.save_file().exists());
+    }
+    #[test]
+    fn android_ready_probe_uses_operation_specific_checks_and_accepts_volume_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |mode: &str, user: &str, volume: &str| {
+            let mocks = format!("getprop() {{ echo 1; }}; pm() {{ echo package:/system/framework/framework-res.apk; }}; am() {{ echo {user}; }}; sm() {{ echo '{volume}'; }};\n");
+            let probe = ANDROID_READY_PROBE
+                .replace("/storage/emulated/0", &dir.path().display().to_string());
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", &(mocks + &probe), "probe", mode]);
+            output(command, Duration::from_secs(2), None).unwrap()
+        };
+        assert!(
+            run("package", "RUNNING_LOCKED", "emulated;0 unmounted null")
+                .contains("FRAMELY_ANDROID_READY")
+        );
+        assert!(!run("full", "RUNNING_LOCKED", "emulated;0 mounted null")
+            .contains("FRAMELY_ANDROID_READY"));
+        assert!(
+            !run("full", "RUNNING_UNLOCKED", "emulated;0 unmounted null")
+                .contains("FRAMELY_ANDROID_READY")
+        );
+        assert!(run("full", "RUNNING_UNLOCKED", "emulated;0 mounted null")
+            .contains("FRAMELY_ANDROID_READY"));
+        assert!(run("full", "RUNNING_UNLOCKED", "emulated mounted null")
+            .contains("FRAMELY_ANDROID_READY"));
+    }
+    #[test]
+    fn android_ready_errors_identify_the_blocked_stage() {
+        assert!(
+            android_readiness_failure("probe timed out", AndroidReadiness::Full)
+                .contains("did not respond")
+        );
+        assert!(
+            android_readiness_failure("FRAMELY_BOOT=0", AndroidReadiness::Full).contains("startup")
+        );
+        assert!(android_readiness_failure(
+            "FRAMELY_BOOT=1\nFRAMELY_PM=0",
+            AndroidReadiness::PackageManager
+        )
+        .contains("PackageManager"));
+        assert!(android_readiness_failure(
+            "FRAMELY_BOOT=1\nFRAMELY_PM=1\nFRAMELY_USER=RUNNING_UNLOCKED\nFRAMELY_STORAGE=0",
+            AndroidReadiness::Full
+        )
+        .contains("external storage"));
     }
     #[test]
     fn updating_uninstalling_retaining_and_batch_cleanup_are_scoped() {

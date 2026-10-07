@@ -1,4 +1,5 @@
-import React from 'react';
+import React,{useState} from 'react';
+import {exportDiagnosticLogs} from './api';
 import {IconAlertTriangle} from '@tabler/icons-react';
 import {PluginImage} from './store';
 import {SwitchRow} from './switch';
@@ -12,6 +13,8 @@ type Props={
 };
 
 export function ApkUninstall({app,size,purge,deleteContainer,exclusive,busy,error,onPurge,onDeleteContainer,onCancel,onConfirm}:Props){
+ const [exporting,setExporting]=useState(false),[diagnostic,setDiagnostic]=useState('');
+ async function exportLogs(){setExporting(true);try{setDiagnostic(await exportDiagnosticLogs());}catch(e){setDiagnostic(String(e));}finally{setExporting(false);}}
  const message=deleteContainer?'将永久删除应用及容器数据。历史备份保留。':purge?'将永久删除存档和应用数据。容器保留。':'存档和设置会保留，之后可以重新安装。';
  return <div className="apk-uninstall">
   <h2>{t(app.installed?'卸载应用':'清除保留数据')}</h2>
@@ -28,6 +31,7 @@ export function ApkUninstall({app,size,purge,deleteContainer,exclusive,busy,erro
    {purge&&<IconAlertTriangle size={22} aria-hidden="true"/>}<p>{t(message)}{purge&&<small>{t('永久删除的数据无法撤销。')}</small>}</p>
   </div>
   {error&&<p className="error" role="alert">{error}</p>}
-  <footer><button disabled={busy} onClick={onCancel}>{t('取消')}</button><button className="danger" disabled={busy} onClick={onConfirm}>{t(app.installed?(deleteContainer?'卸载并删除容器':'卸载'):(deleteContainer?'删除数据和容器':'删除'))}</button></footer>
+  {diagnostic&&<p role="status">{diagnostic}</p>}
+  <footer>{error&&<button disabled={busy||exporting} onClick={()=>void exportLogs()}>{t(exporting?'正在导出日志…':'导出日志')}</button>}<button disabled={busy} onClick={onCancel}>{t('取消')}</button><button className="danger" disabled={busy} onClick={onConfirm}>{error?t('重试'):t(app.installed?(deleteContainer?'卸载并删除容器':'卸载'):(deleteContainer?'删除数据和容器':'删除'))}</button></footer>
  </div>;
 }

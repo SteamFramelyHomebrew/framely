@@ -22,7 +22,7 @@ import {InstallReview} from './install-review';
 import {MemoryLimit} from './memory-limit';
 import {installScrollbars} from '../../sdk/src/scrollbars';
 installScrollbars();
-import React,{useEffect,useRef,useState} from 'react';import{createRoot}from'react-dom/client';import{uploadChunk,api,viewKey}from'./api';import {Icon,Brand} from './icons';import {Store,Sources,PluginImage,PluginLinks,PluginAuthor,installedIcon,runJob,Transfer,Job,Presentation,compareVersions} from './store';import {SystemUpdates} from './updates';import './style.css';if(location.pathname==='/launcher')document.documentElement.classList.add('launcher-view');if(location.pathname==='/notifications')document.documentElement.classList.add('notification-view');
+import React,{useEffect,useRef,useState} from 'react';import{createRoot}from'react-dom/client';import{uploadChunk,api,viewKey,exportDiagnosticLogs}from'./api';import {Icon,Brand} from './icons';import {Store,Sources,PluginImage,PluginLinks,PluginAuthor,installedIcon,runJob,Transfer,Job,Presentation,compareVersions} from './store';import {SystemUpdates} from './updates';import './style.css';if(location.pathname==='/launcher')document.documentElement.classList.add('launcher-view');if(location.pathname==='/notifications')document.documentElement.classList.add('notification-view');
 export type Manifest=Presentation&{id:string;name:string;version:string;author:string;description:string;backend?:{runAs:string;autostart:boolean;memoryLimitMiB?:number};lifecycle?:{runAs?:string};dependencies?:Record<string,unknown>;optionalDependencies?:Record<string,unknown>;conflicts?:Record<string,string>;exclusiveResources?:string[];engines?:{framely?:string};ui:{quickPage?:string;windows:Record<string,unknown>;launch?:Record<string,{type:string;window?:string}>;launcherActions?:{id:string;label:string;target:{type:string;entry?:string;window?:string}}[]}};
 export type Plugin={manifest:Manifest;enabled:boolean;favorite:boolean;order:number;source?:string;error?:string};
 type Source={id:string;name:string;url:string;enabled:boolean;allowHttp:boolean};
@@ -43,10 +43,7 @@ function App(){
  function switchManager(section:ManagerSection){let target: string=({plugins:'installed',apk:'apk',terminal:'terminal',files:'files',settings:'settings'})[section];try{const remembered=localStorage.getItem('framely.manager.'+section);if(remembered&&sectionFor(remembered)===section&&managerTab('#'+remembered)===remembered)target=remembered;}catch{}setPage(null);setManage(null);setTab(target);history.replaceState(null,'',location.pathname+location.search+'#'+target);}
  async function exportLogs(){
   setExportingLogs(true);setLogExport('');setError('');
-  try{const v=await api<{name:string;path?:string;data?:string}>('diagnostics.export');
-   if(v.path)setLogExport(t('日志已保存到：{0}',{0:v.path}));
-   else if(v.data){const bytes=Uint8Array.from(atob(v.data),c=>c.charCodeAt(0));const url=URL.createObjectURL(new Blob([bytes],{type:'application/zip'}));const link=document.createElement('a');link.href=url;link.download=v.name;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);setLogExport(t('日志包已生成，请查看浏览器下载。'));}
-   else throw Error(t('日志包缺少数据'));
+  try{setLogExport(await exportDiagnosticLogs());
   }catch(e){setError(String(e));}finally{setExportingLogs(false);}
  }
  async function refreshLanguages(){const v=await api('language.list');localePacks.current=v.packs??[];setLanguageFiles(v.invalidFiles??[]);await refresh();}

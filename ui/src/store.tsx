@@ -18,7 +18,7 @@ export async function runJob(method:string,params:unknown={},onUpdate?:(job:Job)
 export async function waitJob(id:string,onUpdate?:(job:Job)=>void,statusMethod='job.status'):Promise<{job:string;result:any}>{
  const started={job:id};
  const deadline=Date.now()+35*60*1000;
- while(Date.now()<deadline){const job=await api<Job>(statusMethod,{job:started.job});onUpdate?.(job);if(job.phase==='done')return{job:started.job,result:job.result};if(job.phase==='failed')throw new Error(job.error??t("操作失败"));if(job.phase==='cancelled')throw new Error(t("操作已取消"));await new Promise(r=>setTimeout(r,300));}
+ while(Date.now()<deadline){const job=await api<Job>(statusMethod,{job:started.job});onUpdate?.(job);if(job.phase==='done')return{job:started.job,result:job.result};if(job.phase==='failed')throw new Error(t(job.error??"操作失败"));if(job.phase==='cancelled')throw new Error(t("操作已取消"));await new Promise(r=>setTimeout(r,300));}
  throw new Error(t("操作超时，请重新检查任务状态"));
 }
 export function PluginImage({src,name,size=48}:{src?:string|null;name:string;size?:number}){const[failed,setFailed]=useState(false);useEffect(()=>setFailed(false),[src]);return <span className="plugin-avatar" style={{width:size,height:size}}>{src&&!failed?<img src={src} alt={t("{0}图标", {"0": name})} onError={()=>setFailed(true)}/>:<Icon name="plugins" size={Math.round(size*.55)}/>}</span>}

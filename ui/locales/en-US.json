@@ -968,6 +968,12 @@
     "提示音反馈": "Sound feedback",
     "指向可交互控件时振动，不影响 APK 游戏振动。": "Vibrate when pointing at interactive controls. APK game rumble is unaffected.",
     "使用 Steam 提示音反馈聚焦和点击。": "Use Steam sounds for focus and clicks.",
-    "导出本体、插件、渲染及 APK/Lepton 日志和服务状态，不包含插件配置和访问密码文件。": "Export Framely, plugin, renderer and APK/Lepton logs with service status. Plugin settings and access password files are excluded."
+    "导出本体、插件、渲染及 APK/Lepton 日志和服务状态，不包含插件配置和访问密码文件。": "Export Framely, plugin, renderer and APK/Lepton logs with service status. Plugin settings and access password files are excluded.",
+    "Android startup timed out; export logs and retry.": "Android startup timed out; export logs and retry.",
+    "Android PackageManager did not become ready; export logs and retry.": "Android PackageManager did not become ready; export logs and retry.",
+    "Android user did not unlock; export logs and retry.": "Android user did not unlock; export logs and retry.",
+    "Android external storage did not mount; export logs and retry.": "Android external storage did not mount; export logs and retry.",
+    "Android container stopped before becoming ready; export logs and retry.": "Android container stopped before becoming ready; export logs and retry.",
+    "Android readiness probe did not respond; export logs and retry.": "Android readiness probe did not respond; export logs and retry."
   }
 }

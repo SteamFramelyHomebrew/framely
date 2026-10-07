@@ -958,6 +958,12 @@
     "提示音反馈": "提示音反馈",
     "指向可交互控件时振动，不影响 APK 游戏振动。": "指向可交互控件时振动，不影响 APK 游戏振动。",
     "使用 Steam 提示音反馈聚焦和点击。": "使用 Steam 提示音反馈聚焦和点击。",
-    "导出本体、插件、渲染及 APK/Lepton 日志和服务状态，不包含插件配置和访问密码文件。": "导出本体、插件、渲染及 APK/Lepton 日志和服务状态，不包含插件配置和访问密码文件。"
+    "导出本体、插件、渲染及 APK/Lepton 日志和服务状态，不包含插件配置和访问密码文件。": "导出本体、插件、渲染及 APK/Lepton 日志和服务状态，不包含插件配置和访问密码文件。",
+    "Android startup timed out; export logs and retry.": "Android 启动超时，请导出日志后重试。",
+    "Android PackageManager did not become ready; export logs and retry.": "Android 包管理器尚未就绪，请导出日志后重试。",
+    "Android user did not unlock; export logs and retry.": "Android 用户未解锁，请导出日志后重试。",
+    "Android external storage did not mount; export logs and retry.": "Android 外部存储未挂载，请导出日志后重试。",
+    "Android container stopped before becoming ready; export logs and retry.": "Android 容器在就绪前退出，请导出日志后重试。",
+    "Android readiness probe did not respond; export logs and retry.": "Android 就绪状态查询无响应，请导出日志后重试。"
   }
 }
