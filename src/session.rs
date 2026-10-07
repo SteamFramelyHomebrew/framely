@@ -2854,7 +2854,7 @@ mod tests {
             .unwrap()
             .into_json()
             .unwrap();
-        assert_eq!(poll["feedback"], json!({"haptics":true,"sounds":true}));
+        assert_eq!(poll["feedback"], json!({"haptics":true,"sounds":false}));
         assert!(poll.get("gazeCalibration").is_some());
         assert!(poll["launcher"].is_object());
         assert!(agent

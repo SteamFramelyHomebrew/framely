@@ -12,7 +12,7 @@ Plugin contains installed plugins, the plugin library, sources and notification 
 
 ## Interaction feedback
 
-In **Settings → General → Interaction feedback**, Haptic feedback and Sound feedback are enabled by default and saved across restarts. Haptic feedback controls laser hover and launcher gaze-focus vibration across Framely and plugin pages; it does not change APK game rumble. Sound feedback uses Steam’s installed navigation and activation sounds for focus and clicks. It requires the local Steam sound files and audio runtime; no sound files are bundled or downloaded.
+In **Settings → General → Interaction feedback**, Haptic feedback is enabled by default; Sound feedback is disabled by default. Both preferences are saved across restarts. Haptic feedback controls laser hover and launcher gaze-focus vibration across Framely and plugin pages; it does not change APK game rumble. Sound feedback uses Steam’s installed navigation and activation sounds for focus and clicks. It requires the local Steam sound files and audio runtime; no sound files are bundled or downloaded.
 
 ## Terminal
 

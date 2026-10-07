@@ -181,14 +181,14 @@ pub struct LauncherAction {
 pub struct FeedbackSettings {
     #[serde(default = "yes")]
     pub haptics: bool,
-    #[serde(default = "yes")]
+    #[serde(default)]
     pub sounds: bool,
 }
 impl Default for FeedbackSettings {
     fn default() -> Self {
         Self {
             haptics: true,
-            sounds: true,
+            sounds: false,
         }
     }
 }

@@ -2965,7 +2965,7 @@ mod feedback_tests {
     fn feedback_defaults_persist_and_reject_invalid_settings() {
         let root = tempfile::tempdir().unwrap();
         let mut core = crate::tests::accepted_service(root.path(), 1000).unwrap();
-        assert!(core.db.feedback.haptics && core.db.feedback.sounds);
+        assert!(core.db.feedback.haptics && !core.db.feedback.sounds);
         core.handle(
             "feedback.settings.save",
             json!({"haptics":false,"sounds":true}),
@@ -2990,6 +2990,6 @@ mod feedback_tests {
         assert!(!reloaded.db.feedback.haptics && !reloaded.db.feedback.sounds);
         let old: Database =
             serde_json::from_value(json!({"plugins":{},"sources":[],"safeMode":false})).unwrap();
-        assert!(old.feedback.haptics && old.feedback.sounds);
+        assert!(old.feedback.haptics && !old.feedback.sounds);
     }
 }
