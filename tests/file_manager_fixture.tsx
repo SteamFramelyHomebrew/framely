@@ -7,6 +7,7 @@ import '../ui/src/style.css';
 const wait=(ms=40)=>new Promise(r=>setTimeout(r,ms));
 const until=async(f:()=>unknown)=>{for(let n=0;n<150;n++){if(f())return;await wait();}throw Error('Timeout '+document.body.innerText.slice(-800));};
 const home='/home/steamos',downloads=home+'/Downloads';
+const longFolder='一个很长的文件夹名称 - Project documents and archived screenshots';
 let preferences:any={view:'list',folders:{[home]:{sort:'size',descending:true},[downloads]:{sort:'modified',descending:false}}};
 const calls:any[]=[];
 const files=(directory:string)=>[
@@ -26,7 +27,10 @@ window.fetch=async(url,init)=>{
  }else if(p.operation==='list'){
   let directory=p.path||home;if(directory==='/alias')directory=home;
   let entries=files(directory);
-  if(p.hidden)entries=[]; // Tree requests do not consume the sort checks below.
+  if(p.hidden){ // Tree requests do not consume the sort checks below.
+   const child=directory==='/'?{name:'home',path:'/home'}:directory==='/home'?{name:'steamos',path:home}:directory===home?{name:longFolder,path:home+'/'+longFolder}:null;
+   entries=child?[{...child,directory:true,symlink:false,size:0,mode:493,uid:1000,gid:1000}]:[];
+  }
   result={path:directory,parent:'/',entries,total:entries.length,roots:[{name:'Home',path:home},{name:'Downloads',path:downloads}]};
  }else if(p.operation==='read')result={text:'fixture text',revision:'revision'};
  else throw Error('Unexpected operation '+p.operation);
@@ -42,6 +46,13 @@ const changeAddress=async(value:string)=>{const input=document.querySelector<HTM
 (window as any).runInstallReviewChecks=async()=>{try{
  configureLanguage('en-US',[]);render('one');await until(ready);
  if(listing().sort!=='size'||listing().descending!==true)throw Error('Home sort not restored on initial canonical path');
+ await until(()=>[...document.querySelectorAll('.file-tree-entry button>span')].some(node=>node.textContent===longFolder));
+ const tree=document.querySelector<HTMLElement>('.file-tree-scroll')!,name=[...tree.querySelectorAll<HTMLElement>('button>span')].find(node=>node.textContent===longFolder)!;
+ if(getComputedStyle(name).textOverflow==='ellipsis'||name.scrollWidth>name.clientWidth+1)throw Error('Tree folder name clipped');
+ if(tree.scrollWidth<=tree.clientWidth)throw Error('Tree does not expose horizontal overflow');
+ tree.scrollLeft=tree.scrollWidth;if(tree.scrollLeft<=0)throw Error('Cannot scroll long tree names');tree.scrollLeft=0;
+ if(name.closest('button')?.title!==home+'/'+longFolder)throw Error('Full path tooltip missing');
+
  await select('View','Large icons');await until(()=>document.querySelector('.file-icon-grid.icons-large'));
  if(document.querySelector('.file-table'))throw Error('Table remained in icon view');
  const checkbox=document.querySelector<HTMLInputElement>('.file-tile-check input')!;checkbox.click();await until(()=>document.querySelector('.file-icon-tile.selected'));
