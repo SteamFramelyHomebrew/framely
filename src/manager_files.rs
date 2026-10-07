@@ -177,8 +177,28 @@ fn entry(p: &Path) -> Result<Value> {
     } else {
         m.is_dir()
     };
+    // Revision uses target metadata (including nanoseconds), never media bytes.
+    let media_revision = if !dir && media_type(p).is_some() {
+        let target = if link {
+            fs::metadata(p).ok()
+        } else {
+            Some(m.clone())
+        };
+        target.filter(|m| m.is_file()).map(|m| {
+            format!(
+                "{}:{}:{}:{}:{}",
+                m.dev(),
+                m.ino(),
+                m.len(),
+                m.mtime(),
+                m.mtime_nsec()
+            )
+        })
+    } else {
+        None
+    };
     Ok(
-        json!({"name":p.file_name().unwrap_or_default().to_string_lossy(),"path":p,"directory":dir,"symlink":link,"size":m.len(),"modified":m.modified().ok().and_then(|t|t.duration_since(UNIX_EPOCH).ok()).map(|t|t.as_secs()),"mode":m.mode()&0o7777,"uid":m.uid(),"gid":m.gid(),"linkTarget":if link{fs::read_link(p).ok()}else{None}}),
+        json!({"name":p.file_name().unwrap_or_default().to_string_lossy(),"path":p,"directory":dir,"symlink":link,"size":m.len(),"mediaRevision":media_revision,"modified":m.modified().ok().and_then(|t|t.duration_since(UNIX_EPOCH).ok()).map(|t|t.as_secs()),"mode":m.mode()&0o7777,"uid":m.uid(),"gid":m.gid(),"linkTarget":if link{fs::read_link(p).ok()}else{None}}),
     )
 }
 fn list(p: &Value, home: &Path) -> Result<Value> {
@@ -632,8 +652,14 @@ impl Files {
                     path:file, inline, owned:false, expires:now()+3600
                 });
                 Ok(json!({
-                    "url":format!("/manager-api/file-content/{id}")
+                    "url":format!("/manager-api/file-content/{id}"),"token":if inline{Some(id)}else{None}
                 }))
+            },
+            "preview.release" => {
+                let id = strparam(p,"token")?;
+                let mut downloads = self.downloads.lock().unwrap();
+                if downloads.get(id).is_some_and(|d| d.inline && !d.owned) { downloads.remove(id); }
+                Ok(json!(true))
             },
             "upload.start" => {
                 let parent = PathBuf::from(strparam(p,"directory")?).canonicalize()?;
@@ -1180,6 +1206,70 @@ fn target_resolution(path: &Path, p: &Value) -> Result<Option<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn media_revisions_track_replacements_and_symlink_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let image = temp.path().join("sample.png");
+        fs::write(&image, b"generated").unwrap();
+        let first = entry(&image).unwrap()["mediaRevision"].clone();
+        let replacement = temp.path().join("replacement.png");
+        fs::write(&replacement, b"different").unwrap();
+        fs::rename(&replacement, &image).unwrap();
+        let second = entry(&image).unwrap()["mediaRevision"].clone();
+        assert_ne!(first, second);
+        let link = temp.path().join("link.png");
+        symlink(&image, &link).unwrap();
+        assert_eq!(entry(&link).unwrap()["mediaRevision"], second);
+        fs::write(temp.path().join("other.png"), b"different").unwrap();
+        fs::remove_file(&link).unwrap();
+        symlink(temp.path().join("other.png"), &link).unwrap();
+        assert_ne!(entry(&link).unwrap()["mediaRevision"], second);
+        fs::write(temp.path().join("notes.txt"), b"generated").unwrap();
+        assert!(entry(&temp.path().join("notes.txt")).unwrap()["mediaRevision"].is_null());
+    }
+    #[test]
+    fn thumbnail_grants_can_be_released_without_revoking_downloads() {
+        let temp = tempfile::tempdir().unwrap();
+        let image = temp.path().join("sample.png");
+        fs::write(&image, b"generated").unwrap();
+        let files = Files::default();
+        let preview = files
+            .api(temp.path(), &json!({"operation":"preview","path":image}))
+            .unwrap();
+        let token = preview["token"].as_str().unwrap();
+        assert!(files.content(token).unwrap().1);
+        files
+            .api(
+                temp.path(),
+                &json!({"operation":"preview.release","token":token}),
+            )
+            .unwrap();
+        assert!(files.content(token).is_err());
+        let download = files
+            .api(temp.path(), &json!({"operation":"download","path":image}))
+            .unwrap();
+        let token = download["url"]
+            .as_str()
+            .unwrap()
+            .rsplit('/')
+            .next()
+            .unwrap();
+        files
+            .api(
+                temp.path(),
+                &json!({"operation":"preview.release","token":token}),
+            )
+            .unwrap();
+        assert!(!files.content(token).unwrap().1);
+        let unsafe_file = temp.path().join("active.svg");
+        fs::write(&unsafe_file, b"generated").unwrap();
+        assert!(files
+            .api(
+                temp.path(),
+                &json!({"operation":"preview","path":unsafe_file})
+            )
+            .is_err());
+    }
     #[test]
     fn centered_paths_and_link_safety() {
         let temp = tempfile::tempdir().unwrap();

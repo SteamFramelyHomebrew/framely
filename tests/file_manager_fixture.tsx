@@ -32,7 +32,9 @@ window.fetch=async(url,init)=>{
    entries=child?[{...child,directory:true,symlink:false,size:0,mode:493,uid:1000,gid:1000}]:[];
   }
   result={path:directory,parent:'/',entries,total:entries.length,roots:[{name:'Home',path:home},{name:'Downloads',path:downloads}]};
- }else if(p.operation==='read')result={text:'fixture text',revision:'revision'};
+ }else if(p.operation==='preview'){const canvas=document.createElement('canvas');canvas.width=80;canvas.height=60;const ctx=canvas.getContext('2d')!;ctx.fillStyle='#8bb4ce';ctx.fillRect(0,0,80,60);result={url:p.path.endsWith('.png')?canvas.toDataURL(): 'data:video/webm;base64,AA==',token:p.path};}
+ else if(p.operation==='preview.release')result=true;
+ else if(p.operation==='read')result={text:'fixture text',revision:'revision'};
  else throw Error('Unexpected operation '+p.operation);
  return new Response(JSON.stringify({result}));
 };
@@ -44,7 +46,8 @@ const ready=()=>document.querySelector('.file-list-scroll')?.getAttribute('aria-
 const listing=()=>calls.filter(p=>p.operation==='list'&&!p.hidden).at(-1);
 const changeAddress=async(value:string)=>{const input=document.querySelector<HTMLInputElement>('.file-address input')!;Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));await wait();input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));};
 (window as any).runInstallReviewChecks=async()=>{try{
- configureLanguage('en-US',[]);render('one');await until(ready);
+ configureLanguage('en-US',[]);render('one');await until(ready);await wait(200);
+ if(calls.some(p=>p.operation==='preview'))throw Error('List view fetched thumbnails');
  if(listing().sort!=='size'||listing().descending!==true)throw Error('Home sort not restored on initial canonical path');
  await until(()=>[...document.querySelectorAll('.file-tree-entry button>span')].some(node=>node.textContent===longFolder));
  const tree=document.querySelector<HTMLElement>('.file-tree-scroll')!,name=[...tree.querySelectorAll<HTMLElement>('button>span')].find(node=>node.textContent===longFolder)!;
@@ -72,7 +75,8 @@ const changeAddress=async(value:string)=>{const input=document.querySelector<HTM
  configureLanguage('zh-CN',[]);render('three');await wait();await until(()=>ready()&&document.querySelector('.icons-medium'));await select('展示方式','大图标');await until(()=>document.querySelector('.icons-large'));
  await wait(400);console.log('FRAMELY_PREVIEW_INSTALL_FILE_MANAGER_ICONS_ZH');await wait(300);
  await select('展示方式','列表');await until(()=>document.querySelector('.file-table'));document.querySelector<HTMLInputElement>('[aria-label="选择本页"]')!.click();await until(()=>document.querySelectorAll('.file-table tr.selected').length===4);
- if(calls.some(p=>p.operation==='preview'))throw Error('Grid fetched media unexpectedly');
+ if(calls.some(p=>p.operation==='preview'&&!/\.(png|webm)$/.test(p.path)))throw Error('Non-media fetched for thumbnails');
+ if(!calls.some(p=>p.operation==='preview.release'))throw Error('Source preview grants not released');
  console.log('FRAMELY_BRIDGE_PASS');
  }catch(e){console.error('FRAMELY_BRIDGE_FAIL '+String(e)+' '+(e as Error).stack);}};
 console.log('FRAMELY_VIEW_READY');

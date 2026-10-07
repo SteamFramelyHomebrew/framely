@@ -1,6 +1,7 @@
 import React,{useEffect,useRef,useState} from 'react';
 import {IconFolder,IconFile,IconArrowUp,IconRefresh,IconUpload,IconDownload,IconStar,IconTrash,IconChevronRight,IconChevronDown,IconSearch,IconFolderPlus,IconPlus,IconCopy,IconCut,IconClipboard,IconDots,IconPencil,IconX,IconArrowDown,IconHome,IconDeviceSdCard,IconFileText,IconPhoto,IconMovie,IconFileZip,IconExternalLink,IconInfoCircle,IconArrowLeft} from '@tabler/icons-react';
 import {managerApi,ManagerError} from './manager-api';
+import {FileThumbnail} from './file-thumbnail';
 import {api} from './api';
 import {uploadFile} from './upload';
 import {Select} from './localized-select';
@@ -8,7 +9,7 @@ import {SwitchRow} from './switch';
 import {t} from './i18n';
 import './manager-tools.css';
 import './file-manager.css';
-type Entry={name:string;path:string;directory:boolean;symlink:boolean;size:number;modified?:number;mode:number;uid:number;gid:number;linkTarget?:string};
+type Entry={name:string;path:string;directory:boolean;symlink:boolean;size:number;modified?:number;mediaRevision?:string|null;mode:number;uid:number;gid:number;linkTarget?:string};
 type Listing={path:string;parent?:string;entries:Entry[];total:number;roots:{name:string;path:string}[]};
 type Bookmark={name:string;path:string};
 type FileSort='name'|'size'|'modified';
@@ -158,7 +159,7 @@ export function FileManager({active=true}:{active?:boolean}){
  {loading&&!shown.length?Array.from({length:5},(_,index)=><tr className="file-skeleton" key={index} aria-hidden="true"><td/><td><i/></td><td className="file-kind"><i/></td><td className="file-size"><i/></td><td className="file-time"><i/></td></tr>):shown.map(entry=><tr key={entry.path} className={selected.includes(entry.path)?'selected':''} onContextMenu={event=>showMenu(event,entry)}><td className="file-check"><input type="checkbox" aria-label={entry.name} checked={selected.includes(entry.path)} onChange={event=>setSelected(v=>event.target.checked?[...new Set([...v,entry.path])]:v.filter(p=>p!==entry.path))}/></td><td><button className="file-name" onClick={()=>void open(entry)}><span className={`file-entry-icon ${entry.directory?'folder':''}`}>{entryIcon(entry,22)}</span><span>{entry.name}</span>{entry.symlink&&<IconExternalLink size={14}/>}</button></td><td className="file-kind">{fileKind(entry)}</td><td className="file-size">{entry.directory?'-':bytes(entry.size)}</td><td className="file-time">{formatDate(entry.modified)}</td></tr>)}</tbody></table>:<div className={`file-icon-grid ${view}`}>
  {loading&&!shown.length?Array.from({length:8},(_,index)=><div className="file-grid-skeleton" aria-hidden="true" key={index}><i/><span/></div>):shown.map(entry=><div key={entry.path} className={`file-icon-tile ${selected.includes(entry.path)?'selected':''}`} onContextMenu={event=>showMenu(event,entry)}>
  <label className="file-tile-check"><input type="checkbox" aria-label={t('选择 {0}',{0:entry.name})} checked={selected.includes(entry.path)} onChange={event=>selectEntry(entry,event.target.checked)}/></label>
- <button className="file-tile-open" title={entry.name} onClick={()=>void open(entry)}><span className={`file-entry-icon ${entry.directory?'folder':''}`}>{entryIcon(entry,view==='icons-large'?80:view==='icons-medium'?56:36)}{entry.symlink&&<IconExternalLink className="file-link-marker" size={16}/>}</span><span className="file-tile-name">{entry.name}</span></button>
+ <button className="file-tile-open" title={entry.name} onClick={()=>void open(entry)}><span className={`file-entry-icon ${entry.directory?'folder':''}`}><FileThumbnail entry={entry} active={active}>{entryIcon(entry,view==='icons-large'?80:view==='icons-medium'?56:36)}</FileThumbnail>{entry.symlink&&<IconExternalLink className="file-link-marker" size={16}/>}</span><span className="file-tile-name">{entry.name}</span></button>
  </div>)}
  </div>}
  {!loading&&!shown.length&&<div className="file-empty"><IconFolder size={40}/><h3>{t(query?'没有匹配的文件':'此文件夹为空')}</h3><p>{t(query?'试试其他名称，或搜索子目录。':'上传文件或新建文件夹。')}</p></div>}</div>
