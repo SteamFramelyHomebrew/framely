@@ -8,8 +8,9 @@ const wait=(ms=40)=>new Promise(r=>setTimeout(r,ms));
 const until=async(f:()=>unknown)=>{for(let n=0;n<150;n++){if(f())return;await wait();}throw Error('Timeout '+document.body.innerText.slice(-800));};
 const home='/home/steamos',downloads=home+'/Downloads';
 const longFolder='一个很长的文件夹名称 - Project documents and archived screenshots';
+let binaryMode=false;
 let preferences:any={view:'list',folders:{[home]:{sort:'size',descending:true},[downloads]:{sort:'modified',descending:false}}};
-const calls:any[]=[];
+const calls:any[]=[],downloadsClicked:string[]=[];const anchorClick=HTMLAnchorElement.prototype.click;HTMLAnchorElement.prototype.click=function(){downloadsClicked.push(this.getAttribute('href')??'');};
 const files=(directory:string)=>[
  {name:'Photos',path:directory+'/Photos',directory:true,symlink:false,size:0,mode:493,uid:1000,gid:1000},
  {name:'A very long photograph name with spaces.png',path:directory+'/picture.png',directory:false,symlink:false,size:8192,modified:1791360000,mode:420,uid:1000,gid:1000},
@@ -26,7 +27,7 @@ window.fetch=async(url,init)=>{
   result=structuredClone(preferences);
  }else if(p.operation==='list'){
   let directory=p.path||home;if(directory==='/alias')directory=home;
-  let entries=files(directory);
+  let entries=files(directory);if(binaryMode)entries=[{...entries[2],name:'sample.bin',path:directory+'/sample.bin'}];
   if(p.hidden){ // Tree requests do not consume the sort checks below.
    const child=directory==='/'?{name:'home',path:'/home'}:directory==='/home'?{name:'steamos',path:home}:directory===home?{name:longFolder,path:home+'/'+longFolder}:null;
    entries=child?[{...child,directory:true,symlink:false,size:0,mode:493,uid:1000,gid:1000}]:[];
@@ -34,7 +35,8 @@ window.fetch=async(url,init)=>{
   result={path:directory,parent:'/',entries,total:entries.length,roots:[{name:'Home',path:home},{name:'Downloads',path:downloads}]};
  }else if(p.operation==='preview'){const canvas=document.createElement('canvas');canvas.width=80;canvas.height=60;const ctx=canvas.getContext('2d')!;ctx.fillStyle='#8bb4ce';ctx.fillRect(0,0,80,60);result={url:p.path.endsWith('.png')?canvas.toDataURL(): 'data:video/webm;base64,AA==',token:p.path};}
  else if(p.operation==='preview.release')result=true;
- else if(p.operation==='read')result={text:'fixture text',revision:'revision'};
+ else if(p.operation==='read'){if(p.path.endsWith('notes.txt'))result={text:'fixture text',revision:'revision'};else return new Response(JSON.stringify({error:'Binary files cannot be edited as text'}));}
+ else if(p.operation==='download')result={url:'/fixture-download'};
  else throw Error('Unexpected operation '+p.operation);
  return new Response(JSON.stringify({result}));
 };
@@ -71,12 +73,14 @@ const changeAddress=async(value:string)=>{const input=document.querySelector<HTM
  await changeAddress('/alias');await until(()=>ready()&&document.querySelector<HTMLInputElement>('.file-address input')!.value===home);
  if(listing().sort!=='size')throw Error('Canonical folder preference not restored');
  const tile=document.querySelector<HTMLButtonElement>('.file-tile-open[title="notes.txt"]')!;tile.click();await until(()=>document.querySelector('.file-editor'));button('Close').click();
+ document.querySelector<HTMLButtonElement>('.file-tile-open[title="A very long photograph name with spaces.png"]')!.click();await until(()=>document.querySelector('.file-media-overlay img'));await until(()=>document.querySelector('.file-media-overlay img')?.getAttribute('src'));document.querySelector<HTMLButtonElement>('.file-media-overlay [aria-label="Close"]')!.click();await until(()=>!document.querySelector('.file-media-overlay'));
  await wait(400);console.log('FRAMELY_PREVIEW_INSTALL_FILE_MANAGER_ICONS_EN');await wait(300);
  configureLanguage('zh-CN',[]);render('three');await wait();await until(()=>ready()&&document.querySelector('.icons-medium'));await select('展示方式','大图标');await until(()=>document.querySelector('.icons-large'));
  await wait(400);console.log('FRAMELY_PREVIEW_INSTALL_FILE_MANAGER_ICONS_ZH');await wait(300);
  await select('展示方式','列表');await until(()=>document.querySelector('.file-table'));document.querySelector<HTMLInputElement>('[aria-label="选择本页"]')!.click();await until(()=>document.querySelectorAll('.file-table tr.selected').length===4);
  if(calls.some(p=>p.operation==='preview'&&!/\.(png|webm)$/.test(p.path)))throw Error('Non-media fetched for thumbnails');
  if(!calls.some(p=>p.operation==='preview.release'))throw Error('Source preview grants not released');
- console.log('FRAMELY_BRIDGE_PASS');
+ binaryMode=true;document.querySelector<HTMLButtonElement>('[aria-label="刷新"]')!.click();await until(()=>document.querySelector('.file-name')?.textContent?.includes('sample.bin'));document.querySelector<HTMLButtonElement>('.file-name')!.click();await until(()=>downloadsClicked.includes('/fixture-download'));if(document.querySelector('.modal'))throw Error('Unsupported file opened a dialog');
+ HTMLAnchorElement.prototype.click=anchorClick;console.log('FRAMELY_BRIDGE_PASS');
  }catch(e){console.error('FRAMELY_BRIDGE_FAIL '+String(e)+' '+(e as Error).stack);}};
 console.log('FRAMELY_VIEW_READY');

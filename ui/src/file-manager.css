@@ -185,3 +185,22 @@
 .file-manager .file-thumbnail{position:relative;width:100%;height:100%;display:grid;place-items:center}
 .file-manager .file-media-thumbnail{width:100%;height:100%;object-fit:contain;border-radius:5px;user-select:none;pointer-events:none}
 .file-manager .file-video-marker{position:absolute;bottom:2px;left:2px;color:#f4f4f6;filter:drop-shadow(0 1px 2px #000);pointer-events:none}
+/* Media viewer covers the entire panel or browser, independently of file layout. */
+.file-manager.file-media-overlay{position:fixed;inset:0;z-index:150;display:flex;flex-direction:column;background:#111113f5;color:#ededf0;outline:none;--file-text:#ededf0;--file-muted:#a6a6af}
+.file-media-header{position:relative;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 20px;border-bottom:1px solid #ffffff12;background:#19191b}
+.file-media-header>div:first-child{display:flex;align-items:baseline;gap:14px;min-width:0}
+.file-media-header strong{font-size:16px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.file-media-header span,.file-media-actions output{color:#a6a6af;font-size:13px;white-space:nowrap}
+.file-media-actions{display:flex;align-items:center;gap:5px;flex-shrink:0}
+.file-manager .file-media-actions button,.file-manager .file-media-prev,.file-manager .file-media-next{display:grid;place-items:center;width:40px;height:40px;padding:0;border:1px solid #ffffff14;border-radius:10px;background:#29292de0;color:#ececef}
+.file-media-actions output{min-width:44px;text-align:center;font-variant-numeric:tabular-nums}
+.file-media-stage{position:relative;flex:1;min-height:0;overflow:hidden;touch-action:none;user-select:none;cursor:grab}
+.file-media-stage:active{cursor:grabbing}
+.file-media-canvas{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;transform-origin:center;will-change:transform;pointer-events:none}
+.file-media-canvas img,.file-media-canvas video{max-width:calc(100% - 120px);max-height:calc(100% - 32px);object-fit:contain;display:block}
+.file-media-canvas video{pointer-events:auto;cursor:auto;touch-action:auto}
+.file-media-loading,.file-media-error{position:absolute;inset:0;display:flex;flex-direction:column;gap:14px;align-items:center;justify-content:center;padding:40px;text-align:center;color:#b1b1bb;cursor:default}
+.file-manager .file-media-prev,.file-manager .file-media-next{position:absolute;top:50%;z-index:3;width:44px;height:52px}
+.file-media-prev{left:16px}.file-media-next{right:16px}
+.file-media-footer{padding:9px 16px;text-align:center;font-size:12px;color:#9999a5;border-top:1px solid #ffffff0a}
+@media(max-width:700px){.file-media-header{flex-wrap:wrap;padding:10px 12px;gap:8px}.file-media-header>div:first-child{width:100%;justify-content:space-between}.file-media-actions{margin-left:auto}.file-media-canvas img,.file-media-canvas video{max-width:calc(100% - 76px)}.file-media-prev{left:6px}.file-media-next{right:6px}.file-manager .file-media-prev,.file-manager .file-media-next{width:32px;height:44px}.file-media-footer{font-size:11px}}
