@@ -21,7 +21,7 @@ static void stop(int){stopped=1;}
 #include "gamepad_feedback.h"
 static const int axes[]={ABS_X,ABS_Y,ABS_RX,ABS_RY,ABS_Z,ABS_RZ,ABS_HAT0X,ABS_HAT0Y};
 static bool event(int fd,int type,int code,int value){input_event e{};e.type=type;e.code=code;e.value=value;return write(fd,&e,sizeof e)==sizeof e;}
-static bool send(int fd,const int* state){bool ok=true;for(int k=0;k<10;k++)ok=event(fd,EV_KEY,keys[k],state[k])&&ok;for(int k=0;k<8;k++)ok=event(fd,EV_ABS,axes[k],state[10+k])&&ok;return event(fd,EV_SYN,SYN_REPORT,0)&&ok;}
+static bool send(int fd,const int* state){static GamepadTriggers triggers;bool ok=true;for(int k=0;k<10;k++)ok=event(fd,EV_KEY,keys[k],state[k])&&ok;for(int k=0;k<2;k++)ok=event(fd,EV_KEY,trigger_keys[k],triggers.update(k,state[14+k]))&&ok;for(int k=0;k<8;k++)ok=event(fd,EV_ABS,axes[k],state[10+k])&&ok;return event(fd,EV_SYN,SYN_REPORT,0)&&ok;}
 int main(int argc,char**argv){
  if((argc!=2&&argc!=4)||geteuid()==0){fprintf(stderr,"Run gamepad bridge as the Steam session user with an action manifest.\n");return 1;}
  // A session request runs on a short-lived worker thread. PR_SET_PDEATHSIG
@@ -58,6 +58,7 @@ int main(int argc,char**argv){
  int fd=open("/dev/uinput",O_RDWR|O_NONBLOCK|O_CLOEXEC);if(fd<0){perror("Gamepad /dev/uinput");shutdown();return 1;}
  bool ok=ioctl(fd,UI_SET_EVBIT,EV_KEY)==0&&ioctl(fd,UI_SET_EVBIT,EV_ABS)==0&&ioctl(fd,UI_SET_EVBIT,EV_FF)==0&&ioctl(fd,UI_SET_FFBIT,FF_RUMBLE)==0;
  for(auto key:keys)ok=ioctl(fd,UI_SET_KEYBIT,key)==0&&ok;
+ for(auto key:trigger_keys)ok=ioctl(fd,UI_SET_KEYBIT,key)==0&&ok;
  for(int k=0;k<8;k++){ok=ioctl(fd,UI_SET_ABSBIT,axes[k])==0&&ok;uinput_abs_setup a{};a.code=axes[k];a.absinfo.minimum=k<4?-32768:(k<6?0:-1);a.absinfo.maximum=k<4?32767:(k<6?255:1);a.absinfo.flat=k<4?1024:0;ok=ioctl(fd,UI_ABS_SETUP,&a)==0&&ok;}
  uinput_setup device{};device.id={BUS_VIRTUAL,framely_pad_vendor,framely_pad_product,0x0001};device.ff_effects_max=GamepadFeedback::capacity;strcpy(device.name,"Framely Android gamepad");
  ok=ioctl(fd,UI_DEV_SETUP,&device)==0&&ioctl(fd,UI_DEV_CREATE)==0&&ok;

@@ -14,4 +14,12 @@ int main(){
  while(std::getline(file,line)){std::istringstream row(line);std::string kind,name;int code;if(row>>kind>>code>>name&&kind=="key")entries[code]=name;}
  const char* names[]={"BUTTON_A","BUTTON_B","BUTTON_X","BUTTON_Y","BUTTON_L1","BUTTON_R1","BUTTON_SELECT","BUTTON_START","BUTTON_THUMBL","BUTTON_THUMBR"};
  for(int i=0;i<10;i++)assert(entries[keys[i]]==names[i]);
+ assert(trigger_keys[0]==312&&trigger_keys[1]==313);
+ assert(entries[trigger_keys[0]]=="BUTTON_L2"&&entries[trigger_keys[1]]=="BUTTON_R2");
+ GamepadTriggers triggers;
+ assert(!triggers.update(0,0));assert(!triggers.update(0,29));
+ assert(triggers.update(0,30));assert(triggers.update(0,25));
+ assert(!triggers.down[1]);assert(triggers.update(1,255));
+ assert(!triggers.update(0,20));assert(triggers.down[1]);
+ assert(!triggers.update(1,0));assert(!triggers.down[0]&&!triggers.down[1]);
 }
