@@ -2623,6 +2623,39 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                 );
                 record_app(&mut db, &a);
                 cancel.check()?;
+                let delete_container = p
+                    .get("deleteContainer")
+                    .map(|v| v.as_bool().context("Invalid container deletion option"))
+                    .transpose()?
+                    .unwrap_or(false);
+                if delete_container {
+                    ensure!(
+                        matches!(kind, "uninstall" | "purge") && p["approve"] == true,
+                        "Confirm APK removal before deleting its container"
+                    );
+                    ensure!(
+                        kind == "purge" || p["purge"] == true,
+                        "Delete application data before deleting its container"
+                    );
+                    ensure!(
+                        a.pending.is_none(),
+                        "Reconcile the interrupted operation before deleting data"
+                    );
+                    let (inventory, warnings) = apps(home, &db, std::slice::from_ref(&c), false);
+                    let members: Vec<_> = inventory.iter().filter(|a| a.context == c.id).collect();
+                    ensure!(warnings.is_empty() && members.len() == 1 && members[0].id == id
+                        && members[0].state_known
+                        && !db.records.values().any(|r| r.context == c.id && r.id != id),
+                        "This container contains other applications or unknown state; uninstall without deleting the container");
+                    // Deleting the exclusive context also uninstalls its APK.
+                    // Keep its binding until cleanup has removed both runtimes
+                    // and the Steam entry; pm uninstall would lose that context.
+                    return cancel.commit(|| {
+                        progress(json!({"cancellable":false,"phase":"uninstalling"}));
+                        cleanup::delete(home, &mut db, &c, &log)?;
+                        Ok(json!({"containerDeleted":true}))
+                    });
+                }
                 if kind == "purge" && !a.installed {
                     ensure!(p["approve"] == true, "Confirm APK removal");
                     return cancel.commit(|| {
@@ -5112,6 +5145,80 @@ esac
             .unwrap()
             .iter()
             .any(|i| i["kind"] == "backups"));
+    }
+    #[test]
+    fn uninstall_can_delete_an_exclusive_container_and_keep_backups() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let root = init(&f.home).unwrap();
+        fs::create_dir_all(root.join("backups/keep")).unwrap();
+        fs::write(root.join("backups/keep/save"), "backup").unwrap();
+        let result = f.operation("uninstall", json!({"app":"test/com.example.app","purge":true,"deleteContainer":true,"approve":true})).unwrap();
+        assert_eq!(result["containerDeleted"], true);
+        assert!(!f.save_file().exists());
+        assert!(!load(&f.home)
+            .unwrap()
+            .records
+            .contains_key("test/com.example.app"));
+        assert!(root.join("backups/keep/save").exists());
+        assert!(list(&f.home).unwrap()["containers"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+    #[test]
+    fn uninstall_container_deletion_requires_data_deletion_and_confirmation() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        for params in [
+            json!({"app":"test/com.example.app","deleteContainer":true,"approve":true}),
+            json!({"app":"test/com.example.app","deleteContainer":true,"purge":true}),
+            json!({"app":"test/com.example.app","deleteContainer":"true","purge":true,"approve":true}),
+        ] {
+            assert!(f.operation("uninstall", params).is_err());
+            assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        }
+    }
+    #[test]
+    fn uninstall_container_deletion_refuses_other_retained_apps() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let mut db = load(&f.home).unwrap();
+        let mut other = db.records["test/com.example.app"].clone();
+        other.id = "test/com.other.app".into();
+        other.metadata.package = "com.other.app".into();
+        other.removed = true;
+        db.records.insert(other.id.clone(), other);
+        save(&f.home, &db).unwrap();
+        let error = f.operation("uninstall", json!({"app":"test/com.example.app","purge":true,"deleteContainer":true,"approve":true})).unwrap_err();
+        assert!(
+            error.to_string().contains("other applications"),
+            "{error:#}"
+        );
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        assert!(load(&f.home)
+            .unwrap()
+            .records
+            .contains_key("test/com.other.app"));
+    }
+    #[test]
+    fn retained_data_cleanup_can_delete_its_exclusive_container() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        f.operation(
+            "uninstall",
+            json!({"app":"test/com.example.app","approve":true}),
+        )
+        .unwrap();
+        assert!(f.save_file().exists());
+        let result = f
+            .operation(
+                "purge",
+                json!({"app":"test/com.example.app","deleteContainer":true,"approve":true}),
+            )
+            .unwrap();
+        assert_eq!(result["containerDeleted"], true);
+        assert!(!f.save_file().exists());
     }
     #[test]
     fn updating_uninstalling_retaining_and_batch_cleanup_are_scoped() {

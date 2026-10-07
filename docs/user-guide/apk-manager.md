@@ -52,9 +52,9 @@ Launcher favorites, search and manual ordering continue to use stable context/pa
 
 ## Close, uninstall and clean data
 
-**Close app** force-stops only the selected package. **Stop container** affects every app inside it. All non-Steam sideloaded containers with a verified data location support deletion after confirmation of affected apps and permanent data loss. Standard Lepton context directories are removed as a whole; registered external locations remove only the baked directory, preserving unrelated files in the parent. Uninstalling an app, even with Delete app data enabled, does not delete its container.
+**Close app** force-stops only the selected package. **Stop container** affects every app inside it. All non-Steam sideloaded containers with a verified data location support deletion after confirmation of affected apps and permanent data loss. Standard Lepton context directories are removed as a whole; registered external locations remove only the baked directory, preserving unrelated files in the parent. Uninstalling an app keeps its container unless **Delete container** is enabled.
 
-Uninstallation retains saved data by default. Enable **Delete app data** to remove it. Retained apps appear under **Uninstalled, data retained**, where you can reinstall or remove retained data.
+Uninstallation retains saved data by default. Enable **Delete app data** to remove it. If the container contains only this app, this also selects **Delete container** by default; you can turn it off to keep the container. Shared containers and unknown application states cannot use this option. The backend checks the inventory again before deleting. Container deletion also removes the associated APK cache and Steam library entry, icon and artwork, while keeping historical backups. Retained apps appear under **Uninstalled, data retained**, where you can reinstall or remove retained data with the same container option.
 
 Android may require the original signed APK to remove an already uninstalled package's retained state. Framely keeps the original APK when it manages an uninstall. If an externally uninstalled app has no recoverable APK, supply its original APK through reinstallation before removing its retained state. Framely does not bypass signing checks or delete arbitrary directories to simulate success.
 
