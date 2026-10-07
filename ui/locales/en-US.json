@@ -509,6 +509,7 @@
     "将永久删除该应用保留的存档和设置，无法撤销。": "Retained saved data and settings will be permanently deleted. This cannot be undone.",
     "此操作影响以下应用：": "This operation affects these apps:",
     "容器内全部数据将永久删除。": "All data in this container will be permanently deleted.",
+    "容器数据、关联 APK 缓存和 Steam 库条目将永久删除，历史备份保留。": "Container data, associated APK caches and Steam library entries will be permanently deleted. Historical backups will be kept.",
     "未检测到 Lepton，请先通过 Steam 安装。": "Lepton was not found. Install it through Steam first.",
     "搜索 APK": "Search APKs",
     "搜索名称、包名或容器": "Search name, package or container",

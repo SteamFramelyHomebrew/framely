@@ -20,6 +20,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+mod cleanup;
 mod lifecycle;
 mod native;
 mod steam_bridge;
@@ -2820,22 +2821,7 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                         "container.start" => start_container(home, &c, None, false, &log)?,
                         "container.stop" => stop(&c, &log)?,
                         "container.delete" => {
-                            let standard = home.join(".local/share/lepton/contexts").join(&c.name);
-                            let default_location = !fs::symlink_metadata(&standard).is_ok_and(|m|m.file_type().is_symlink()) && fs::canonicalize(&standard).is_ok_and(|p| p.join("baked") == c.baked);
-                            let target = if default_location { standard } else { c.baked.clone() };
-                            for rec in db.records.values().filter(|r|r.context==context) {steam_shortcuts::unregister(home,rec)?;}
-                            // An external compatdata parent can contain unrelated files. Delete only baked.
-                            stop(&c, &log)?;
-                            ensure!(validate_baked(&c.baked)? == c.baked, "Container data location changed");
-                            if crate::process::command_output_timeout(crate::process::tool("podman").args(["inspect", "--format", "{{.Id}}", &format!("lepton-{}", c.name)]), Duration::from_secs(10), false)?.status.success() {
-                                podman(&["rm", &format!("lepton-{}",c.name)],Some(&log))?;
-                            }
-                            remove_tree(&target)?;
-                            db.roots.retain(|p| p != &c.baked);
-                            db.root_contexts.remove(&c.baked);
-                            db.records.retain(|_, r| r.context != context);
-                            db.owned_contexts.retain(|id| id != context);
-                            save(home, &db)?;
+                            cleanup::delete(home, &mut db, &c, &log)?;
                         }
                         _ => {
                             let backup = p["backup"].as_str().context("Missing backup")?;
@@ -3634,7 +3620,7 @@ setup_podman_mounts
                 r#"#!/bin/sh
 printf '%s\n' "$*" >> '{commands}'
 case "$1" in
- inspect) case "$(cat '{state}')" in missing) echo 'Error: no such object: lepton-test' >&2; exit 125;; query-error) echo 'Error: storage permission denied' >&2; exit 125;; esac; case "$3" in *SteamBridge*) echo "fixture|{state}|$(cat '{state}')|{pid}";; *StartedAt*) echo "fixture|{state}|$(cat '{state}')";; *State.Pid*) echo "$(cat '{state}')|{pid}";; *) cat '{state}';; esac;;
+ inspect) case "$(cat '{state}')" in missing) echo 'Error: no such object: lepton-test' >&2; exit 125;; query-error) echo 'Error: storage permission denied' >&2; exit 125;; esac; case "$3" in *STEAM_COMPAT_DATA_PATH*) case "$4" in lepton-steamlaunch-*) echo "fixture|{compat}|[]";; *) echo 'fixture||[{{"Source":"{baked_path}","Destination":"/data"}}]';; esac;; *SteamBridge*) echo "fixture|{state}|$(cat '{state}')|{pid}";; *StartedAt*) echo "fixture|{state}|$(cat '{state}')";; *State.Pid*) echo "$(cat '{state}')|{pid}";; *) cat '{state}';; esac;;
  container) case "$(cat '{state}')" in missing) exit 1;; query-error) exit 125;; *) exit 0;; esac;;
  ps) if [ "$(cat '{state}')" = true ]; then case "$3" in *Pid*) echo 'lepton-test|{pid}';; *) echo lepton-test;; esac; fi;;
  stop) echo false > '{state}'; echo stopped;;
@@ -3690,6 +3676,8 @@ case "$1" in
 esac
 "#,
                 pid = std::process::id(),
+                compat = baked.parent().unwrap().display(),
+                baked_path = baked.display(),
                 bad_probe = dir.path().join("bad-probe").display(),
                 other = dir.path().join("other-process").display(),
                 state = state.display(),
@@ -4501,6 +4489,120 @@ setup_props
         assert!(launch(&c, &a, &f.dir.path().join("launch.log")).is_err());
     }
     #[test]
+    fn container_cleanup_removes_owned_artifacts_and_preserves_backups_and_other_apps() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let id = "test/com.example.app";
+        let key = hash(id);
+        let mut db = load(&f.home).unwrap();
+        let rec = db.records.get_mut(id).unwrap();
+        rec.steam_app_id = Some(0x92345678);
+        rec.steam_binding = Some(steam_shortcuts::Binding {
+            game_id: steam_shortcuts::game_id(id),
+            native: true,
+            revision: String::new(),
+        });
+        let mut other = rec.clone();
+        other.id = "other/com.example.app".into();
+        other.context = "other".into();
+        other.steam_binding = None;
+        db.records.insert(other.id.clone(), other.clone());
+        let r = init(&f.home).unwrap();
+        for path in [
+            r.join("apks").join(&key),
+            r.join("apks").join(hash(&other.id)),
+            r.join("backups/keep"),
+            r.join("steam/leases"),
+        ] {
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join("keep"), b"data").unwrap();
+        }
+        fs::write(r.join("steam").join(format!("native-{key}.sh")), "script").unwrap();
+        fs::write(
+            r.join("steam/leases").join(format!("{key}.json")),
+            serde_json::to_vec(&json!({"app":id})).unwrap(),
+        )
+        .unwrap();
+        let old_log = r.join("logs").join(format!("{key}-old.log"));
+        fs::write(&old_log, "old").unwrap();
+        fs::write(r.join("logs/gamepad.log"), "shared").unwrap();
+        let log = r.join("logs").join(format!("{}-delete.log", hash("test")));
+        fs::write(&log, "delete").unwrap();
+        let registry = fake_steam_registry(&f, 1, false);
+        let mut c = containers(&f.home, &db)
+            .into_iter()
+            .find(|c| c.id == "test")
+            .unwrap();
+        c.name = "steamlaunch-2452903544".into();
+        cleanup::delete(&f.home, &mut db, &c, &log).unwrap();
+        assert_eq!(registry.join().unwrap(), vec!["delete-shortcut"]);
+        assert!(!c.baked.parent().unwrap().exists());
+        assert!(!r.join("apks").join(&key).exists());
+        assert!(!r.join("steam").join(format!("native-{key}.sh")).exists());
+        assert!(!r.join("steam/leases").join(format!("{key}.json")).exists());
+        assert!(!old_log.exists());
+        assert!(r.join("backups/keep/keep").exists());
+        assert!(r.join("apks").join(hash(&other.id)).join("keep").exists());
+        assert!(r.join("logs/gamepad.log").exists());
+        assert!(log.exists());
+        assert!(r
+            .join("steam")
+            .join(format!("context-{}.lock", hash("test")))
+            .exists());
+        assert!(db.records.contains_key(&other.id));
+        assert!(!db.records.contains_key(id));
+        let commands = fs::read_to_string(f.dir.path().join("commands")).unwrap();
+        assert!(commands.contains("lepton-test"));
+        assert!(commands.contains("lepton-steamlaunch-2452903544"));
+        assert_eq!(commands.lines().filter(|l| l.starts_with("rm ")).count(), 2);
+    }
+    #[test]
+    fn container_cleanup_refuses_a_runtime_bound_to_other_storage() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let mut db = load(&f.home).unwrap();
+        let c = containers(&f.home, &db)
+            .into_iter()
+            .find(|c| c.id == "test")
+            .unwrap();
+        let tool = f.dir.path().join("tools/podman");
+        let source = fs::read_to_string(&tool).unwrap();
+        let foreign = f.dir.path().join("foreign");
+        fs::create_dir_all(foreign.join("baked")).unwrap();
+        fs::write(
+            &tool,
+            source.replace(
+                &format!("\"Source\":\"{}\"", c.baked.display()),
+                &format!("\"Source\":\"{}\"", foreign.join("baked").display()),
+            ),
+        )
+        .unwrap();
+        assert!(cleanup::delete(&f.home, &mut db, &c, &f.dir.path().join("delete.log")).is_err());
+        assert!(f.save_file().exists());
+        assert!(running("test"));
+    }
+    #[test]
+    fn container_cleanup_preserves_data_when_a_lease_has_another_identity() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let mut db = load(&f.home).unwrap();
+        let c = containers(&f.home, &db)
+            .into_iter()
+            .find(|c| c.id == "test")
+            .unwrap();
+        let leases = root(&f.home).join("steam/leases");
+        fs::create_dir_all(&leases).unwrap();
+        fs::write(
+            leases.join(format!("{}.json", hash("test/com.example.app"))),
+            r#"{"app":"other/com.example.app"}"#,
+        )
+        .unwrap();
+        assert!(cleanup::delete(&f.home, &mut db, &c, &f.dir.path().join("delete.log")).is_err());
+        assert!(f.save_file().exists());
+        assert!(running("test"));
+        assert!(db.records.contains_key("test/com.example.app"));
+    }
+    #[test]
     fn discovery_reads_mount_layer_and_does_not_claim_existing_context() {
         let f = Fixture::new();
         let v = list(&f.home).unwrap();
@@ -4530,6 +4632,18 @@ setup_props
             .is_err());
         f.operation("root.add", json!({"path":baked,"context":"custom"}))
             .unwrap();
+        // The simulated custom runtime must expose its own /data mount,
+        // rather than the fixture's original test container storage.
+        let tool = f.dir.path().join("tools/podman");
+        let source = fs::read_to_string(&tool).unwrap();
+        fs::write(
+            &tool,
+            source.replace(
+                &format!("\"Source\":\"{}\"", existing.display()),
+                &format!("\"Source\":\"{}\"", baked.display()),
+            ),
+        )
+        .unwrap();
         let context = format!("external-{}", hash(&baked.to_string_lossy()));
         f.operation(
             "container.delete",

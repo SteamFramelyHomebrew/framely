@@ -245,6 +245,11 @@ pub(super) fn register(home: &Path, a: &App, r: &mut Record) -> Result<()> {
 pub(super) fn unregister(home: &Path, r: &Record) -> Result<()> {
     if let Some(b) = &r.steam_binding {
         ensure!(b.game_id == game_id(&r.id), "Invalid Steam APK binding");
+        if b.native {
+            if let Some(app_id) = r.steam_app_id {
+                steam_ui::clear_artwork(app_id, &native_apk(home, &r.id))?;
+            }
+        }
         rpc(home, "delete-shortcut", Some(&b.game_id))?;
         // Remove only our fixed configuration files, so the Devkit sync cannot
         // re-register a disabled entry. Never recursively remove user content.

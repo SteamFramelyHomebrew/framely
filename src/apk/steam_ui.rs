@@ -170,6 +170,29 @@ fn artwork(icon: Option<&Path>) -> Result<Vec<Value>> {
     Ok(out)
 }
 
+pub(super) fn clear_artwork(app_id: u32, executable: &Path) -> Result<()> {
+    ensure!(app_id >= 0x80000000, "Invalid owned Steam shortcut ID");
+    let parameters = json!({"id":app_id,"exe":executable});
+    evaluate(&format!(
+        r#"(async()=>{{
+        const p={parameters};
+        const app=appStore.m_mapApps.get(p.id);
+        if(!app) return;
+        let sub;
+        const details=await new Promise((resolve,reject)=>{{
+            const timer=setTimeout(()=>{{sub?.unregister();reject(Error('Details timed out'))}},3000);
+            sub=SteamClient.Apps.RegisterForAppDetails(p.id,d=>{{clearTimeout(timer);sub?.unregister();resolve(d)}});
+        }});
+        sub?.unregister();
+        const exe=details.strShortcutExe?.replace(/^"|"$/g,'').replace('/./','/');
+        if(exe!==p.exe) throw Error('Shortcut target does not match owned APK');
+        for(const kind of [0,1,3,4]) await SteamClient.Apps.ClearCustomArtworkForApp(p.id,kind);
+        await SteamClient.Apps.SetShortcutIcon(p.id,'');
+    }})()"#
+    ))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
