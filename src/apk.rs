@@ -545,6 +545,48 @@ fn restriction(c: &Container, package: &str) -> Option<(bool, bool, Vec<String>)
     }
     None
 }
+// Legacy installs may have reused a package-derived context for another app.
+// Allocate around that occupied context instead of touching its files or records.
+fn automatic_install_context(
+    home: &Path,
+    db: &Database,
+    cs: &[Container],
+    package: &str,
+) -> Result<String> {
+    let base = format!("framely-{}", hash(package));
+    for suffix in 0..1000 {
+        let id = if suffix == 0 {
+            base.clone()
+        } else {
+            format!("{base}-{}", suffix + 1)
+        };
+        let records: Vec<_> = db.records.values().filter(|r| r.context == id).collect();
+        if let Some(c) = cs.iter().find(|c| c.id == id) {
+            let packages = if c.baked.exists() {
+                installed(home, c)?
+            } else {
+                Vec::new()
+            };
+            if packages.iter().any(|(m, _)| m.package == package) {
+                return Ok(id); // Updating an existing app also remains valid in legacy shared containers.
+            }
+            if packages.iter().any(|(m, _)| m.package != package)
+                || records.iter().any(|r| r.metadata.package != package)
+            {
+                continue;
+            }
+            return Ok(id);
+        }
+        if !records.is_empty()
+            || fs::symlink_metadata(home.join(".local/share/lepton/contexts").join(&id)).is_ok()
+        {
+            continue; // Preserve retained records and unreadable/dangling paths.
+        }
+        return Ok(id);
+    }
+    anyhow::bail!("No free independent APK container name is available")
+}
+
 fn installed(home: &Path, c: &Container) -> Result<Vec<(Metadata, PathBuf)>> {
     let p = c.baked.join("data_overlay/system/packages.xml");
     let bytes = fs::read(&p)?;
@@ -2591,7 +2633,7 @@ fn operate_internal(
                 let requested = p["context"].as_str().unwrap_or("");
                 let cs = containers(home, &db);
                 let context = if requested.is_empty() {
-                    format!("framely-{}", hash(&metadata.package))
+                    automatic_install_context(home, &db, &cs, &metadata.package)?
                 } else {
                     requested.into()
                 };
@@ -5063,6 +5105,71 @@ setup_props
         assert!(f.save_file().exists());
         assert!(!load(&f.home).unwrap().records["test/com.example.app"].removed);
     }
+    #[test]
+    fn automatic_install_context_preserves_occupied_legacy_contexts() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let package = "com.example.new";
+        let base = format!("framely-{}", hash(package));
+        let baked = home
+            .join(".local/share/lepton/contexts")
+            .join(&base)
+            .join("baked");
+        fs::create_dir_all(baked.join("data_overlay/system")).unwrap();
+        let xml = b"<packages><package name=\"com.example.old\" codePath=\"/data/app/old\" version=\"1\"/></packages>";
+        fs::write(baked.join("data_overlay/system/packages.xml"), xml).unwrap();
+        let c = Container {
+            id: base.clone(),
+            name: base.clone(),
+            baked: baked.clone(),
+            running: false,
+            managed: true,
+            steam: false,
+        };
+        let mut db = Database::default();
+        assert_eq!(
+            automatic_install_context(home, &db, &[c.clone()], package).unwrap(),
+            format!("{base}-2")
+        );
+        assert_eq!(
+            fs::read(baked.join("data_overlay/system/packages.xml")).unwrap(),
+            xml
+        );
+        // An unreadable context must also be skipped, rather than overwritten.
+        fs::create_dir_all(
+            home.join(".local/share/lepton/contexts")
+                .join(format!("{base}-2")),
+        )
+        .unwrap();
+        assert_eq!(
+            automatic_install_context(home, &db, &[c.clone()], package).unwrap(),
+            format!("{base}-3")
+        );
+        // A retained foreign app reserves a name even if its directory is gone.
+        db.records.insert(
+            "retained".into(),
+            Record {
+                context: format!("{base}-3"),
+                metadata: Metadata {
+                    package: "com.example.retained".into(),
+                    ..Default::default()
+                },
+                removed: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            automatic_install_context(home, &db, &[c.clone()], package).unwrap(),
+            format!("{base}-4")
+        );
+        // Same-package updates still reuse the existing legacy shared container.
+        fs::write(baked.join("data_overlay/system/packages.xml"), format!("<packages><package name=\"{package}\" codePath=\"/data/app/new\" version=\"1\"/><package name=\"com.example.old\" codePath=\"/data/app/old\" version=\"1\"/></packages>")).unwrap();
+        assert_eq!(
+            automatic_install_context(home, &db, &[c], package).unwrap(),
+            base
+        );
+    }
+
     #[test]
     fn shared_mount_loss_preserves_launcher_identity_until_confirmed_uninstall() {
         let f = Fixture::new();
