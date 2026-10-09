@@ -32,10 +32,15 @@ const modal=()=>document.querySelector('.modal');const click=(label:string,paren
   if(modal()!.querySelector('code')?.textContent!==dest)throw Error('Folder target mismatch');
   if(calls.some(p=>p.operation==='upload.start')&&lang==='en-US')throw Error('Upload before confirmation');
   await wait(1400);console.log('FRAMELY_PREVIEW_INSTALL_UPLOAD_CONFIRM_'+(lang==='en-US'?'EN':'ZH'));await wait(200);
-  click(lang==='en-US'?'Confirm':'确认',modal()!);await until(()=>document.querySelector('.file-upload-task.uploading'));
+  click(lang==='en-US'?'Confirm':'确认',modal()!);await until(()=>!modal());
+  if(document.querySelector('.file-upload-popover'))throw Error('Queue opened without a click');
+  document.querySelector<HTMLButtonElement>('.file-upload-toggle')!.click();await until(()=>document.querySelector('.file-upload-task.uploading'));
+  if(!document.querySelector('.file-upload-batch-count')?.textContent?.includes('2'))throw Error('Missing total file count');
   if(document.querySelector<HTMLButtonElement>('.file-command-bar button')?.disabled)throw Error('Uploads lock workspace');
   await wait(1000);console.log('FRAMELY_PREVIEW_INSTALL_UPLOAD_QUEUE_'+(lang==='en-US'?'EN':'ZH'));await wait(250);
   await until(()=>document.querySelectorAll('.file-upload-task.done').length===4);
+  if(document.querySelector('.file-upload-batch-count')?.textContent!==(lang==='en-US'?'Uploaded 2 / 2 files':'已上传 2 / 2 个文件'))throw Error('Incorrect finished file count');
+  document.body.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));await until(()=>!document.querySelector('.file-upload-popover'));
   const uploads=calls.filter(p=>p.operation==='upload.start');if(uploads.some(p=>p.directory!==dest))throw Error('Upload destination changed');
  }
  console.log('FRAMELY_BRIDGE_PASS');

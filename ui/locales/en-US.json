@@ -1012,6 +1012,8 @@
     "同名文件夹合并，现有其他文件保留。": "Matching folders are merged; other existing files are retained.",
     "部分路径存在冲突或不可访问，这些任务会单独显示失败。": "Some paths conflict or are unavailable. These tasks will be reported individually as failed.",
     "确认后会替换同名文件，不删除目录中的其他文件。": "Confirmation replaces matching files without deleting other files in the directory.",
+    "已上传 {0} / {1} 个文件": "Uploaded {0} / {1} files",
+    "暂无上传任务": "No uploads yet",
     "上传任务队列": "Upload queue",
     "同时上传文件数": "Simultaneous file uploads",
     "清除已结束记录": "Clear finished tasks",

@@ -2,7 +2,8 @@ import {uploadFile} from './upload';
 import type {UploadEntry} from './file-upload-entries';
 export type UploadState='waiting'|'uploading'|'done'|'skipped'|'failed'|'cancelled';
 export type UploadTask=UploadEntry&{id:string;state:UploadState;received:number;size:number;savedPath?:string;ticket?:string;controller?:AbortController};
-export type UploadBatch={id:string;directory:string;rootIdentity:{dev:number;ino:number};policy:'keep'|'skip'|'overwrite';tasks:UploadTask[]};
+export type UploadBatch={id:string;directory:string;rootIdentity:{dev:number;ino:number};policy:'keep'|'skip'|'overwrite';tasks:UploadTask[];totalFiles:number;clearedUploadedFiles:number};
+export const uploadBatchFileCounts=(batch:UploadBatch)=>({uploaded:batch.clearedUploadedFiles+batch.tasks.filter(t=>!t.directory&&t.state==='done').length,total:batch.totalFiles});
 export type QueueTransport={api:(params:unknown,signal?:AbortSignal)=>Promise<any>;chunk:(id:string,offset:number,data:Blob,signal:AbortSignal)=>Promise<void>;changed?:()=>void};
 export class ChunkSlots{
  private active=0;
@@ -21,7 +22,7 @@ export class FileUploadQueue{
  setLimit(limit:number){if(!Number.isInteger(limit)||limit<1||limit>8)throw new Error('Invalid upload concurrency');this.limit=limit;this.schedule();}
  add(directory:string,rootIdentity:UploadBatch['rootIdentity'],policy:UploadBatch['policy'],entries:UploadEntry[]){
   if(this.closed)throw new Error('Upload queue is closed');
-  const batch:UploadBatch={id:String(++this.serial),directory,rootIdentity,policy,tasks:entries.map(e=>({...e,id:String(++this.serial),state:e.error?'failed':'waiting',received:0,size:e.file?.size??0}))};
+  const batch:UploadBatch={id:String(++this.serial),directory,rootIdentity,policy,totalFiles:entries.filter(e=>!e.directory).length,clearedUploadedFiles:0,tasks:entries.map(e=>({...e,id:String(++this.serial),state:e.error?'failed':'waiting',received:0,size:e.file?.size??0}))};
   this.directories.set(batch.id,new Map(batch.tasks.filter(t=>t.directory).map(t=>[t.name,t])));this.waiting.set(batch.id,new Set(batch.tasks.filter(t=>t.state==='waiting')));
   this.batches.push(batch);this.emit();this.schedule();return batch;
  }
@@ -59,7 +60,7 @@ export class FileUploadQueue{
  }
  cancel(taskId?:string,batchId?:string){for(const batch of this.batches){if(batchId&&batch.id!==batchId)continue;for(const task of batch.tasks){if(taskId&&task.id!==taskId)continue;if(task.state==='waiting'){task.state='cancelled';this.waiting.get(batch.id)?.delete(task);}else if(task.state==='uploading')task.controller?.abort();}}this.emit();this.schedule();}
  retry(taskId?:string,batchId?:string){for(const batch of this.batches){if(batchId&&batch.id!==batchId)continue;for(const task of batch.tasks)if((!taskId||task.id===taskId)&&task.state==='failed'){task.state='waiting';this.waiting.get(batch.id)?.add(task);task.received=0;task.error=undefined;}}this.emit();this.schedule();}
- clear(){this.batches=this.batches.filter(b=>{b.tasks=b.tasks.filter(t=>t.state==='waiting'||t.state==='uploading');const pending=b.tasks.length>0;if(!pending){this.waiting.delete(b.id);this.directories.delete(b.id);}return pending;});this.emit();}
+ clear(){this.batches=this.batches.filter(b=>{b.clearedUploadedFiles+=b.tasks.filter(t=>!t.directory&&t.state==='done').length;b.tasks=b.tasks.filter(t=>t.state==='waiting'||t.state==='uploading');const pending=b.tasks.length>0;if(!pending){this.waiting.delete(b.id);this.directories.delete(b.id);}return pending;});this.emit();}
  get pending(){return this.batches.some(b=>b.tasks.some(t=>t.state==='waiting'||t.state==='uploading'));}
  get tickets(){return this.batches.flatMap(b=>b.tasks.flatMap(t=>t.ticket?[t.ticket]:[]));}
  reopen(){this.closed=false;this.schedule();}

@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {build} from 'esbuild';
 const bundle=async(path)=>{const r=await build({entryPoints:[path],bundle:true,write:false,platform:'node',format:'esm'});return import('data:text/javascript;base64,'+Buffer.from(r.outputFiles[0].contents).toString('base64'));};
-const {FileUploadQueue,ChunkSlots}=await bundle('ui/src/file-upload-queue.ts');
+const {FileUploadQueue,ChunkSlots,uploadBatchFileCounts}=await bundle('ui/src/file-upload-queue.ts');
 const {droppedUploadEntries,selectedUploadEntries}=await bundle('ui/src/file-upload-entries.ts');
 const wait=()=>new Promise(r=>setImmediate(r));const until=async(f)=>{for(let i=0;i<200;i++){if(f())return;await wait();}assert.fail('Timed out');};
 const file=(name,size=8)=>({name,webkitRelativePath:'',size,slice:(a,b)=>new Blob([new Uint8Array(b-a)])});
@@ -39,4 +39,11 @@ test('a restored browser page can add a fresh batch after closing its old queue'
  const q=new FileUploadQueue({api:async p=>p.operation==='upload.start'?{id:p.name,chunkSize:4}:{status:'done'},chunk:async()=>{}});
  q.close();q.reopen();q.add('/restored',{dev:1,ino:2},'keep',[{name:'new',directory:false,file:file('new',0)}]);
  await until(()=>!q.pending);assert.equal(q.batches[0].tasks[0].state,'done');
+});
+
+test('batch file counts exclude directories, skips and failures and survive clearing finished rows',()=>{
+ const q=new FileUploadQueue({api:async()=>({}),chunk:async()=>{}});q.close();q.reopen();
+ const batch=q.add('/target',{dev:1,ino:2},'keep',[{name:'empty',directory:true,error:'fixture'},{name:'done',directory:false,file:file('done'),error:'fixture'},{name:'skip',directory:false,file:file('skip'),error:'fixture'},{name:'pending',directory:false,file:file('pending'),error:'fixture'}]);
+ batch.tasks[0].state='done';batch.tasks[1].state='done';batch.tasks[2].state='skipped';batch.tasks[3].state='waiting';
+ assert.deepEqual(uploadBatchFileCounts(batch),{uploaded:1,total:3});q.clear();assert.deepEqual(uploadBatchFileCounts(batch),{uploaded:1,total:3});q.close();
 });
