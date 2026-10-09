@@ -9,7 +9,7 @@ binaries=Path(args.binaries).resolve()
 with tempfile.TemporaryDirectory(prefix='framely-media-test-') as directory:
     root=Path(directory);events=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM);events.bind(str(root/'events.sock'));events.settimeout(5)
     token='0123456789abcdef0123456789abcdef';env=dict(os.environ,GST_PLUGIN_PATH=str(binaries),FRAMELY_CAST_DIR=directory,FRAMELY_CAST_ID=token)
-    airplay=subprocess.Popen([str(binaries/'uxplay'),'-n','Framely test','-avdec','-vs','framelyvideosink','-as','framelyaudiosink'],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    airplay=subprocess.Popen([str(binaries/'uxplay'),'-n','Framely test','-avdec','-hls','-vs','framelyvideosink','-as','framelyaudiosink'],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
     try:
         time.sleep(2);assert airplay.poll() is None,airplay.stdout.read().decode()
         print('PASS: UxPlay starts with bundled decoders and consent sinks')

@@ -179,6 +179,7 @@ impl Receivers {
                 "-n",
                 name,
                 "-avdec",
+                "-hls",
                 "-vs",
                 "framelyvideosink",
                 "-as",

@@ -77,3 +77,49 @@ if 'framely_media_kind' not in s:
     p.write_text(s)
 from shutil import copyfile
 copyfile(Path(__file__).parent/'native/frame_sink.h',p.parent/'framely/frame_sink.h')
+
+# A mirror SETUP is already an explicit video request; do not wait for sound
+# or the first codec packet before asking for consent.
+header=p.parent/'lib/raop.h'
+s=header.read_text()
+if 'framely_video_setup' not in s:
+    marker='    void  (*video_report_size)'
+    assert marker in s
+    s=s.replace(marker, '    void (*framely_video_setup)(void *cls);\n'+marker,1)
+    header.write_text(s)
+handlers=p.parent/'lib/raop_handlers.h'
+s=handlers.read_text()
+if 'callbacks.framely_video_setup' not in s:
+    marker='                    raop_rtp_mirror_start(conn->raop_rtp_mirror, &dport, raop->clientFPSdata);'
+    assert marker in s
+    s=s.replace(marker,marker+'\n                    if (raop->callbacks.framely_video_setup) raop->callbacks.framely_video_setup(raop->callbacks.cls);',1)
+    handlers.write_text(s)
+s=p.read_text()
+if 'extern "C" void framely_video_setup' not in s:
+    marker='extern "C" void video_report_size('
+    at=s.index(marker)
+    s=s[:at]+'''extern "C" void framely_video_setup(void *cls) {
+    const char* directory=getenv("FRAMELY_CAST_DIR"),*id=getenv("FRAMELY_CAST_ID");
+    if(directory&&id)FrameSink(directory,id,"AirPlay").event("request",0,0,"video");
+}
+
+'''+s[at:]
+    marker='    raop_cbs.video_report_size = video_report_size;'
+    assert marker in s
+    s=s.replace(marker,marker+'\n    raop_cbs.framely_video_setup = framely_video_setup;',1)
+    p.write_text(s)
+# HLS uses playbin's separate audio sink; apply the same consent gate there.
+renderer=p.parent/'renderers/video_renderer.c'
+s=renderer.read_text()
+if 'Framely HLS consent' not in s:
+    marker='                    g_object_set(G_OBJECT (renderer_type[i]->pipeline), "video-sink", playbin_videosink, NULL);'
+    assert marker in s
+    s=s.replace(marker,marker+'''
+                    /* Framely HLS consent: audio must use the accepted session too. */
+                    if (!strcmp(videosink, "framelyvideosink")) {
+                        GstElement *audio = gst_element_factory_make("framelyaudiosink", NULL);
+                        g_assert(audio);
+                        g_object_set(renderer_type[i]->pipeline, "audio-sink", audio, NULL);
+                    }
+''',1)
+    renderer.write_text(s)
