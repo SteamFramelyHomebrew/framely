@@ -1,0 +1,12 @@
+{
+  "mediamtx": {
+    "version": "1.21.2",
+    "url": "https://github.com/bluenviron/mediamtx/releases/download/v1.21.2/mediamtx_v1.21.2_linux_arm64.tar.gz",
+    "sha256": "180a235374a548d9133cdd5e20f5dbd8b01317be1c86e0d7e66df585dc42ed6f"
+  },
+  "uxplay": {
+    "version": "1.73.7",
+    "url": "https://github.com/FDH2/UxPlay/archive/refs/tags/v1.73.7.tar.gz",
+    "sha256": "65feb8732de666a7161a9e562aa603a7f5fe0ebb890c2a30c5e1a9c85c76309f"
+  }
+}

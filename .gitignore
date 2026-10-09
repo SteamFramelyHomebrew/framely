@@ -15,3 +15,8 @@
 # Generated UI review screenshots
 /docs/previews/
 /templates/plugin/payload/
+
+/media/capture/target/
+/media/bin/
+
+/media/source/

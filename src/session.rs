@@ -35,6 +35,8 @@ struct Agent {
     terminals: crate::terminal::Terminals,
     files: Arc<crate::manager_files::Files>,
     catalog_cache: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
+    casting: Mutex<crate::cast::runtime::Casting>,
+    receivers: Mutex<crate::cast::receiver::Receivers>,
 }
 #[derive(Default)]
 struct EventLog {
@@ -63,6 +65,7 @@ fn random_key() -> String {
     rand::rngs::OsRng.fill_bytes(&mut b);
     hex::encode(b)
 }
+pub(crate) fn cast_random_key() -> String { random_key() }
 fn push(q: &Mutex<VecDeque<Value>>, v: Value) {
     let mut q = q.lock().unwrap();
     if q.len() >= 256 {
@@ -130,6 +133,16 @@ impl Agent {
         } else {
             self.origin.clone()
         };
+        if let Some(resource)=path.strip_prefix("/cast/media/") {
+            ensure!(r.method()==&Method::Get||r.method()==&Method::Head,"Invalid media request");
+            let (key,file)=resource.split_once('/').context("Invalid media resource")?;
+            let port={let mut cast=self.casting.lock().unwrap();ensure!(!cast.stream_key.is_empty()&&key==cast.stream_key&&cast.status()["running"]==true,"Media session expired");cast.hls_port};
+            ensure!(file.len()<128&&file.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'.'||b==b'_'||b==b'-')&&(file.ends_with(".m3u8")||file.ends_with(".ts")),"Invalid media resource");
+            let target=format!("http://127.0.0.1:{port}/dlna/{file}");
+            let response=match ureq::AgentBuilder::new().timeout(Duration::from_secs(15)).redirects(0).build().request(r.method().as_str(),&target).call(){Ok(v)=>v,Err(ureq::Error::Status(_,v))=>v,Err(e)=>return Err(e.into())};
+            let code=response.status();let mime=response.header("Content-Type").unwrap_or("application/octet-stream").to_owned();
+            r.respond(Response::new(StatusCode(code),vec![header("Content-Type",&mime),header("Cache-Control","no-store"),header("X-Content-Type-Options","nosniff")],response.into_reader(),None,None))?;return Ok(());
+        }
         if remote && (path.starts_with("/boot/") || path.starts_with("/host/")) {
             r.respond(Response::empty(StatusCode(403)))?;
             return Ok(());
@@ -224,11 +237,11 @@ impl Agent {
             if configured
                 && !protected
                 && r.method() == &Method::Get
-                && (path == "/" || path == "/manager")
+                && (path == "/" || path == "/manager" || path == "/cast/watch")
             {
                 r.respond(
                     Response::empty(StatusCode(302))
-                        .with_header(header("Location", "/manager"))
+                        .with_header(header("Location", if path == "/cast/watch" { "/cast/watch" } else { "/manager" }))
                         .with_header(header(
                             "Set-Cookie",
                             &format!(
@@ -284,6 +297,7 @@ impl Agent {
                 let mut body = String::new();
                 r.as_reader().take(8193).read_to_string(&mut body)?;
                 ensure!(body.len() <= 8192, "Login request too large");
+                let destination = url::form_urlencoded::parse(body.as_bytes()).any(|(k,v)| k == "next" && v == "/cast/watch");
                 let code = url::form_urlencoded::parse(body.as_bytes())
                     .find(|(k, _)| k == "password")
                     .map(|(_, v)| v.into_owned());
@@ -310,7 +324,7 @@ impl Agent {
                 if verified && key_before == *self.network_key.lock().unwrap() {
                     r.respond(
                         Response::empty(StatusCode(302))
-                            .with_header(header("Location", "/manager"))
+                            .with_header(header("Location", if destination { "/cast/watch" } else { "/manager" }))
                             .with_header(header(
                                 "Set-Cookie",
                                 &format!(
@@ -328,8 +342,8 @@ impl Agent {
                 }
                 return Ok(());
             }
-            if r.method() == &Method::Get && (path == "/" || path == "/manager") {
-                r.respond(Response::from_string(if configured { NETWORK_LOGIN } else { NETWORK_SETUP }).with_header(header("Content-Type","text/html; charset=utf-8")).with_header(header("Content-Security-Policy","default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")))?;
+            if r.method() == &Method::Get && (path == "/" || path == "/manager" || path == "/cast/watch") {
+                r.respond(Response::from_string(if configured { if path == "/cast/watch" { NETWORK_LOGIN.replace("<form method=\"post\" action=\"/login\">", "<form method=\"post\" action=\"/login\"><input type=\"hidden\" name=\"next\" value=\"/cast/watch\">") } else { NETWORK_LOGIN.into() } } else { NETWORK_SETUP.into() }).with_header(header("Content-Type","text/html; charset=utf-8")).with_header(header("Content-Security-Policy","default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")))?;
             } else {
                 r.respond(
                     Response::empty(StatusCode(401))
@@ -351,7 +365,10 @@ impl Agent {
                 r.as_reader().take(32769).read_to_end(&mut bytes)?;
                 ensure!(bytes.len() <= 32768, "Visibility report too large");
                 let views: Value = serde_json::from_slice(&bytes)?;
-                if views.is_object() {
+                if views["views"].is_object() {
+                    self.core("host.ui.visibility",views["views"].clone())?;
+                    if let Some(ids)=views["closedCasts"].as_array(){ensure!(ids.len()<=32,"Too many closed casts");for id in ids{if let Some(id)=id.as_str(){let _=self.receivers.lock().unwrap().control(id,"stop",json!({}));}}}
+                } else if views.is_object() {
                     self.core("host.ui.visibility", views)?;
                 }
             }
@@ -772,6 +789,49 @@ impl Agent {
                 },
             );
         }
+        if path == "/cast/whep" || path.starts_with("/cast/whep/") {
+            ensure!(matches!(r.method(), Method::Post | Method::Patch | Method::Delete | Method::Options), "Invalid WHEP method");
+            let origin = r.headers().iter().find(|h| h.field.equiv("Origin")).map(|h|h.value.as_str());
+            ensure!(origin == Some(expected_origin.as_str()), "Cross-origin playback request denied");
+            if r.method()==&Method::Options {r.respond(Response::empty(StatusCode(204)).with_header(header("Accept-Post","application/sdp")))?;return Ok(());}
+            let suffix = path.strip_prefix("/cast/whep").unwrap();
+            let mut body = Vec::new();
+            r.as_reader().take(65537).read_to_end(&mut body)?;
+            ensure!(body.len() <= 65536, "SDP too large");
+            let (codec,resource)=if suffix.is_empty() {
+                ensure!(r.method()==&Method::Post||r.method()==&Method::Options,"Missing playback session");
+                let offer=std::str::from_utf8(&body)?;
+                let supports=|codec:&str|offer.lines().any(|line|line.starts_with("a=rtpmap:")&&line.split_whitespace().nth(1).is_some_and(|v|v.eq_ignore_ascii_case(codec)));
+                if supports("H264/90000") {("h264","")} else {ensure!(supports("VP8/90000"),"浏览器没有可用的视频编码");("vp8","")}
+            } else {
+                let (codec,resource)=suffix.strip_prefix('/').and_then(|s|s.split_once('/')).context("Invalid playback session")?;
+                ensure!(matches!(codec,"h264"|"vp8")&&resource.len()==36&&resource.bytes().all(|b|b.is_ascii_hexdigit()||b==b'-'),"Invalid playback session");
+                (codec,resource)
+            };
+            let port = { let mut cast=self.casting.lock().unwrap();ensure!(cast.status()["running"]==true,"串流尚未开始");if codec=="vp8"&&suffix.is_empty(){cast.ensure_vp8()?;}cast.whep_port };
+            let media_path=if codec=="vp8"{"headset_vp8"}else{"headset"};
+            let target=format!("http://127.0.0.1:{port}/{media_path}/whep{}",if resource.is_empty(){String::new()}else{format!("/{resource}")});
+            let mut request = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(10)).build().request(r.method().as_str(), &target);
+            for name in ["Content-Type", "If-Match"] {
+                if let Some(value) = r.headers().iter().find(|h| h.field.equiv(name)) { request = request.set(name, value.value.as_str()); }
+            }
+            let response = match request.send_bytes(&body) { Ok(v) => v, Err(ureq::Error::Status(_,v)) => v, Err(e) => return Err(e.into()) };
+            let code = response.status();
+            let mut headers = vec![header("Cache-Control", "no-store")];
+            for name in ["Content-Type", "ETag", "Accept-Patch"] {
+                if let Some(value) = response.header(name) { headers.push(header(name,value)); }
+            }
+            if let Some(location) = response.header("Location") {
+                let parsed = url::Url::parse(&target)?.join(location)?;
+                let prefix=format!("/{media_path}/whep/");
+                ensure!(parsed.path().starts_with(&prefix), "Invalid media session location");
+                headers.push(header("Location", &format!("/cast/whep/{codec}/{}",parsed.path().strip_prefix(&prefix).unwrap())));
+            }
+            let mut bytes = Vec::new(); response.into_reader().take(65537).read_to_end(&mut bytes)?;
+            ensure!(bytes.len() <= 65536, "Media response too large");
+            r.respond(Response::new(StatusCode(code), headers, std::io::Cursor::new(bytes), None, None))?;
+            return Ok(());
+        }
         if path == "/api" && r.method() == &Method::Post {
             let origin = r
                 .headers()
@@ -803,6 +863,8 @@ impl Agent {
             return send_json(r, v);
         }
         if path == "/"
+            || path == "/cast/watch"
+            || path.starts_with("/cast/window/")
             || path == "/manager"
             || path == "/notifications"
             || path == "/launcher"
@@ -826,6 +888,26 @@ impl Agent {
         }
         r.respond(Response::from_string("Not found").with_status_code(404))?;
         Ok(())
+    }
+    fn maintain_cast(&self) {
+        self.casting.lock().unwrap().maintain();
+        let events=self.receivers.lock().unwrap().poll();
+        for event in events {
+            let session=&event["session"];
+            let Some(id)=session["id"].as_str() else {continue;};
+            match event["kind"].as_str().unwrap_or("") {
+                "cast.request" => {let _=self.core("cast.notification",json!({"notification":{"id":format!("cast.{id}"),"title":"收到投屏","body":format!("{} 请求投屏，是否打开？",session["protocol"].as_str().unwrap_or("设备")),"durationMs":60000,"inbox":true,"actions":[{"id":"open","label":"打开投屏"},{"id":"reject","label":"拒绝"}]}}));},
+                "cast.window" => {
+                    let _=self.core("notification.remove",json!({"plugin":"","id":format!("cast.{id}")}));
+                    let w=session["width"].as_u64().unwrap_or(0);let h=session["height"].as_u64().unwrap_or(0);
+                    let width=if w>0 { w.min(1920) } else {640};let height=if w>0&&h>0 {width*h/w}else{240};
+                    let frame=self.receivers.lock().unwrap().directory.join(format!("{id}.frame"));
+                    push(&self.commands,json!({"kind":"cast.window","id":id,"width":width,"height":height,"frame":frame}));
+                },
+                "cast.ended" => {push(&self.commands,json!({"kind":"cast.close","id":id}));let _=self.core("notification.remove",json!({"plugin":"","id":format!("cast.{id}")}));},
+                _=>{},
+            }
+        }
     }
     fn api(&self, v: Value) -> Result<Value> {
         let method = v["method"].as_str().context("Missing method")?;
@@ -853,6 +935,76 @@ impl Agent {
             );
         }
         match method {
+            "cast.status" => {
+                let mut value = self.casting.lock().unwrap().status();
+                let receivers = self.receivers.lock().unwrap();
+                value["sessions"] = json!(receivers.sessions.values().collect::<Vec<_>>());
+                value["receiverError"] = json!(receivers.error);
+                let network=self.network_status.lock().unwrap();
+                value["watchAddresses"]=if network["enabled"]==true{json!(network_ipv4_addresses().into_iter().map(|ip|format!("http://{ip}:{}/cast/watch",network["port"])).collect::<Vec<_>>())}else{json!([])};
+                Ok(value)
+            },
+            "cast.settings.save" => {
+                let settings: crate::cast::settings::Settings = serde_json::from_value(p.clone())?;
+                settings.validate()?;
+                let result = self.core(method,p)?;
+                self.receivers.lock().unwrap().configure(&settings)?;
+                Ok(result)
+            },
+            "cast.devices" => self.receivers.lock().unwrap().devices(),
+            "cast.send" => {
+                let network=self.network_status.lock().unwrap().clone();ensure!(network["enabled"]==true,"请先开启网络管理面板，以便设备获取投屏画面");
+                let id=p["id"].as_str().context("Missing device")?;
+                let devices=self.receivers.lock().unwrap().devices()?;
+                let host=devices.as_array().into_iter().flatten().find(|device|device["id"]==id).and_then(|d|d["localAddress"].as_str()).context("设备已离线，请重新查找")?.to_owned();
+                ensure!(host.parse::<std::net::Ipv4Addr>().is_ok(),"Invalid device interface");
+                let mut cast=self.casting.lock().unwrap();cast.ensure_dlna()?;
+                let uri=format!("http://{host}:{}/cast/media/{}/index.m3u8",network["port"],cast.stream_key);
+                self.receivers.lock().unwrap().send(p["id"].as_str().context("Missing device")?,&uri)
+            },
+            "cast.send.stop" => self.receivers.lock().unwrap().stop_send(p["id"].as_str().context("Missing device")?),
+            "cast.window" => self.receivers.lock().unwrap().window(p["id"].as_str().context("Missing session")?),
+            "cast.control" => self.receivers.lock().unwrap().control(p["id"].as_str().context("Missing session")?,p["action"].as_str().context("Missing action")?,p.clone()),
+            "notification.action" if p["plugin"] == "" && p["id"].as_str().is_some_and(|id|id.starts_with("cast.")) => {
+                let id=p["id"].as_str().unwrap().strip_prefix("cast.").unwrap();
+                let notices=self.core("status",json!({}))?;
+                ensure!(notices["notifications"].as_array().into_iter().flatten().chain(notices["inbox"].as_array().into_iter().flatten()).any(|n|n["plugin"]==""&&n["notification"]["id"]==p["id"]&&n["createdAt"]==p["createdAt"]),"投屏通知已过期或已改变");
+                let action=p["action"].as_str().context("Missing action")?;
+                self.receivers.lock().unwrap().control(id,if action=="open"{"accept"}else if action=="reject"{"reject"}else{anyhow::bail!("Invalid cast action")},json!({}))?;
+                self.core(method,p)
+            },
+            "cast.preview.start" => {
+                let settings: crate::cast::settings::Settings = serde_json::from_value(p.clone())?;
+                settings.validate()?;
+                ensure!(settings.source == crate::cast::settings::Source::Screen && settings.output == crate::cast::settings::Output::Eye, "当前采集方式不支持取景调整");
+                let response = self.core("cast.panel.start", json!({}))?;
+                let socket = PathBuf::from(response["socket"].as_str().context("Missing panel socket")?);
+                self.casting.lock().unwrap().start_preview(&settings, &socket)
+            },
+            "cast.preview.end" => {
+                let mut cast = self.casting.lock().unwrap();
+                if let Some(mut settings) = cast.end_preview()? {
+                    if p["apply"] == true {
+                        settings = serde_json::from_value(self.core("status",json!({}))?["database"]["casting"].clone())?;
+                    }
+                    let panel = if settings.source == crate::cast::settings::Source::Screen {
+                        let response = self.core("cast.panel.start",json!({}))?;
+                        Some(PathBuf::from(response["socket"].as_str().context("Missing panel socket")?))
+                    } else { None };
+                    cast.start(&settings, panel.as_deref())?;
+                }
+                Ok(cast.status())
+            },
+            "cast.start" => {
+                let status = self.core("status", json!({}))?;
+                let settings: crate::cast::settings::Settings = serde_json::from_value(status["database"]["casting"].clone())?;
+                let panel = if settings.source == crate::cast::settings::Source::Screen {
+                    let response = self.core("cast.panel.start", json!({}))?;
+                    Some(PathBuf::from(response["socket"].as_str().context("Missing panel socket")?))
+                } else { None };
+                self.casting.lock().unwrap().start(&settings, panel.as_deref())
+            }
+            "cast.stop" => Ok(self.casting.lock().unwrap().stop()),
             "launcher.search.index" => {
                 let names: Vec<String> = serde_json::from_value(p["names"].clone())?;
                 ensure!(
@@ -1160,6 +1312,10 @@ impl Agent {
                                 | "launcher-settings"
                                 | "apk"
                                 | "apk-settings"
+                                | "casting"
+                                | "casting-picture"
+                                | "casting-receive"
+                                | "casting-devices"
                         )
                     )
                 {
@@ -1699,6 +1855,8 @@ pub fn serve(
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
     let agent = Arc::new(Agent {
+        casting: Mutex::new(crate::cast::runtime::Casting::new(runtime.join("cast"), crate::cast::runtime::binary_directory(&assets))),
+        receivers: Mutex::new(crate::cast::receiver::Receivers::new(runtime.join("receive"), crate::cast::runtime::binary_directory(&assets))),
         socket,
         state,
         assets,
@@ -1716,6 +1874,14 @@ pub fn serve(
         files: Arc::default(),
         catalog_cache: Arc::default(),
     });
+    let cast_agent=agent.clone();
+    std::thread::spawn(move || { let mut configured=std::time::Instant::now()-Duration::from_secs(10);loop {
+        if configured.elapsed()>Duration::from_secs(2) {
+            if let Ok(status)=cast_agent.core("status",json!({})) {if status["agreement"]["accepted"]==true {if let Ok(settings)=serde_json::from_value(status["database"]["casting"].clone()){let _=cast_agent.receivers.lock().unwrap().configure(&settings);}}}
+            configured=std::time::Instant::now();
+        }
+        cast_agent.maintain_cast();std::thread::sleep(Duration::from_millis(100));
+    }});
     let file_agent = agent.clone();
     std::thread::spawn(move || loop {
         if let Ok(home) = crate::steam::home() {
@@ -1831,31 +1997,42 @@ pub fn serve(
 }
 
 fn network_ipv4_addresses() -> Vec<String> {
-    let mut addresses = std::collections::BTreeSet::new();
+    let mut addresses = Vec::new();
     unsafe {
         let mut first: *mut libc::ifaddrs = std::ptr::null_mut();
-        if libc::getifaddrs(&mut first) != 0 {
-            return Vec::new();
-        }
+        if libc::getifaddrs(&mut first) != 0 { return Vec::new(); }
         let mut current = first;
         while !current.is_null() {
             let interface = &*current;
+            // LAN addresses belong to broadcast interfaces, not VPN tunnels or loopback.
             if !interface.ifa_addr.is_null()
                 && interface.ifa_flags & libc::IFF_UP as u32 != 0
-                && interface.ifa_flags & libc::IFF_LOOPBACK as u32 == 0
+                && interface.ifa_flags & libc::IFF_RUNNING as u32 != 0
+                && interface.ifa_flags & libc::IFF_BROADCAST as u32 != 0
+                && interface.ifa_flags & (libc::IFF_LOOPBACK | libc::IFF_POINTOPOINT) as u32 == 0
                 && (*interface.ifa_addr).sa_family as i32 == libc::AF_INET
             {
                 let socket = &*(interface.ifa_addr as *const libc::sockaddr_in);
                 let ip = std::net::Ipv4Addr::from(socket.sin_addr.s_addr.to_ne_bytes());
-                if !ip.is_loopback() && !ip.is_unspecified() {
-                    addresses.insert(ip.to_string());
+                if !ip.is_loopback() && !ip.is_unspecified() && !interface.ifa_name.is_null() {
+                    let name=std::ffi::CStr::from_ptr(interface.ifa_name).to_string_lossy().into_owned();
+                    addresses.push((name,ip.to_string()));
                 }
             }
             current = interface.ifa_next;
         }
         libc::freeifaddrs(first);
     }
-    addresses.into_iter().collect()
+    // The main routing table identifies the Wi-Fi/Ethernet uplink even when a VPN
+    // policy routes ordinary connections through a tunnel.
+    let route=std::fs::read_to_string("/proc/net/route").unwrap_or_default();
+    let preferred=route.lines().skip(1).filter_map(|line| {
+        let fields:Vec<_>=line.split_whitespace().collect();
+        (fields.len()>6 && fields[1]=="00000000" && u32::from_str_radix(fields[3],16).unwrap_or(0)&1!=0)
+            .then(||(fields[6].parse::<u32>().unwrap_or(u32::MAX),fields[0]))
+    }).min_by_key(|(metric,_)|*metric).map(|(_,name)|name);
+    addresses.sort_by_key(|(name,ip)|(Some(name.as_str())!=preferred, name.clone(),ip.clone()));
+    addresses.into_iter().map(|(_,ip)|ip).collect()
 }
 
 const NETWORK_SETUP: &str = r#"<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Framely · 设置访问密码</title><link rel="icon" href="/assets/branding/framely-app-icon.svg" type="image/svg+xml"><link rel="alternate icon" href="/assets/branding/framely.ico"><link rel="apple-touch-icon" href="/assets/branding/framely-app-icon.png"><style>body{background:#17191c;color:#f0f1f3;font:18px system-ui;margin:0;display:grid;min-height:100vh;place-items:center}main{padding:32px;max-width:360px}input,button{box-sizing:border-box;width:100%;padding:14px;margin:12px 0;border:1px solid #59616d;border-radius:5px;background:#292c31;color:inherit;font:inherit}p{color:#a4a8b0}.brand{display:block;width:200px;height:48px;margin-bottom:24px;image-rendering:pixelated}</style><main><img class="brand" src="/assets/branding/framely-logo-light.svg" alt="Framely"><h1>设置访问密码</h1><p>首次访问网络管理面板，请设置至少 8 个字符的密码。保存后使用该密码登录。</p><form method="post" action="/setup"><label>访问密码<input name="password" type="password" required autocomplete="new-password" minlength="8" maxlength="512"></label><label>确认密码<input name="confirmPassword" type="password" required autocomplete="new-password" minlength="8" maxlength="512"></label><button>保存访问密码</button></form></main></html>"#;
@@ -1932,6 +2109,46 @@ fn wait_for_steam_session() {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "manual browser and Steam Frame integration fixture"]
+    fn casting_browser_fixture() {
+        let root=tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(std::env::var("FRAMELY_MEDIA_BIN").unwrap(),root.path().join("media")).unwrap();
+        let port=std::env::var("FRAMELY_CAST_WEB_PORT").unwrap().parse::<u16>().unwrap();
+        let server=Server::http(("0.0.0.0",port)).unwrap();let agent=agent(&server,root.path());
+        let mut core=crate::tests::accepted_service(&agent.state,1000).unwrap();
+        core.handle("network.save",json!({"enabled":true,"port":port,"passwordEnabled":false,"password":"fixture password"})).unwrap();
+        core.handle("cast.settings.save",json!({"source":std::env::var("FRAMELY_CAST_TEST_SOURCE").unwrap_or_else(|_|"steamVR".into()),"width":640,"height":360,"fps":30,"systemAudio":true,"dlna":true})).unwrap();
+        let socket=UnixListener::bind(&agent.socket).unwrap();let running=Arc::new(AtomicBool::new(true));
+        socket.set_nonblocking(true).unwrap();let alive=running.clone();
+        let worker=std::thread::spawn(move||{while alive.load(Ordering::Relaxed){if let Ok((mut stream,_))=socket.accept(){let request=ipc::read(&mut stream).unwrap();let result=if request["method"]=="cast.panel.start" {ipc::call(Path::new("/run/framely/control.sock"),"cast.panel.start",json!({}))}else{core.handle(request["method"].as_str().unwrap(),request["params"].clone())};let response=ipc::response(result);let _=ipc::write(&mut stream,&response);}else{std::thread::sleep(Duration::from_millis(5));}}});
+        *agent.network_status.lock().unwrap()=json!({"enabled":true,"port":port});
+        let settings:crate::cast::settings::Settings=serde_json::from_value(agent.core("status",json!({})).unwrap()["database"]["casting"].clone()).unwrap();
+        agent.receivers.lock().unwrap().configure(&settings).unwrap();
+        let origin=agent.origin.clone();let cookie=format!("framely-network={}",agent.network_key.lock().unwrap());
+        let start=std::thread::spawn(move||ureq::post(&format!("{origin}/api")).set("Origin",&origin).set("Cookie",&cookie).send_json(json!({"method":"cast.start","params":{}})).unwrap().into_json::<Value>().unwrap());
+        while !start.is_finished() {if let Ok(Some(request))=server.recv_timeout(Duration::from_millis(50)){let a=agent.clone();std::thread::spawn(move||{a.handle_http(request,true).unwrap();});}}
+        let response=start.join().unwrap();assert!(response.get("error").is_none(),"HTTP stream startup failed: {response}");
+        std::thread::sleep(Duration::from_millis(200));assert_eq!(agent.casting.lock().unwrap().status()["running"],true);
+        println!("Fixture viewer: http://{}:{port}/cast/watch",network_ipv4_addresses().first().unwrap());
+        let probe=std::env::var("FRAMELY_CAST_BROWSER_PROBE").ok();
+        let mut browser=probe.map(|executable|Command::new(executable)
+            .arg(format!("http://127.0.0.1:{port}/cast/watch"))
+            .arg(root.path().join("browser"))
+            .args(["--no-sandbox","--disable-gpu","--change-stack-guard-on-fork=disable"])
+            .spawn().unwrap());
+        let end=std::time::Instant::now()+Duration::from_secs(if browser.is_some(){60}else{300});
+        let mut result=None;
+        while std::time::Instant::now()<end {
+            agent.maintain_cast();
+            if let Some(p)=browser.as_mut(){if let Some(code)=p.try_wait().unwrap(){result=Some(code);break;}}
+            if let Ok(Some(request))=server.recv_timeout(Duration::from_millis(50)){let a=agent.clone();std::thread::spawn(move||{let _=a.handle_http(request,true);});}
+        }
+        if let Some(mut p)=browser {if result.is_none(){let _=p.kill();let _=p.wait();}}
+        agent.casting.lock().unwrap().stop();running.store(false,Ordering::Relaxed);worker.join().unwrap();
+        if std::env::var("FRAMELY_CAST_BROWSER_PROBE").is_ok(){assert!(result.is_some_and(|r|r.success()),"Browser stream integration failed: {result:?}");}
+
+    }
     #[test]
     fn catalog_progress_reports_fast_source_and_cancellation_does_not_wait_for_slow_source() {
         use std::sync::mpsc;
@@ -2111,6 +2328,8 @@ mod tests {
 
     fn agent(server: &Server, root: &Path) -> Arc<Agent> {
         Arc::new(Agent {
+            casting: Mutex::new(crate::cast::runtime::Casting::new(root.join("cast"), root.join("media"))),
+            receivers: Mutex::new(crate::cast::receiver::Receivers::new(root.join("receive"), root.join("media"))),
             socket: root.join("control.sock"),
             state: root.join("state"),
             assets: std::env::var_os("FRAMELY_TEST_ASSETS")

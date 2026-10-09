@@ -19,7 +19,7 @@
  .manager .shell-header>.icon-button{display:none}
  .manager .shell-header .manager-install-button{font-size:0;min-height:44px;width:44px;padding:10px;border-radius:12px;order:3}
  .manager .shell-header .manager-install-button svg{width:22px;height:22px}
- .manager .shell-header .manager-switcher{position:fixed;z-index:30;left:0;right:0;bottom:0;width:100%;max-width:none;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:0;border-top:1px solid #ffffff18;border-radius:0;background:#202022f5;gap:0;padding:6px 6px calc(6px + env(safe-area-inset-bottom,0px));overflow:visible}
+ .manager .shell-header .manager-switcher{position:fixed;z-index:30;left:0;right:0;bottom:0;width:100%;max-width:none;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));border:0;border-top:1px solid #ffffff18;border-radius:0;background:#202022f5;gap:0;padding:6px 6px calc(6px + env(safe-area-inset-bottom,0px));overflow:visible}
  .manager .manager-switcher button{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:56px;padding:5px 2px;gap:3px;font-size:11px;border-radius:12px;color:#b2b2ba}
  .manager .manager-switcher button.active{background:transparent;color:#a2c7df}
  .manager-section-icon{display:flex;padding:3px 12px;border-radius:999px}

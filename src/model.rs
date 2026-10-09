@@ -814,6 +814,8 @@ pub struct AgreementAcceptance {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Database {
+    #[serde(default)]
+    pub casting: crate::cast::settings::Settings,
     #[serde(default = "default_language")]
     pub language: String,
     #[serde(default)]

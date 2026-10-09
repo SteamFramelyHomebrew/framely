@@ -1,6 +1,7 @@
 mod apk;
 mod apk_metadata;
 mod auth;
+mod cast;
 mod desktop;
 mod diagnostics;
 mod file_browser;

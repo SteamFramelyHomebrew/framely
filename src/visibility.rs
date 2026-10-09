@@ -36,7 +36,8 @@ impl Tracker {
                     && (k == "menu"
                         || k == "launcher"
                         || k == "framely.manager"
-                        || k.starts_with("framely.window."))),
+                        || k.starts_with("framely.window.")
+                        || k.starts_with("framely.cast."))),
             "Invalid native visibility views"
         );
         self.seen = Some(now);
@@ -73,6 +74,12 @@ impl Tracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cast_windows_are_native_visibility_sources() {
+        let mut tracker=Tracker::default();
+        tracker.report(BTreeMap::from([("framely.cast.0123".into(),true)]),Instant::now()).unwrap();
+        assert!(tracker.state.capture_obscured);
+    }
     #[test]
     fn aggregate_close_and_lease() {
         let now = Instant::now();

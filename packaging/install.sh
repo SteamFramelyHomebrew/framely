@@ -13,10 +13,31 @@ steam_uid=$(id -u "$steam_user")
 steam_home=$(getent passwd "$steam_user" | cut -d: -f6)
 [[ $steam_uid -ge 1000 && $steam_home == /* && $steam_home != *' '* ]] || { echo 'Invalid Steam user/home.' >&2; exit 1; }
 [[ -w /etc/systemd/system && -w /etc && -w /var/lib ]] || { echo 'System configuration is not writable. Framely did not change the read-only setting; installation stopped.' >&2; exit 1; }
+# A terminal opened by Framely belongs to its service cgroup. Stop requests
+# would kill this installer along with the UI, before it can switch/restart.
+# Journal output avoids retaining a pipe to the terminal being shut down.
+installer_cgroup=$(cat /proc/self/cgroup)
+if [[ $installer_cgroup =~ /framely(-session|-ui-recovery|-backend-[^/]+|-plugin-[^/]+|-hook-[^/]+)?\.service(/|$|[[:space:]]) ]]; then
+  worker_args=("$steam_user")
+  if $repair; then worker_args=(--repair "$steam_user"); fi
+  install_unit="framely-install-$$-$(date +%s)"
+  systemd-run --quiet --collect --no-block --unit="$install_unit" \
+    --property=Type=exec --property=StandardInput=null \
+    --property=StandardOutput=journal --property=StandardError=journal \
+    /usr/bin/bash "$base/install.sh" "${worker_args[@]}"
+  echo "Installation continues independently. Log: journalctl -u $install_unit"
+  exit 0
+fi
 cd "$base"
 sha256sum --quiet -c SHA256SUMS
-for binary in bin/framely; do
-  dependencies=$(ldd "$binary" 2>&1)
+casting_binaries=()
+if [[ -d lib/media ]]; then
+  command -v ffmpeg >/dev/null || { echo "Missing system FFmpeg for casting." >&2; exit 1; }
+  casting_binaries=(bin/framely-panel-grab lib/media/framely-capture lib/media/framely-receiver lib/media/uxplay lib/media/libgstframely.so lib/media/mediamtx)
+fi
+for binary in bin/framely "${casting_binaries[@]}"; do
+  dependencies=$(ldd "$binary" 2>&1 || true)
+  [[ -f $binary ]] || { echo "Missing binary: $binary" >&2; exit 1; }
   [[ $dependencies != *'not found'* ]] || { echo "$dependencies" >&2; exit 1; }
 done
 version=$(cat VERSION)
@@ -41,6 +62,9 @@ for unit in framely.service framely-session.service; do
   previous_active[$unit]=$(systemctl is-active "$unit" || true)
   previous_enabled[$unit]=$(systemctl is-enabled "$unit" 2>/dev/null || true)
 done
+if systemctl --user --machine="$steam_user@" is-active --quiet framely-ui-recovery.service 2>/dev/null; then
+  previous_active[framely-session.service]=active
+fi
 if [[ -d $root && ! -L $root ]]; then
   # Stop writers before moving state across filesystems. Restore running services
   # if migration or subsequent preflight fails; the compatibility path survives.
@@ -145,6 +169,8 @@ rollback_on_failure() {
   exit "$code"
 }
 trap rollback_on_failure ERR
+# Retire the temporary user UI used to recover an interrupted installation.
+systemctl --user --machine="$steam_user@" stop framely-ui-recovery.service 2>/dev/null || true
 systemctl stop framely-session.service framely.service 2>/dev/null || true
 # Clear the uninstall guard retained by older releases only for a clean reinstall.
 # Existing installations, repairs and incomplete plugin cleanup retain safe mode.

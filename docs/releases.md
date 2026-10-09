@@ -66,6 +66,8 @@ The entry fetches the release engine. Default is latest stable; `--version TAG` 
 
 Installation initializes the official update descriptor URL only if no source is configured, preserving existing sources for future in-app updates.
 
+When run from Framely's built-in terminal, the package installer moves into an independent systemd service before stopping Framely. This prevents the terminal shutdown from killing the installer. Its output remains in the journal under the `framely-install-*` unit printed by the command; the UI closes during installation and starts again on completion.
+
 ## Unified uninstallation
 
 Scripts and desktop UI expose one uninstall operation. It stops session/downloads, then calls root-only `prepare-uninstall --approve`: persistently disable plugins, stop them in dependency order, run uninstall hooks, remove payloads. Only complete success removes services/core/runtime. Failure retains Framely, restores session access and leaves plugins disabled for troubleshooting/retry. There is no skip-failed-plugin manager uninstall.

@@ -43,7 +43,7 @@ export function NotificationCenter({items,inbox=false,refresh,plugins={},safeMod
  return <section className={inbox?'notification-inbox':'toasts'} aria-label={t('通知')}>
   {inbox&&<header className="inbox-heading"><div><h1>{t('通知')}</h1><p>{t('收件箱')}<span>{visible.length}</span></p></div><IconInbox size={30} stroke={1.8}/></header>}
   {inbox&&controls}
-  {visible.map(entry=><NotificationCard key={`${entry.plugin}:${entry.notification.id}:${entry.createdAt}`} entry={entry} inbox={inbox} now={now} refresh={refresh} available={!!entry.update||!!plugins[entry.plugin]?.enabled&&!safeMode}/>)}
+  {visible.map(entry=><NotificationCard key={`${entry.plugin}:${entry.notification.id}:${entry.createdAt}`} entry={entry} inbox={inbox} now={now} refresh={refresh} available={entry.plugin===''||!!entry.update||!!plugins[entry.plugin]?.enabled&&!safeMode}/>)}
   {inbox&&!visible.length&&<div className="inbox-empty"><IconInbox size={44} stroke={1.5}/><h2>{t('收件箱为空')}</h2><p>{t('需要保留的通知会出现在这里。')}</p></div>}
  </section>;
 }

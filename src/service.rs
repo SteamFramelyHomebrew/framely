@@ -101,6 +101,7 @@ impl Service {
         };
         db.update_check.validate()?;
         db.launcher.validate()?;
+        db.casting.validate()?;
         for p in db.plugins.values_mut() {
             if let Some(e) = &p.manifest.engines {
                 if let Err(error) = e.check() {
@@ -1080,6 +1081,48 @@ impl Service {
                 self.save()?;
                 Ok(json!(true))
             }
+            "cast.settings.save" => {
+                let settings: crate::cast::settings::Settings = serde_json::from_value(p)?;
+                settings.validate()?;
+                self.db.casting = settings;
+                self.save()?;
+                Ok(json!(true))
+            }
+            "cast.panel.start" => {
+                let executable = self.root.join("current/bin/framely-panel-grab");
+                ensure!(executable.is_file(), "缺少内置屏幕采集助手");
+                let directory = self.root.join("cast-runtime");
+                fs::create_dir_all(&directory)?;
+                fs::set_permissions(&directory, fs::Permissions::from_mode(0o755))?;
+                let path = directory.join(format!("panel-{}.sock", &crate::session::cast_random_key()[..16]));
+                let listener = UnixListener::bind(&path)?;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+                let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())?;
+                ensure!(unsafe { libc::chown(name.as_ptr(), self.manager, u32::MAX) } == 0, "无法设置采集助手连接身份");
+                listener.set_nonblocking(true)?;
+                let manager = self.manager;
+                let cleanup = path.clone();
+                std::thread::spawn(move || {
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while Instant::now() < deadline {
+                        match listener.accept() {
+                            Ok((stream, _)) => {
+                                let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+                                let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+                                let valid = unsafe { libc::getsockopt(stream.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, (&mut credentials as *mut libc::ucred).cast(), &mut length) } == 0 && credentials.uid == manager;
+                                if !valid { continue; }
+                                let _ = fs::remove_file(&cleanup);
+                                let _ = Command::new(&executable).stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(stream))).stdout(std::process::Stdio::null()).status();
+                                break;
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(20)),
+                            Err(_) => break,
+                        }
+                    }
+                    let _ = fs::remove_file(cleanup);
+                });
+                Ok(json!({"socket":path}))
+            }
             "launcher.order.save" => {
                 let order: Vec<String> = serde_json::from_value(p["order"].clone())?;
                 ensure!(order.len() <= 4096, "Too many launcher entries");
@@ -1345,6 +1388,14 @@ impl Service {
                 }
                 Ok(json!(true))
             }
+            "cast.notification" => {
+                ensure!(id.is_empty(), "Core notification only");
+                let notification: Notification=serde_json::from_value(p["notification"].clone())?;
+                notification.validate()?;
+                ensure!(notification.id.starts_with("cast."), "Invalid cast notification");
+                self.insert_notification("", "Framely", notification, None)?;
+                Ok(json!(true))
+            },
             "notification.send" => self.notify(&id, p["notification"].clone()),
             "notification.remove" | "notification.dismiss" => {
                 if !id.is_empty() {
@@ -1752,7 +1803,9 @@ impl Service {
             .iter()
             .find(|a| a.id == action)
             .context("Action not declared")?;
-        let result = if let Some(update) = &entry.update {
+        let result = if id.is_empty() && key.starts_with("cast.") {
+            json!(true)
+        } else if let Some(update) = &entry.update {
             ensure!(
                 self.db.update_source.as_ref() == Some(&update.source)
                     && self.db.update_channel == update.channel,

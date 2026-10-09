@@ -9,13 +9,29 @@ cargo build --release --locked
 npm ci --no-audit --no-fund
 npm run build
 bash tools/build-native.sh "$cef"
+bash tools/build-media.sh
 binary=${CARGO_TARGET_DIR:-target}/release/framely
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-build_id="$version-$(find "$binary" target/native ui/dist sdk templates/plugin examples/showcase packaging tools docs assets/branding assets/search README.md README.zh-CN.md LICENSE -type f ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)"
+build_id="$version-$(find "$binary" target/native media/bin ui/dist sdk templates/plugin examples/showcase packaging tools docs assets/branding assets/search README.md README.zh-CN.md LICENSE -type f ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)"
 stage="$base/release/framely-$build_id"
 [[ ! -e $stage ]] || { echo 'Release already exists.' >&2; exit 1; }
-mkdir -p "$stage"/{bin,lib/cef,lib/openvr,share/ui,share/licenses,tools}
+mkdir -p "$stage"/{bin,lib/cef,lib/openvr,lib/media,share/ui,share/licenses,tools}
 cp "$binary" "$stage/bin/"
+cp media/bin/framely-panel-grab "$stage/bin/"
+cp media/bin/framely-capture media/bin/mediamtx media/bin/uxplay media/bin/framely-receiver media/bin/libgstframely.so "$stage/lib/media/"
+cp -a media/bin/upnp "$stage/lib/media/"
+cp media/bin/LICENSE "$stage/share/licenses/mediamtx.txt"
+cp media/bin/LICENSE.uxplay "$stage/share/licenses/uxplay.txt"
+cp media/bin/LICENSE.llhttp "$stage/share/licenses/uxplay-llhttp.txt"
+cp media/capture/LICENSE.framecorder "$stage/share/licenses/panel-capture.txt"
+cp media/THIRD_PARTY_NOTICES.md "$stage/share/licenses/media-notices.md"
+mkdir -p "$stage/share/source/media/capture" "$stage/share/source/tools" "$stage/share/source/native/vendor"
+cp -a media/native media/upnp media/patch-uxplay.py media/dependencies.json "$stage/share/source/media/"
+cp -a media/capture/src media/capture/shaders media/capture/Cargo.toml media/capture/Cargo.lock media/capture/build.rs media/capture/LICENSE.framecorder "$stage/share/source/media/capture/"
+cp tools/build-media.sh tools/fetch-media.py "$stage/share/source/tools/"
+cp native/vendor/json.hpp "$stage/share/source/native/vendor/"
+tar -czf "$stage/share/source/media/uxplay.tar.gz" -C media/source UxPlay-1.73.7
+
 cp target/native/framely-vr "$stage/lib/cef/"
 cp -a "$cef/Release/." "$stage/lib/cef/"
 cp -a "$cef/Resources/." "$stage/lib/cef/"
