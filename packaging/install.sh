@@ -33,7 +33,7 @@ sha256sum --quiet -c SHA256SUMS
 casting_binaries=()
 if [[ -d lib/media ]]; then
   command -v ffmpeg >/dev/null || { echo "Missing system FFmpeg for casting." >&2; exit 1; }
-  casting_binaries=(bin/framely-panel-grab lib/media/framely-capture lib/media/framely-receiver lib/media/uxplay lib/media/libgstframely.so lib/media/mediamtx)
+  casting_binaries=(bin/framely-panel-grab lib/media/framely-capture lib/media/framely-receiver lib/media/uxplay lib/media/libgstframely.so lib/media/libgstlibav.so lib/media/mediamtx)
 fi
 for binary in bin/framely "${casting_binaries[@]}"; do
   dependencies=$(ldd "$binary" 2>&1 || true)

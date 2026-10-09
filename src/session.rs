@@ -2131,6 +2131,19 @@ mod tests {
         while !start.is_finished() {if let Ok(Some(request))=server.recv_timeout(Duration::from_millis(50)){let a=agent.clone();std::thread::spawn(move||{a.handle_http(request,true).unwrap();});}}
         let response=start.join().unwrap();assert!(response.get("error").is_none(),"HTTP stream startup failed: {response}");
         std::thread::sleep(Duration::from_millis(200));assert_eq!(agent.casting.lock().unwrap().status()["running"],true);
+        if std::env::var_os("FRAMELY_CAST_TEST_DLNA").is_some() {
+            let mut cast=agent.casting.lock().unwrap();cast.ensure_dlna().unwrap();
+            let rtsp=cast.rtsp_port;
+            for (path,codec) in [("headset",if settings.codec==crate::cast::settings::Codec::H265 {"hevc"}else{"h264"}),("dlna","h264")] {
+                std::thread::sleep(Duration::from_millis(500));
+                let output=Command::new("timeout").args(["15","ffprobe","-v","error","-rtsp_transport","tcp","-show_entries","stream=codec_name,width,height,r_frame_rate","-of","json",&format!("rtsp://127.0.0.1:{rtsp}/{path}")]).output().unwrap();
+                assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+                let probe:Value=serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(probe["streams"][0]["codec_name"],codec);
+                assert_eq!(probe["streams"][0]["width"],640);assert_eq!(probe["streams"][0]["height"],360);
+                println!("CAST_CODEC_PASS {path}: {probe}");
+            }
+        }
         println!("Fixture viewer: http://{}:{port}/cast/watch",network_ipv4_addresses().first().unwrap());
         let probe=std::env::var("FRAMELY_CAST_BROWSER_PROBE").ok();
         let mut browser=probe.map(|executable|Command::new(executable)
