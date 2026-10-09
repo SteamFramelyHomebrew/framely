@@ -18,6 +18,7 @@ struct Args {
     #[arg(long, default_value_t = 8)] bitrate: u32,
     #[arg(long, default_value_t = 0)] eye: usize,
     #[arg(long)] raw: bool,
+    #[arg(long, value_enum, default_value_t = encoder::Codec::H264)] codec: encoder::Codec,
     #[arg(long)] fov: Option<f64>,
     #[arg(long, default_value_t = 0.)] center_x: f64,
     #[arg(long, default_value_t = 0.)] center_y: f64,
@@ -39,7 +40,7 @@ fn run(a: Args) -> Result<()> {
         eprintln!("{}", serde_json::json!({"event":"view","tanHalfHorizontal":tan_h,"centerTanX":cx,"centerTanY":cy,"aspect":a.width as f64/height as f64}));
     }
     let mut enc = encoder::Encoder::open(&encoder::find_device()?, encoder::Config {
-        codec: encoder::Codec::H264, width: a.width, height, fps: a.fps,
+        codec: a.codec, width: a.width, height, fps: a.fps,
         bitrate: a.bitrate * 1_000_000, qp: None,
     }, 3)?;
     let filter = if map.supersample { gpu::Filter::Supersample } else { gpu::Filter::Sharp };

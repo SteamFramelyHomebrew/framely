@@ -24,10 +24,23 @@ pub enum Eye {
     Right,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Codec {
+    #[default]
+    H264,
+    H265,
+}
+impl Codec {
+    pub fn name(self) -> &'static str { match self { Self::H264 => "h264", Self::H265 => "h265" } }
+    pub fn rtp(self) -> &'static str { match self { Self::H264 => "H264/90000", Self::H265 => "H265/90000" } }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct Settings {
     pub source: Source,
+    pub codec: Codec,
     pub output: Output,
     pub eye: Eye,
     pub width: u32,
@@ -48,6 +61,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             source: Source::Screen,
+            codec: Codec::H264,
             output: Output::Eye,
             eye: Eye::SteamVR,
             width: 1920,
@@ -104,6 +118,15 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_settings_keep_h264_and_hevc_is_explicit() {
+        let legacy: Settings=serde_json::from_value(serde_json::json!({"source":"screen"})).unwrap();
+        assert_eq!(legacy.codec,Codec::H264);
+        let hevc: Settings=serde_json::from_value(serde_json::json!({"codec":"h265"})).unwrap();
+        assert_eq!(hevc.codec,Codec::H265);
+        assert_eq!(serde_json::to_value(hevc).unwrap()["codec"],"h265");
+        assert!(serde_json::from_value::<Settings>(serde_json::json!({"codec":"av1"})).is_err());
+    }
     #[test]
     fn settings_reject_unsafe_media_sizes_and_invalid_ranges() {
         let mut s = Settings::default();

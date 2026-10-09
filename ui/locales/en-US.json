@@ -1222,6 +1222,11 @@
     "完整画面": "Show full picture",
     "填满屏幕": "Fill screen",
     "退出全屏": "Exit fullscreen",
-    "全屏": "Fullscreen"
+    "全屏": "Fullscreen",
+    "视频编码": "Video codec",
+    "通用兼容": "Broad compatibility",
+    "更高压缩效率": "Better compression",
+    "使用头显硬件编码。浏览器不支持所选编码时使用兼容画面。": "Uses headset hardware encoding. Browsers that cannot decode the selected codec receive a compatible stream.",
+    "SteamVR 使用软件编码，H.265 会增加处理负载。": "SteamVR uses software encoding. H.265 increases processing load."
   }
 }

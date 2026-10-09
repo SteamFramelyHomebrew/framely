@@ -1,4 +1,4 @@
-use super::settings::{Eye, Output, Settings, Source};
+use super::settings::{Codec, Eye, Output, Settings, Source};
 use anyhow::{bail, ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
@@ -65,7 +65,7 @@ impl Casting {
         json!({"running":self.started.is_some(),"error":self.error,"preview":self.preview_restore.is_some(),"view":view,
             "watchPath":if self.started.is_some(){Some("/cast/watch")}else{None},
             "elapsedSeconds":self.started.map(|t|t.elapsed().as_secs()),
-            "dominantEye":dominant_eye().ok()})
+            "codec":self.active_settings.as_ref().map(|s|s.codec.name()),"dominantEye":dominant_eye().ok()})
     }
     fn stop_workers(&mut self) {
         for child in &mut self.workers {
@@ -98,6 +98,7 @@ impl Casting {
     }
     /// Negotiate with browsers that omit H.264 (including the bundled CEF).
     /// All VP8 viewers share one on-demand compatibility encoder.
+    pub fn codec(&self) -> Codec { self.active_settings.as_ref().map(|s|s.codec).unwrap_or_default() }
     pub fn ensure_vp8(&mut self) -> Result<()> {
         ensure!(self.status()["running"] == true, "请先开始头显串流");
         if self.vp8.is_some() {
@@ -230,7 +231,7 @@ impl Casting {
         }
         let source = format!("rtsp://127.0.0.1:{}/headset", self.rtsp_port);
         let target = format!("rtsp://127.0.0.1:{}/dlna", self.rtsp_port);
-        self.spawn(Command::new("ffmpeg").args([
+        let mut command=Command::new("ffmpeg");command.args([
             "-hide_banner",
             "-loglevel",
             "warning",
@@ -243,8 +244,6 @@ impl Casting {
             "0:v:0",
             "-map",
             "0:a?",
-            "-c:v",
-            "copy",
             "-c:a",
             "aac",
             "-b:a",
@@ -255,8 +254,10 @@ impl Casting {
             "rtsp",
             "-rtsp_transport",
             "tcp",
-            &target,
-        ]))?;
+        ]);
+        if self.active_settings.as_ref().is_some_and(|s|s.codec==Codec::H265) {command.args(["-c:v","libx264","-preset","ultrafast","-tune","zerolatency","-profile:v","baseline","-bf","0"]);} else {command.args(["-c:v","copy"]);}
+        command.arg(&target);
+        self.spawn(&mut command)?;
         self.dlna_started = true;
         Ok(())
     }
@@ -272,6 +273,7 @@ impl Casting {
         self.stop_workers();
         let mut reference = settings.clone();
         reference.source = Source::Screen;
+        reference.codec = Codec::H264;
         reference.output = Output::Eye;
         reference.width = 960;
         reference.height = 960;
@@ -388,6 +390,8 @@ impl Casting {
                 &s.bitrate_mbps.to_string(),
                 "--eye",
                 &eye.to_string(),
+                "--codec",
+                s.codec.name(),
             ]);
             if s.output == Output::Raw {
                 command.arg("--raw");
@@ -430,15 +434,18 @@ impl Casting {
             ffmpeg.args([
                 "-fflags",
                 "+genpts",
-                "-thread_queue_size", "4",
-                "-probesize", "32768",
-                "-analyzeduration", "0",
+                "-thread_queue_size",
+                "4",
+                "-probesize",
+                "32768",
+                "-analyzeduration",
+                "0",
                 "-use_wallclock_as_timestamps",
                 "1",
                 "-framerate",
                 &s.fps.to_string(),
                 "-f",
-                "h264",
+                if s.codec == Codec::H265 {"hevc"} else {"h264"},
                 "-i",
                 "pipe:0",
             ]);
@@ -467,7 +474,8 @@ impl Casting {
             ffmpeg.args(["-c:v", "copy"]);
         } else {
             ffmpeg.args(["-vf", &format!("fps={},scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,format=yuv420p",s.fps,s.width,s.height,s.width,s.height),
-                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-profile:v", "baseline", "-bf", "0", "-g", &s.fps.to_string(), "-b:v", &format!("{}M",s.bitrate_mbps)]);
+                "-c:v", if s.codec==Codec::H265 {"libx265"} else {"libx264"}, "-preset", "ultrafast", "-tune", "zerolatency", "-bf", "0", "-g", &s.fps.to_string(), "-b:v", &format!("{}M",s.bitrate_mbps)]);
+            if s.codec==Codec::H265 {ffmpeg.args(["-x265-params", "bframes=0:rc-lookahead=0:repeat-headers=1:pools=2:frame-threads=1"]);} else {ffmpeg.args(["-profile:v", "baseline"]);}
         }
         if audio {
             ffmpeg.args(["-c:a", "libopus", "-b:a", "96k", "-ar", "48000", "-application", "lowdelay", "-frame_duration", "10"]);
@@ -475,8 +483,10 @@ impl Casting {
             ffmpeg.arg("-an");
         }
         ffmpeg.args([
-            "-max_interleave_delta", "100000",
-            "-flush_packets", "1",
+            "-max_interleave_delta",
+            "100000",
+            "-flush_packets",
+            "1",
             "-f",
             "rtsp",
             "-rtsp_transport",

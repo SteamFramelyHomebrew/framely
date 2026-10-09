@@ -53,6 +53,7 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Codec {
+    #[value(name = "h265", alias = "hevc")]
     Hevc,
     H264,
 }

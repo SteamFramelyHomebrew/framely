@@ -802,10 +802,11 @@ impl Agent {
                 ensure!(r.method()==&Method::Post||r.method()==&Method::Options,"Missing playback session");
                 let offer=std::str::from_utf8(&body)?;
                 let supports=|codec:&str|offer.lines().any(|line|line.starts_with("a=rtpmap:")&&line.split_whitespace().nth(1).is_some_and(|v|v.eq_ignore_ascii_case(codec)));
-                if supports("H264/90000") {("h264","")} else {ensure!(supports("VP8/90000"),"浏览器没有可用的视频编码");("vp8","")}
+                let selected=self.casting.lock().unwrap().codec();
+                if supports(selected.rtp()) {(selected.name(),"")} else {ensure!(supports("VP8/90000"),"浏览器没有可用的视频编码");("vp8","")}
             } else {
                 let (codec,resource)=suffix.strip_prefix('/').and_then(|s|s.split_once('/')).context("Invalid playback session")?;
-                ensure!(matches!(codec,"h264"|"vp8")&&resource.len()==36&&resource.bytes().all(|b|b.is_ascii_hexdigit()||b==b'-'),"Invalid playback session");
+                ensure!(matches!(codec,"h264"|"h265"|"vp8")&&resource.len()==36&&resource.bytes().all(|b|b.is_ascii_hexdigit()||b==b'-'),"Invalid playback session");
                 (codec,resource)
             };
             let port = { let mut cast=self.casting.lock().unwrap();ensure!(cast.status()["running"]==true,"串流尚未开始");if codec=="vp8"&&suffix.is_empty(){cast.ensure_vp8()?;}cast.whep_port };
@@ -2118,7 +2119,7 @@ mod tests {
         let server=Server::http(("0.0.0.0",port)).unwrap();let agent=agent(&server,root.path());
         let mut core=crate::tests::accepted_service(&agent.state,1000).unwrap();
         core.handle("network.save",json!({"enabled":true,"port":port,"passwordEnabled":false,"password":"fixture password"})).unwrap();
-        core.handle("cast.settings.save",json!({"source":std::env::var("FRAMELY_CAST_TEST_SOURCE").unwrap_or_else(|_|"steamVR".into()),"width":640,"height":360,"fps":30,"systemAudio":true,"dlna":true})).unwrap();
+        core.handle("cast.settings.save",json!({"source":std::env::var("FRAMELY_CAST_TEST_SOURCE").unwrap_or_else(|_|"steamVR".into()),"codec":std::env::var("FRAMELY_CAST_TEST_CODEC").unwrap_or_else(|_|"h264".into()),"width":640,"height":360,"fps":30,"systemAudio":true,"dlna":true})).unwrap();
         let socket=UnixListener::bind(&agent.socket).unwrap();let running=Arc::new(AtomicBool::new(true));
         socket.set_nonblocking(true).unwrap();let alive=running.clone();
         let worker=std::thread::spawn(move||{while alive.load(Ordering::Relaxed){if let Ok((mut stream,_))=socket.accept(){let request=ipc::read(&mut stream).unwrap();let result=if request["method"]=="cast.panel.start" {ipc::call(Path::new("/run/framely/control.sock"),"cast.panel.start",json!({}))}else{core.handle(request["method"].as_str().unwrap(),request["params"].clone())};let response=ipc::response(result);let _=ipc::write(&mut stream,&response);}else{std::thread::sleep(Duration::from_millis(5));}}});
