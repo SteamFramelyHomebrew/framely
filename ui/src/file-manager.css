@@ -247,3 +247,61 @@
 .file-manager{position:relative}
 
 .file-upload-limit{display:flex;align-items:center;gap:4px;color:var(--file-muted);font-size:12px}
+/* Touch file workflow: navigation drawer, task sheets and an explicit selection mode. */
+.file-navigation-scrim,.file-navigation-heading,.file-mobile-selection{display:none}
+@media(max-width:767px){
+ .manager .file-manager .file-layout{display:flex;position:static;--file-sidebar-width:0;min-width:0}
+ .manager .file-manager .file-sidebar{position:absolute;z-index:71;left:0;top:0;bottom:0;width:min(320px,86%);max-height:none;display:grid;grid-template-rows:auto min(220px,36%) minmax(0,1fr);gap:16px;padding:10px 12px 16px;background:#242426;transform:translateX(-100%);visibility:hidden}
+ .manager .file-manager.file-navigation-open .file-sidebar{transform:none;visibility:visible}
+ .manager .file-navigation-scrim{display:block;position:absolute;inset:0;z-index:70;background:#09090b99!important;border:0;border-radius:0;padding:0}
+ .file-navigation-heading{display:flex;align-items:center;justify-content:space-between;padding-left:10px}
+ .file-navigation-heading button{width:44px!important;min-height:44px!important;justify-content:center!important}
+ .manager .file-manager .file-sidebar-resizer{display:none}
+ .manager .file-main{width:100%;flex:1}
+ .manager .file-manager .file-location{padding:8px 10px;gap:2px}
+ .manager .file-manager .file-icon-button{width:40px;min-width:40px;min-height:44px}
+ .manager .file-manager .file-location>button:last-child{display:none}
+ .manager .file-manager .file-address{padding:0 8px}
+ .manager .file-manager .file-address>svg{display:none}
+ .manager .file-manager .file-address input{font-size:16px!important;min-width:0}
+ .manager .file-directory-heading{padding:2px 12px 6px}
+ .manager .file-breadcrumbs{flex-wrap:nowrap;overflow:auto;white-space:nowrap;max-width:100%;padding-bottom:2px}
+ .manager .file-breadcrumbs button{flex:none;max-width:none;min-height:36px}
+ .manager .file-item-count{display:none}
+ .file-mobile-tools{display:flex;align-items:center;gap:6px;padding:0 10px 8px}
+ .file-mobile-tools button{display:flex;align-items:center;gap:6px;min-height:44px;border-radius:10px;font-size:13px!important;background:#ffffff06}
+ .file-mobile-tools button:last-child{margin-left:auto}
+ .manager .file-mobile-search{margin:0 12px 10px;padding:0 10px;flex:none}
+ .manager .file-list-scroll{padding:0 8px}
+ .manager .file-table th{display:none}
+ .manager .file-table .file-kind,.manager .file-table .file-size,.manager .file-table .file-time{display:none}
+ .manager .file-table td{padding:5px 6px}
+ .manager .file-name{min-height:56px;font-size:15px;max-width:100%;width:100%;padding:8px 2px}
+ .manager .file-check{display:none}
+ .manager .file-select-mode .file-check{display:table-cell;width:34px}
+ .manager .file-select-mode .file-check input{width:22px;height:22px}
+ .manager .file-tile-check{display:none}
+ .manager .file-select-mode .file-tile-check{display:block;opacity:1}
+ .manager .file-status-bar{padding:4px 12px;min-height:46px}
+ .manager .file-status-bar .file-grid-select-all{display:none}
+ .file-mobile-selection{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 14px;flex:none;background:#303033}
+ .file-mobile-selection button{display:flex;align-items:center;gap:6px}
+ .manager .file-upload-queue{bottom:58px;right:12px;z-index:25}
+ .manager .file-select-mode .file-upload-queue{bottom:110px}
+ .manager .file-upload-popover{width:min(420px,calc(100vw - 24px));max-width:calc(100vw - 24px);max-height:60vh}
+ .manager .file-upload-controls{padding:0 12px 10px}
+ .manager .file-upload-toggle{min-height:44px;font-size:13px}
+ .manager .file-mobile-action-list{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+ .manager .file-mobile-action-list button{display:flex;justify-content:flex-start;min-height:50px;background:#ffffff06;border-radius:12px;padding:12px}
+ .manager .mobile-sheet .file-command-bar{padding:0;display:flex;flex-direction:column;align-items:stretch;gap:12px}
+ .manager .mobile-sheet .file-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+ .manager .mobile-sheet .file-actions button{display:flex;justify-content:flex-start;min-height:50px;background:#ffffff06;border-radius:12px;padding:10px}
+ .manager .mobile-sheet .file-filter-bar{display:grid;grid-template-columns:minmax(0,1fr);padding:0;gap:12px;border:0}
+ .manager .mobile-sheet .file-filter-bar>*{min-width:0;width:100%}
+ .manager .mobile-sheet .file-search{display:none}
+ .manager .mobile-sheet .file-sort{display:flex;justify-content:space-between}
+ .manager .file-editor-modal textarea{min-height:45dvh}
+}
+@media(max-width:767px) and (prefers-reduced-motion:no-preference){.manager .file-manager .file-sidebar{transition:transform .18s ease-out,visibility .18s}}
+.file-mobile-select-label{display:none}
+@media(max-width:767px){.manager .file-table th.file-check{position:relative;height:44px}.manager .file-page-check{display:flex;align-items:center;margin:0}.manager .file-select-mode .file-mobile-select-label{display:block;position:absolute;left:42px;top:50%;transform:translateY(-50%);white-space:nowrap;font-size:13px;color:var(--file-muted)}}
