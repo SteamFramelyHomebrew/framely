@@ -1,5 +1,5 @@
 import React,{useEffect,useState} from 'react';
-import {IconBell,IconInbox,IconX,IconTrash,IconArrowUpRight} from '@tabler/icons-react';
+import {IconBell,IconInbox,IconX,IconTrash,IconArrowUpRight,IconCast} from '@tabler/icons-react';
 import {api} from './api';
 import {t,currentLanguage} from './i18n';
 import {Brand} from './icons';
@@ -23,7 +23,7 @@ function NotificationCard({entry,inbox,now,refresh,available}:{entry:Notificatio
  }
  return <article className={`notification-card ${inbox?'inbox-message':'toast'}`}>
   <header className="notification-heading">
-   <span className="notification-source-icon">{entry.update?<Brand/>:<IconBell size={22} stroke={1.8}/>}</span>
+   <span className="notification-source-icon">{entry.notification.id.startsWith('cast.')?<IconCast size={22} stroke={1.8}/>:entry.update?<Brand/>:<IconBell size={22} stroke={1.8}/>}</span>
    <div className="notification-origin"><b>{entry.pluginName}</b>{inbox?<time dateTime={new Date(entry.createdAt).toISOString()}>{new Intl.DateTimeFormat(currentLanguage(),{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}).format(entry.createdAt)}</time>:remaining!==null&&<span className="notification-countdown" role="timer">{t('{0} 秒后关闭',{0:remaining})}</span>}</div>
    <button className="notification-dismiss" disabled={busy} aria-label={inbox?t('移除通知'):t('关闭通知')} onClick={()=>void perform(inbox?'notification.remove':'notification.dismiss')}>{inbox?<IconTrash size={21} stroke={1.8}/>:<IconX size={23} stroke={1.8}/>}</button>
   </header>
@@ -31,7 +31,7 @@ function NotificationCard({entry,inbox,now,refresh,available}:{entry:Notificatio
   {!available&&<p className="notification-unavailable">{t('启用此插件后可使用通知操作。')}</p>}
   {!!entry.notification.actions?.length&&<footer className="toast-actions">{entry.notification.actions.map(a=>{
    const label=entry.update?(a.id==='ignore'?t('忽略'):t('打开更新')):a.label;
-   return <button key={a.id} className={entry.update&&a.id==='open'?'notification-primary':''} aria-label={label} title={label} disabled={busy||!available} onClick={()=>void perform('notification.action',a.id)}><span className="notification-action-label">{label}</span>{entry.update&&a.id==='open'&&<IconArrowUpRight size={19} stroke={1.8}/>}</button>;
+   return <button key={a.id} className={a.id==='open'?'notification-primary':''} aria-label={label} title={label} disabled={busy||!available} onClick={()=>void perform('notification.action',a.id)}><span className="notification-action-label">{label}</span>{entry.update&&a.id==='open'&&<IconArrowUpRight size={19} stroke={1.8}/>}</button>;
   })}</footer>}
   {error&&<p className="error" role="alert">{error}</p>}
  </article>;
@@ -40,6 +40,7 @@ export function NotificationCenter({items,inbox=false,refresh,plugins={},safeMod
  const[now,setNow]=useState(Date.now());
  useEffect(()=>{if(inbox)return;const timer=setInterval(()=>setNow(Date.now()),250);return()=>clearInterval(timer);},[inbox]);
  const visible=items.filter(n=>inbox?n.inInbox:n.toast&&(n.expiresAt===null||n.expiresAt>now)).sort((a,b)=>b.createdAt-a.createdAt);
+ if(!inbox&&!visible.length)return null;
  return <section className={inbox?'notification-inbox':'toasts'} aria-label={t('通知')}>
   {inbox&&<header className="inbox-heading"><div><h1>{t('通知')}</h1><p>{t('收件箱')}<span>{visible.length}</span></p></div><IconInbox size={30} stroke={1.8}/></header>}
   {inbox&&controls}

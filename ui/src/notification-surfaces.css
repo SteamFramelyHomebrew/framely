@@ -1,0 +1,42 @@
+/* Spatial controls retain Framely's dark material and single blue accent.
+   Panels use 16px corners; compact actions use pill corners. */
+.notification-view #root,.notification-view .toasts{background:transparent}
+.notification-view .toasts:empty{display:none}
+.toasts{padding:12px;scrollbar-width:none}
+.toasts .notification-card{padding:16px 18px;max-height:232px;margin:0 0 10px;border-radius:16px;border:1px solid #ffffff20;background:rgba(25,27,30,.97);box-shadow:inset 0 1px 0 #ffffff0c;gap:0}
+.toasts .notification-heading{min-height:28px;gap:10px;margin-bottom:12px}
+.toasts .notification-source-icon{width:24px;height:24px;color:var(--blue)}
+.toasts .notification-origin{gap:12px;align-items:center}
+.toasts .notification-origin b{font-size:15px;font-weight:550;color:var(--muted)}
+.toasts .notification-countdown{font-size:12px;color:var(--muted);margin-left:auto}
+.toasts .notification-dismiss{border:0;background:transparent;color:var(--muted);width:36px;min-height:36px;height:36px;border-radius:999px;padding:8px}
+.toasts .notification-dismiss:hover{background:var(--control-hover);color:var(--text)}
+.toasts .notification-message{max-height:88px;overflow:auto;scrollbar-width:thin}
+.toasts .notification-message h2{font-size:22px;line-height:1.3;letter-spacing:-.35px;margin:0 0 6px}
+.toasts .notification-message p{font-size:17px;line-height:1.45;color:#c7cad0}
+.toasts .notification-card .toast-actions{gap:10px;margin-top:16px;justify-content:flex-end}
+.toasts .notification-card .toast-actions button{min-width:76px;min-height:44px;padding:10px 18px;border-radius:999px;border:1px solid #ffffff1a;background:#ffffff09;font-size:15px;font-weight:550}
+.toasts .notification-card .toast-actions .notification-primary{background:var(--blue);border-color:var(--blue);color:#152331}
+.toasts .notification-card .toast-actions .notification-primary:hover{background:#b5d7f2}
+.notification-inbox .notification-card{border-radius:16px;padding:22px;border-color:#ffffff18;background:#ffffff05}
+.notification-inbox .notification-card .toast-actions button{border-radius:999px}
+.notification-inbox .notification-card .toast-actions .notification-primary{background:var(--blue);color:#152331;border-color:var(--blue)}
+.cast-quick{padding:4px 0 20px}
+.cast-quick>header{display:flex;align-items:center;gap:12px;margin-bottom:24px;color:var(--blue)}
+.cast-quick>header h1{font-size:28px;color:var(--text);flex:1}
+.cast-quick>header button{width:44px;min-height:44px;padding:10px;background:transparent;border:0;border-radius:999px}
+.cast-quick-stream{display:flex;flex-direction:column;align-items:center;padding:24px 16px 28px;border-radius:16px;background:#ffffff06;border:1px solid #ffffff14}
+.cast-quick-stream>svg{color:var(--blue);margin-bottom:18px}
+.cast-quick-stream h2{font-size:24px;margin-bottom:6px}
+.cast-quick-stream p{font-size:16px;color:var(--muted);font-variant-numeric:tabular-nums;margin:0 0 22px}
+.cast-quick-stream button{min-width:180px;border-radius:999px}
+.cast-quick-stream button.primary{background:var(--blue);color:#152331;border-color:var(--blue)}
+.cast-quick-address{display:grid;gap:8px;padding:18px 0;color:var(--muted);font-size:16px}
+.cast-quick-address code{font:15px/1.5 ui-monospace,monospace;color:var(--text);overflow-wrap:anywhere;user-select:all}
+.cast-quick-receive{margin-top:28px}
+.cast-quick-receive h2{font-size:17px;font-weight:500;color:var(--muted);margin-bottom:8px}
+.cast-quick-receive label{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0;padding:14px 0}
+.cast-quick-receive .ui-switch{flex:none}
+.quick nav button>span{font-size:16px}
+@media(max-width:480px){.toasts .notification-card{padding:14px}.toasts .notification-heading{gap:8px}.toasts .notification-origin{flex-direction:row;gap:6px}.toasts .notification-countdown{font-size:11px}.toasts .notification-card .toast-actions button{flex:1;padding:10px 12px}.notification-inbox .notification-card{padding:18px}}
+@media(prefers-reduced-motion:no-preference){.notification-card button,.cast-quick button{transition:background .15s,transform .15s}.notification-card button:active:not(:disabled),.cast-quick button:active:not(:disabled){transform:scale(.98)}}
