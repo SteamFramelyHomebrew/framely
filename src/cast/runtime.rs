@@ -137,6 +137,10 @@ impl Casting {
             "1",
             "-threads",
             "2",
+            "-r",
+            &s.fps.to_string(),
+            "-fps_mode",
+            "passthrough",
             "-g",
             &s.fps.to_string(),
             "-b:v",
@@ -257,7 +261,7 @@ impl Casting {
             "-rtsp_transport",
             "tcp",
         ]);
-        if self.active_settings.as_ref().is_some_and(|s|s.codec==Codec::H265) {command.args(["-c:v","libx264","-preset","ultrafast","-tune","zerolatency","-profile:v","baseline","-bf","0"]);} else {command.args(["-c:v","copy"]);}
+        if self.active_settings.as_ref().is_some_and(|s|s.codec==Codec::H265) {command.args(["-c:v","libx264","-preset","ultrafast","-tune","zerolatency","-profile:v","baseline","-bf","0","-r",&self.active_settings.as_ref().unwrap().fps.to_string(),"-fps_mode","passthrough"]);} else {command.args(["-c:v","copy"]);}
         command.arg(&target);
         self.spawn(&mut command)?;
         self.dlna_started = true;
