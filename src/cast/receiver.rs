@@ -178,6 +178,7 @@ impl Receivers {
             .args([
                 "-n",
                 name,
+                "-avdec",
                 "-vs",
                 "framelyvideosink",
                 "-as",

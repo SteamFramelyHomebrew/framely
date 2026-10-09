@@ -9,7 +9,7 @@ binaries=Path(args.binaries).resolve()
 with tempfile.TemporaryDirectory(prefix='framely-media-test-') as directory:
     root=Path(directory);events=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM);events.bind(str(root/'events.sock'));events.settimeout(5)
     token='0123456789abcdef0123456789abcdef';env=dict(os.environ,GST_PLUGIN_PATH=str(binaries),FRAMELY_CAST_DIR=directory,FRAMELY_CAST_ID=token)
-    airplay=subprocess.Popen([str(binaries/'uxplay'),'-n','Framely test','-vs','framelyvideosink','-as','framelyaudiosink'],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    airplay=subprocess.Popen([str(binaries/'uxplay'),'-n','Framely test','-avdec','-vs','framelyvideosink','-as','framelyaudiosink'],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
     try:
         time.sleep(2);assert airplay.poll() is None,airplay.stdout.read().decode()
         print('PASS: UxPlay starts with bundled decoders and consent sinks')
@@ -24,6 +24,15 @@ with tempfile.TemporaryDirectory(prefix='framely-media-test-') as directory:
         p.terminate();p.wait(timeout=3)
         assert not p.stderr.read(), 'GStreamer consent sink emitted errors'
     print('PASS: video consent gate')
+    # Exercise the H.264 decoder used by UxPlay desktop mirroring. Raw video
+    # alone cannot detect a hardware decoder producing corrupted frames.
+    encoded=root/'mirror.h264'
+    subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-f','lavfi','-i','smptebars=size=320x240:rate=30','-t','1','-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-f','h264',str(encoded)],check=True)
+    subprocess.run(['gst-launch-1.0','-q','filesrc',f'location={encoded}','!','h264parse','!','avdec_h264','!','videoconvert','!','framelyvideosink'],env=env,check=True,timeout=10)
+    reference=subprocess.check_output(['ffmpeg','-hide_banner','-loglevel','error','-i',str(encoded),'-frames:v','1','-pix_fmt','bgra','-f','rawvideo','pipe:1'])
+    pixels=frame.read_bytes()[16:]
+    assert len(pixels)==len(reference) and sum(abs(a-b) for a,b in zip(reference,pixels))/len(reference)<2,'AirPlay mirror decoded colors are corrupted'
+    print('PASS: AirPlay H.264 mirroring decoder and received colors')
     # Capture only a temporary null sink, not the user's active audio output.
     import array
     sink_name=f'framely_cast_test_{os.getpid()}'
