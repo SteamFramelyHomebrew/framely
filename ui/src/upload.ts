@@ -1,5 +1,6 @@
 type Transport={start:(size:number)=>Promise<{upload:string;chunkSize:number}>;chunk:(upload:string,offset:number,data:Blob,signal:AbortSignal)=>Promise<void>;abort:(upload:string)=>Promise<unknown>};
-export async function uploadFile(file:Pick<File,'size'|'slice'>,signal:AbortSignal,progress:(percent:number,received:number)=>void,transport:Transport):Promise<string>{
+export async function uploadFile(file:Pick<File,'size'|'slice'>,signal:AbortSignal,progress:(percent:number,received:number)=>void,transport:Transport,options:{concurrency?:number}={}):Promise<string>{
+ const concurrency=options.concurrency??4;if(!Number.isInteger(concurrency)||concurrency<1||concurrency>4)throw new Error('Invalid upload chunk concurrency');
  let ticket='',nextOffset=0,received=0;
  const controller=new AbortController();
  const cancel=()=>controller.abort(signal.reason);
@@ -20,7 +21,7 @@ export async function uploadFile(file:Pick<File,'size'|'slice'>,signal:AbortSign
     }
    }catch(error){controller.abort(error);throw error;}
   };
-  const results=await Promise.allSettled(Array.from({length:Math.min(4,Math.ceil(file.size/start.chunkSize))},worker));
+  const results=await Promise.allSettled(Array.from({length:Math.min(concurrency,Math.ceil(file.size/start.chunkSize))},worker));
   signal.throwIfAborted();
   const failed=results.find((result):result is PromiseRejectedResult=>result.status==='rejected');
   if(failed)throw controller.signal.reason??failed.reason;
