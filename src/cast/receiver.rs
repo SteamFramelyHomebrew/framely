@@ -216,6 +216,10 @@ impl Receivers {
                 self.sessions.insert(id.clone(), e.clone());
                 self.events
                     .push_back(json!({"kind":"cast.request","session":e}));
+            } else if kind=="request" && e["protocol"]=="AirPlay" && self.sessions[&id]["accepted"]!=true {
+                // SETUP can recur on an open control connection after the
+                // previous consent toast expired. Renew the pending request.
+                self.events.push_back(json!({"kind":"cast.request","session":self.sessions[&id]}));
             } else if matches!(kind, "video" | "audio") {
                 let session = self.sessions.get_mut(&id).unwrap();
                 if kind == "video" {
@@ -499,6 +503,24 @@ fn stop_child(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn airplay_setup_requests_consent_before_frames_and_after_reconnect() {
+        let root=tempfile::tempdir().unwrap();
+        let mut r=Receivers::new(root.path().to_owned(),root.path().join("bin"));
+        r.airplay_id="0123".into();
+        for _ in 0..2 {
+            r.event(json!({"event":"request","id":"0123","protocol":"AirPlay"}));
+            assert_eq!(r.events.pop_front().unwrap()["kind"],"cast.request");
+            assert!(r.window("0123").is_err());
+            r.event(json!({"event":"request","id":"0123","protocol":"AirPlay"}));
+            assert_eq!(r.events.pop_front().unwrap()["kind"],"cast.request");
+            r.control("0123","accept",json!({})).unwrap();
+            assert_eq!(r.window("0123").unwrap()["accepted"],true);
+            r.event(json!({"event":"ended","id":"0123","protocol":"AirPlay"}));
+            assert!(!root.path().join("0123.accept").exists());
+            r.events.clear();
+        }
+    }
     #[test]
     fn consent_blocks_playback_controls_and_rejects_stale_airplay_sessions() {
         let root = tempfile::tempdir().unwrap();

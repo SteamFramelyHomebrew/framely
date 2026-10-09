@@ -35,3 +35,30 @@ if 'framely_client_device' not in s:
     }
 '''+marker)
     p.write_text(s)
+
+# A GStreamer sink can survive successive audio sessions. Announce each valid
+# media SETUP independently of its first decoded buffer.
+s=p.read_text()
+if 'framely_media_request' not in s:
+    marker='    unsigned char type;\n    LOGI("ct=%d'
+    assert marker in s
+    s=s.replace(marker,'''    // framely_media_request: a new SETUP needs fresh consent after teardown.
+    const char* directory=getenv("FRAMELY_CAST_DIR"),*id=getenv("FRAMELY_CAST_ID");
+    if(directory&&id)FrameSink(directory,id,"AirPlay").event("request");
+    unsigned char type;
+    LOGI("ct=%d''',1)
+    p.write_text(s)
+
+# Mirroring may have no audio stream. Its size report arrives before decoding,
+# so it must also request consent independently of the decoder's first frame.
+s=p.read_text()
+if 'framely_mirror_request' not in s:
+    marker='extern "C" void video_report_size(void *cls, float *width_source, float *height_source, float *width, float *height) {'
+    assert marker in s
+    s=s.replace(marker,marker+'''
+    // framely_mirror_request: notify even while the video decoder is starting.
+    const char* directory=getenv("FRAMELY_CAST_DIR"),*id=getenv("FRAMELY_CAST_ID");
+    if(directory&&id&&*width_source>0&&*width_source<=4096&&*height_source>0&&*height_source<=4096)
+        FrameSink(directory,id,"AirPlay").event("request",(unsigned)*width_source,(unsigned)*height_source);
+''',1)
+    p.write_text(s)
