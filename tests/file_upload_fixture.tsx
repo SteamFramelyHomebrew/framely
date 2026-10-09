@@ -31,8 +31,10 @@ const modal=()=>document.querySelector('.modal');const click=(label:string,paren
   const folder=document.querySelector<HTMLElement>('.file-table [data-file-drop-directory]')!;drop(folder,true);await until(modal);
   if(modal()!.querySelector('code')?.textContent!==dest)throw Error('Folder target mismatch');
   if(calls.some(p=>p.operation==='upload.start')&&lang==='en-US')throw Error('Upload before confirmation');
+  if(modal()!.querySelectorAll('input[type="radio"]').length!==3||modal()!.querySelector('select'))throw Error('Conflict choices must be visible');
+  const choices=modal()!.querySelectorAll<HTMLInputElement>('input[type="radio"]');if(!choices[0].checked)throw Error('Keep both must be default');choices[2].click();await wait();if(!modal()!.querySelector('[role="status"]'))throw Error('Missing overwrite warning');choices[0].click();await wait();
   await wait(1400);console.log('FRAMELY_PREVIEW_INSTALL_UPLOAD_CONFIRM_'+(lang==='en-US'?'EN':'ZH'));await wait(200);
-  click(lang==='en-US'?'Confirm':'确认',modal()!);await until(()=>!modal());
+  click(lang==='en-US'?'Start upload':'开始上传',modal()!);await until(()=>!modal());
   if(document.querySelector('.file-upload-popover'))throw Error('Queue opened without a click');
   document.querySelector<HTMLButtonElement>('.file-upload-toggle')!.click();await until(()=>document.querySelector('.file-upload-task.uploading'));
   if(!document.querySelector('.file-upload-batch-count')?.textContent?.includes('2'))throw Error('Missing total file count');

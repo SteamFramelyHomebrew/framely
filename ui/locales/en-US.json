@@ -1047,6 +1047,13 @@
     "Upload destination moved or changed": "Upload destination moved or changed",
     "Upload file conflicts with a directory or special file": "Upload file conflicts with a directory or special file",
     "Upload directory conflicts with a file or symbolic link": "Upload directory conflicts with a file or symbolic link",
-    "{0} 项进行中 · 共 {1} 项": "{0} active · {1} total"
+    "{0} 项进行中 · 共 {1} 项": "{0} active · {1} total",
+    "上传到": "Upload to",
+    "{0} 个文件": "{0} files",
+    "{0} 个文件夹": "{0} folders",
+    "自动重命名上传的文件，保留原文件。": "Rename incoming files and keep the originals.",
+    "不上传同名文件，保留原文件。": "Leave matching files unchanged without uploading them.",
+    "用上传的文件替换原文件。": "Replace existing files with the incoming files.",
+    "开始上传": "Start upload"
   }
 }

@@ -305,3 +305,30 @@
 @media(max-width:767px) and (prefers-reduced-motion:no-preference){.manager .file-manager .file-sidebar{transition:transform .18s ease-out,visibility .18s}}
 .file-mobile-select-label{display:none}
 @media(max-width:767px){.manager .file-table th.file-check{position:relative;height:44px}.manager .file-page-check{display:flex;align-items:center;margin:0}.manager .file-select-mode .file-mobile-select-label{display:block;position:absolute;left:42px;top:50%;transform:translateY(-50%);white-space:nowrap;font-size:13px;color:var(--file-muted)}}
+
+/* Upload review: destination first, then a single mutually exclusive choice. */
+.file-manager .modal.file-upload-confirm{width:min(540px,calc(100% - 32px));left:50%;right:auto;transform:translate(-50%,-50%)}
+.file-upload-confirm h2{margin-bottom:24px}
+.file-upload-destination{display:flex;align-items:flex-start;gap:14px}
+.file-upload-destination>svg{flex:none;margin-top:4px;color:#c6c6ca}
+.file-upload-destination>div{min-width:0}
+.file-upload-destination span{display:block;font-size:14px;color:#bcbcc2;margin-bottom:6px}
+.file-upload-review .file-upload-destination code{display:block;padding:0;background:none;border-radius:0;font-size:18px;line-height:1.5;color:#f1f1f3;white-space:normal;overflow-wrap:anywhere}
+.file-upload-summary{display:flex;flex-wrap:wrap;gap:8px 18px;margin:18px 0 26px;padding-bottom:22px;border-bottom:1px solid #ffffff16;font-size:14px;color:#c6c6cc}
+.file-upload-summary strong{margin-left:auto;font-weight:500;color:#ededf0}
+.file-upload-policies{border:0;padding:0;margin:0;min-width:0}
+.file-upload-policies legend{padding:0;margin-bottom:12px;font-size:15px;font-weight:600;color:#ededf0}
+.file-manager .modal .file-upload-policies label{display:flex;flex-direction:row;align-items:center;gap:14px;padding:14px 16px;margin:0 0 8px;border:1px solid #ffffff18;border-radius:10px;background:#ffffff03;cursor:pointer}
+.file-upload-policies label:hover{background:#ffffff08}
+.file-upload-policies label.selected{border-color:#ffffff50;background:#ffffff0d;box-shadow:inset 0 1px 0 #ffffff09}
+.file-manager .modal .file-upload-policies input[type=radio]{appearance:auto;flex:none;width:18px;height:18px;min-height:0;margin:0;padding:0;accent-color:#d9d9de}
+.file-upload-policies label:focus-within{outline:2px solid #b9d6e9;outline-offset:2px}
+.file-upload-policies strong{display:block;font-size:15px;font-weight:600}
+.file-upload-policies small{display:block;font-size:13px;line-height:1.5;color:#bcbcc2;margin-top:4px}
+.file-upload-review .file-upload-note{font-size:13px;line-height:1.6;color:#bcbcc2;margin:14px 0 0}
+.file-upload-review .file-upload-warning{font-size:13px;line-height:1.6;color:#eed4ab;margin:12px 0 0}
+.file-upload-confirm footer{margin-top:24px}
+.file-upload-confirm footer button{white-space:nowrap}
+@media(max-width:767px){.file-upload-confirm h2{margin-bottom:20px}.file-upload-review .file-upload-destination code{font-size:16px}.file-upload-policies label{min-height:70px}.file-upload-summary{margin-bottom:20px}}
+
+.file-manager:has(.modal) .file-upload-queue{visibility:hidden}
