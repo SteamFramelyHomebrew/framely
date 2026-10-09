@@ -50,3 +50,18 @@
 
 .terminal-manager .terminal-shortcuts{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:#c3c3cb}
 @media(max-width:900px){.terminal-manager .terminal-status{flex-wrap:wrap;gap:4px 12px}.terminal-manager .terminal-shortcuts{order:3;flex-basis:100%;font-size:10px}}
+@media(max-width:767px){
+ .manager .terminal-manager .terminal-canvas{height:auto;min-height:0;padding:8px 6px 4px;flex:1;border-radius:0;border:0}
+ .manager .terminal-manager .terminal-touch-keys{display:flex;align-items:center;gap:4px;overflow-x:auto;flex:none;padding:6px;background:var(--manager-chrome-tint);border-top:1px solid #ffffff14}
+ .manager .terminal-touch-keys button{flex:none;min-height:44px;min-width:40px;padding:8px;background:#ffffff08;font-size:12px}
+ .manager .terminal-manager .terminal-status{min-height:24px;padding:4px 10px}
+ .manager .terminal-manager .terminal-shortcuts{display:none}
+ .manager .terminal-manager .terminal-toolbar{gap:4px;flex-wrap:nowrap;padding:4px 8px;min-height:48px}
+ .manager .terminal-manager .terminal-controls button{min-width:40px;padding:8px}
+ .manager .terminal-manager .terminal-controls button span{display:none}
+ .manager .terminal-manager .terminal-tab{max-width:170px}
+ .manager .terminal-manager .terminal-tabbar{gap:4px;min-height:48px}
+ .manager .terminal-manager .terminal-tabbar>button{font-size:0;min-width:44px;min-height:44px}
+ .terminal-paste-label{display:flex;flex-direction:column;gap:10px;font-size:14px}
+ .terminal-paste-label textarea{width:100%;min-height:120px;margin:0 0 12px;padding:12px;font-size:16px;background:#171719;color:#ededf0;border:1px solid #55555c;border-radius:12px}
+}

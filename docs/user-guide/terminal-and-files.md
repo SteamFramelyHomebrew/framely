@@ -6,9 +6,17 @@
 
 ## Manager navigation
 
-The top switcher contains **Plugin / APK / Terminal / Files / Settings**. Opening the device IP without a fragment starts in Plugin. Each section remembers its last subpage in the browser. Existing `#settings`, `#launcher-settings`, `#about` and `#updates` links continue to work.
+On desktop, the top switcher contains **Plugin / APK / Terminal / Files / Settings**. Opening the device IP without a fragment starts in Plugin. Each section remembers its last subpage in the browser. Existing `#settings`, `#launcher-settings`, `#about` and `#updates` links continue to work.
 
 Plugin contains installed plugins, the plugin library, sources and notification settings, including Framely's notifications. Plugin-specific settings remain in each plugin's management dialog. APK keeps its apps, containers and retained-data cleanup. Settings contains General, Launcher, Updates and About.
+
+## Mobile controls
+
+On phones, Plugin, APK, Terminal, Files and Settings use a bottom navigation bar. Tap the current page name in the header to choose a subpage. Dialogs open as bottom sheets with touch-sized controls. The layout reserves device safe areas and adjusts to the on-screen keyboard; the bottom navigation hides while the keyboard is open.
+
+In Files, **Browse folders** opens Quick access and the folder tree in a drawer. Selecting a folder closes the drawer. **Create and upload** and **Filters and view** open task sheets. Tap **Select**, select files, then use **Actions** in the selection bar for copying, moving, downloading or deleting. No right-click is needed. The upload queue continues while browsing or changing sections.
+
+Terminal provides Ctrl+C, Esc, Tab and arrow buttons above the keyboard. Ctrl+C interrupts the running program. **Paste** uses the browser clipboard when permitted; otherwise it opens a text field for the phone's native paste action and requires **Send to terminal**. The bar disables input while disconnected or read-only.
 
 ## Interaction feedback
 
