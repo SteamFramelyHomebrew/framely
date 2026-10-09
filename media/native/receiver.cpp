@@ -265,6 +265,18 @@ int main(int argc,char** argv) {
     try {
         if (argc<4) throw std::runtime_error("receiver DIRECTORY XMLDIR RECEIVE");
         directory=argv[1]; xml_directory=argv[2]; receive_enabled=!strcmp(argv[3],"1"); gst_init(&argc,&argv);
+        // Frame's V4L2/Vulkan decoders can return corrupted frames and block
+        // playback controls. Prefer the bundled FFmpeg software decoders.
+        for (const char* name : {"avdec_h264", "avdec_h265"}) {
+            auto* decoder=gst_element_factory_find(name);
+            if (!decoder) throw std::runtime_error(std::string("Required decoder unavailable: ")+name);
+            gst_plugin_feature_set_rank(GST_PLUGIN_FEATURE(decoder),GST_RANK_PRIMARY+100);
+            gst_object_unref(decoder);
+        }
+        for (const char* name : {"v4l2h264dec", "v4l2h265dec", "vulkanh264dec", "vulkanh265dec"}) {
+            auto* decoder=gst_element_factory_find(name);
+            if (decoder) { gst_plugin_feature_set_rank(GST_PLUGIN_FEATURE(decoder),GST_RANK_NONE); gst_object_unref(decoder); }
+        }
         auto* manager=gupnp_context_manager_create_full(GSSDP_UDA_VERSION_1_0,G_SOCKET_FAMILY_IPV4,0);
         g_signal_connect(manager,"context-available",G_CALLBACK(context_available),nullptr);
         loop=g_main_loop_new(nullptr,false); auto* channel=g_io_channel_unix_new(STDIN_FILENO); g_io_add_watch(channel,(GIOCondition)(G_IO_IN|G_IO_HUP),input,nullptr);

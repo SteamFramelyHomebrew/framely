@@ -55,7 +55,7 @@ with tempfile.TemporaryDirectory(prefix='framely-media-test-') as directory:
     for source in Path(args.upnp).glob('*.xml'):shutil.copyfile(source,xml/source.name)
     services=''.join(f'<service><serviceType>urn:schemas-upnp-org:service:{s}:1</serviceType><serviceId>urn:upnp-org:serviceId:{s}</serviceId><SCPDURL>/{s}.xml</SCPDURL><controlURL>/{s}/control</controlURL><eventSubURL>/{s}/event</eventSubURL></service>' for s in ['AVTransport','RenderingControl','ConnectionManager'])
     (xml/'device.xml').write_text(f'<root xmlns="urn:schemas-upnp-org:device-1-0"><specVersion><major>1</major><minor>0</minor></specVersion><device><deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType><friendlyName>Framely test</friendlyName><manufacturer>Framely</manufacturer><modelName>Test</modelName><UDN>uuid:56ce7555-6baf-4360-bbd6-61a32b06b6aa</UDN><serviceList>{services}</serviceList></device></root>')
-    subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-f','lavfi','-i','testsrc2=size=320x240:rate=10','-t','8','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+faststart',str(root/'video.mp4')],check=True)
+    subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-f','lavfi','-i','smptebars=size=320x240:rate=10','-t','8','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+faststart',str(root/'video.mp4')],check=True)
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self,*a,**k):super().__init__(*a,directory=directory,**k)
         def log_message(self,*a):pass
@@ -106,11 +106,13 @@ with tempfile.TemporaryDirectory(prefix='framely-media-test-') as directory:
         def control(kind,id,**fields):
             global sequence
             sequence+=1
+            started=time.monotonic()
             p.stdin.write(json.dumps(dict(kind=kind,id=id,request=sequence,**fields))+'\n');p.stdin.flush()
             while True:
                 reply=read()
                 if reply.get('request')==sequence:
                     assert 'error' not in reply,reply
+                    assert time.monotonic()-started<2,'Playback control blocked the receive service'
                     return reply['result']
         soap('SetAVTransportURI',dict(InstanceID=0,CurrentURI=uri,CurrentURIMetaData=''))
         request=read()
@@ -123,6 +125,13 @@ with tempfile.TemporaryDirectory(prefix='framely-media-test-') as directory:
         while event['id']!=id:event=json.loads(events.recv(4096))
         assert event['width']==320,event
         time.sleep(.2);assert frame.stat().st_size==16+320*240*4
+        # Decode a known static color pattern through the actual receive pipeline.
+        # A frame with the right size can still contain green/corrupted pixels.
+        import fcntl
+        reference=subprocess.check_output(['ffmpeg','-hide_banner','-loglevel','error','-i',str(root/'video.mp4'),'-frames:v','1','-pix_fmt','bgra','-f','rawvideo','pipe:1'])
+        with frame.open('rb') as captured:
+            fcntl.flock(captured,fcntl.LOCK_SH);captured.read(16);pixels=captured.read()
+        assert sum(abs(a-b) for a,b in zip(reference,pixels))/len(reference)<2,'DLNA decoded colors are corrupted'
         status=control('status',id)
         assert 7.9<=status['duration']<=8.1,status
         control('pause',id,paused=True);assert control('status',id)['paused'] is True
