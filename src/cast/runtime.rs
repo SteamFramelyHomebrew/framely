@@ -430,6 +430,9 @@ impl Casting {
             ffmpeg.args([
                 "-fflags",
                 "+genpts",
+                "-thread_queue_size", "4",
+                "-probesize", "32768",
+                "-analyzeduration", "0",
                 "-use_wallclock_as_timestamps",
                 "1",
                 "-framerate",
@@ -440,14 +443,14 @@ impl Casting {
                 "pipe:0",
             ]);
         } else {
-            ffmpeg.args(["-f", "v4l2", "-i", "/dev/video99"]);
+            ffmpeg.args(["-thread_queue_size", "4", "-f", "v4l2", "-i", "/dev/video99"]);
         }
         let audio = s.system_audio || s.microphone;
         if s.system_audio {
-            ffmpeg.args(["-f", "pulse", "-i", "@DEFAULT_MONITOR@"]);
+            add_pulse_input(&mut ffmpeg, "@DEFAULT_MONITOR@");
         }
         if s.microphone {
-            ffmpeg.args(["-f", "pulse", "-i", "default"]);
+            add_pulse_input(&mut ffmpeg, "default");
         }
         ffmpeg.args(["-map", "0:v:0"]);
         if s.system_audio && s.microphone {
@@ -467,11 +470,13 @@ impl Casting {
                 "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-profile:v", "baseline", "-bf", "0", "-g", &s.fps.to_string(), "-b:v", &format!("{}M",s.bitrate_mbps)]);
         }
         if audio {
-            ffmpeg.args(["-c:a", "libopus", "-b:a", "96k", "-ar", "48000"]);
+            ffmpeg.args(["-c:a", "libopus", "-b:a", "96k", "-ar", "48000", "-application", "lowdelay", "-frame_duration", "10"]);
         } else {
             ffmpeg.arg("-an");
         }
         ffmpeg.args([
+            "-max_interleave_delta", "100000",
+            "-flush_packets", "1",
             "-f",
             "rtsp",
             "-rtsp_transport",
@@ -562,6 +567,12 @@ pub fn binary_directory(assets: &Path) -> PathBuf {
     } else {
         root.join("media/bin")
     }
+}
+
+// Pulse defaults to large fragments. Small fragments and independent, bounded
+// input queues prevent a blocking audio read from backing up live video.
+fn add_pulse_input(command: &mut Command, device: &str) {
+    command.args(["-thread_queue_size", "4", "-f", "pulse", "-sample_rate", "48000", "-channels", "2", "-fragment_size", "3840", "-i", device]);
 }
 
 pub fn bind_to_session(command: &mut Command) {
