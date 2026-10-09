@@ -284,7 +284,7 @@ static void anchor_notification(View& v){
 }
 static View& create_view(const std::string& key,const std::string& title,const std::string& url,bool dock,int width,int height,const std::string& plugin="",float physical_width=0){
  // Plugin windows always use Steam window controls; dock only controls the tab.
- const bool dashboard=dock||!plugin.empty();
+ const bool dashboard=dock||!plugin.empty()||key.rfind("framely.cast.",0)==0;
  if(views.count(key)){auto& v=*views.at(key);if(v.dashboard&&key!="launcher")overlays->ShowDashboard(key.c_str());else if(key!="notifications"&&key!="launcher")show(v,true);return v;}
  // Use 1.5x for launcher artwork and 2x for scrolling panels. CEF readback,
  // texture upload and launcher mipmap generation scale with the pixel count.
