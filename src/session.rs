@@ -2133,7 +2133,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));assert_eq!(agent.casting.lock().unwrap().status()["running"],true);
         if std::env::var_os("FRAMELY_CAST_TEST_DLNA").is_some() {
             let mut cast=agent.casting.lock().unwrap();cast.ensure_dlna().unwrap();
-            let rtsp=cast.rtsp_port;
+            let rtsp=cast.test_rtsp_port();
             for (path,codec) in [("headset",if settings.codec==crate::cast::settings::Codec::H265 {"hevc"}else{"h264"}),("dlna","h264")] {
                 std::thread::sleep(Duration::from_millis(500));
                 let output=Command::new("timeout").args(["15","ffprobe","-v","error","-rtsp_transport","tcp","-show_entries","stream=codec_name,width,height,r_frame_rate","-of","json",&format!("rtsp://127.0.0.1:{rtsp}/{path}")]).output().unwrap();

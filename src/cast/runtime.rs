@@ -98,6 +98,8 @@ impl Casting {
     }
     /// Negotiate with browsers that omit H.264 (including the bundled CEF).
     /// All VP8 viewers share one on-demand compatibility encoder.
+    #[cfg(test)]
+    pub(crate) fn test_rtsp_port(&self) -> u16 {self.rtsp_port}
     pub fn codec(&self) -> Codec { self.active_settings.as_ref().map(|s|s.codec).unwrap_or_default() }
     pub fn ensure_vp8(&mut self) -> Result<()> {
         ensure!(self.status()["running"] == true, "请先开始头显串流");
@@ -472,6 +474,11 @@ impl Casting {
         }
         if s.source == Source::Screen {
             ffmpeg.args(["-c:v", "copy"]);
+            if s.codec==Codec::H265 {
+                // Iris HEVC headers omit reliable frame timing. Write the requested
+                // timing without decoding/re-encoding, avoiding false 50 fps playback.
+                ffmpeg.args(["-bsf:v",&format!("hevc_metadata=tick_rate={}:num_ticks_poc_diff_one=1",s.fps)]);
+            }
         } else {
             ffmpeg.args(["-vf", &format!("fps={},scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,format=yuv420p",s.fps,s.width,s.height,s.width,s.height),
                 "-c:v", if s.codec==Codec::H265 {"libx265"} else {"libx264"}, "-preset", "ultrafast", "-tune", "zerolatency", "-bf", "0", "-g", &s.fps.to_string(), "-b:v", &format!("{}M",s.bitrate_mbps)]);
