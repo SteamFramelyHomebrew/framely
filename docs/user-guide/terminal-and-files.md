@@ -38,7 +38,7 @@ The file list provides hidden-file visibility, sorting, checkboxes for multiple 
 
 **Actions** provides copy, cut, paste, rename, delete, properties, permission editing, compression, extraction and opening files. Right-click a file or folder to open a menu at the pointer; right-clicking a selected item preserves the multi-selection. Right-click the empty list area for new file/folder, paste, upload and refresh actions. Escape or clicking elsewhere closes the menu. Symbolic links have an arrow marker and their target in Properties. Copy preserves links; deleting a link does not delete its target. Special filesystem objects cannot be copied or archived.
 
-Copy, move, upload and extraction let you skip conflicts, keep both names or confirm replacement for the batch. Replacement of a same-name folder replaces that whole folder; it does not merge its contents. Long tasks show actual bytes or completed entries, can be cancelled, and report individual failures. Completed items remain completed when a later item fails or the task is cancelled. Switching manager sections keeps active file work and editor state in the current page.
+Copy, move and extraction let you skip conflicts, keep both names or confirm replacement for the batch. Replacement of a same-name folder replaces that whole folder; it does not merge its contents. Long tasks show actual bytes or completed entries, can be cancelled, and report individual failures. Completed items remain completed when a later item fails or the task is cancelled. Switching manager sections keeps active file work and editor state in the current page.
 
 ## Recycle bin
 
@@ -48,7 +48,17 @@ The recycle bin supports restoring with an unused name or keeping both copies, p
 
 ## Transfer and edit
 
-Upload multiple files or a folder from your browser. Transfers use 1 MiB chunks, byte progress and private temporary files; only a completed upload receives its final filename. Cancelled uploads are removed and hourly maintenance removes transfers idle for at least an hour. A stopped service may leave clearly named `.framely-upload-*` temporary files, never a falsely complete final file. Uploads are limited to 64 GiB per file and 64 simultaneous transfer records.
+Drag files, folders or a mixed selection from your computer onto a folder in the list, icon grid, sidebar or breadcrumbs. Drop onto empty file-list space to upload into the current folder. The highlighted target shows its path. Files, the recycle-bin content and preview overlays are not upload destinations.
+
+Before any writing, a confirmation shows the canonical destination path, counts and total size. Choose **Skip**, **Overwrite** or **Keep both** (default). Existing folders are merged; the policy applies only to same-name files and other destination files are retained. Skip is checked before transfer. Overwrite replaces the original only after successful completion; keep-both results show the new filename. Type conflicts fail individually. Destination changes and nested symbolic-link traversal are rejected.
+
+**Upload queue** groups selections by destination and provides individual/batch cancellation, retry of failed tasks and removal of finished records. **Simultaneous file uploads** defaults to 3, accepts 1–8, and is saved for the device user independently of view and folder sorting. Increasing it starts more work immediately; reducing it lets active files finish. Each file uses at most two chunk requests; the queue has at most eight chunk requests in flight. Browsing and changing manager sections do not stop uploads or change their destination.
+
+Folder drag-and-drop preserves empty folders. The Upload folder button uses the browser directory API when available; its legacy file-input fallback can only return files, so use drag-and-drop for empty folders. Large directories are enumerated asynchronously; folder readers are drained until empty. A selection may contain at most 100,000 entries.
+
+The queue lasts only for this browser page. Refreshing or closing warns about unfinished work and attempts cancellation; server inactivity cleanup is the fallback. Completed files are retained. Failed transfers retry from the beginning; there is no cross-refresh resume.
+
+Upload multiple files or a folder from your browser. Transfers use 16 MiB chunks, byte progress and private temporary files; only a completed upload receives its final filename. Cancelled uploads are removed and hourly maintenance removes transfers idle for at least an hour. A stopped service may leave clearly named `.framely-upload-*` temporary files, never a falsely complete final file. Uploads are limited to 64 GiB per file and 64 simultaneous transfer records.
 
 Download a single file directly, or select multiple files/folders to download a ZIP. Download links expire after an hour. Large files stream without loading the entire file into memory; single-byte ranges support video seeking and resuming downloads.
 
