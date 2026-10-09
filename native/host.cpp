@@ -283,16 +283,18 @@ static void anchor_notification(View& v){
  v.placement.curve(overlays,v.overlay,toast.width,toast.radius);
 }
 static View& create_view(const std::string& key,const std::string& title,const std::string& url,bool dock,int width,int height,const std::string& plugin="",float physical_width=0){
- if(views.count(key)){auto& v=*views.at(key);if(dock&&key!="launcher")overlays->ShowDashboard(key.c_str());else if(key!="notifications"&&key!="launcher")show(v,true);return v;}
+ // Plugin windows always use Steam window controls; dock only controls the tab.
+ const bool dashboard=dock||!plugin.empty();
+ if(views.count(key)){auto& v=*views.at(key);if(v.dashboard&&key!="launcher")overlays->ShowDashboard(key.c_str());else if(key!="notifications"&&key!="launcher")show(v,true);return v;}
  // Use 1.5x for launcher artwork and 2x for scrolling panels. CEF readback,
  // texture upload and launcher mipmap generation scale with the pixel count.
- if(views.size()>=34)throw std::runtime_error("Window limit exceeded");auto v=std::make_unique<View>();v->key=key;v->plugin=plugin;v->title=title;v->dashboard=dock;v->width=width;v->height=height;v->render_scale=key=="launcher"?1.5f:(key=="framely.manager"||key=="menu"||key=="notifications")?2:1;
- auto error=dock?overlays->CreateDashboardOverlay(key.c_str(),title.c_str(),&v->overlay,&v->thumbnail):overlays->CreateOverlay(key.c_str(),title.c_str(),&v->overlay);if(error)throw std::runtime_error("Overlay creation failed: "+std::to_string(error));
+ if(views.size()>=34)throw std::runtime_error("Window limit exceeded");auto v=std::make_unique<View>();v->key=key;v->plugin=plugin;v->title=title;v->dashboard=dashboard;v->width=width;v->height=height;v->render_scale=key=="launcher"?1.5f:(key=="framely.manager"||key=="menu"||key=="notifications")?2:1;
+ auto error=dashboard?overlays->CreateDashboardOverlay(key.c_str(),title.c_str(),&v->overlay,&v->thumbnail):overlays->CreateOverlay(key.c_str(),title.c_str(),&v->overlay);if(error)throw std::runtime_error("Overlay creation failed: "+std::to_string(error));
  overlays->SetOverlayInputMethod(v->overlay,key=="notifications"?vr::VROverlayInputMethod_None:vr::VROverlayInputMethod_Mouse);vr::HmdVector2_t scale{{float(width),float(height)}};overlays->SetOverlayMouseScale(v->overlay,&scale);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_HideLaserIntersection,false);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_SendVRSmoothScrollEvents,true);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_VisibleInDashboard,true);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,true);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_SortWithNonSceneOverlays,false);overlays->SetOverlaySortOrder(v->overlay,0);
 
  // Keep the runtime's full dashboard controls, including its keyboard and close buttons.
- if(dock){
-  if(key=="launcher")overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_NoDashboardTab,true);
+ if(dashboard){
+  overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_NoDashboardTab,!dock||key=="launcher");
   auto result=overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_MinimalControlBar,key=="launcher");
   if(result)std::cerr<<"Dashboard controls unavailable "<<key<<" "<<result<<"\n";
   for(auto flag:{vr::VROverlayFlags_EnableControlBarKeyboard,vr::VROverlayFlags_EnableControlBarClose}){
@@ -300,9 +302,9 @@ static View& create_view(const std::string& key,const std::string& title,const s
    if(result)std::cerr<<"Dashboard control unavailable "<<key<<" "<<result<<"\n";
   }
  }
- if(dock){auto pixels=icon(false,true);overlays->SetOverlayRaw(v->thumbnail,pixels.data(),128,128,4);overlays->SetOverlayWidthInMeters(v->overlay,physical_width>0?physical_width:(key=="framely.manager"?3.2f:key=="launcher"?3.6f:1.2f));}else if(key!="menu"&&key!="notifications"&&key!="launcher"){anchor_to_head(*v,physical_width>0?physical_width:1.0f);}
+ if(dashboard){auto pixels=icon(false,true);overlays->SetOverlayRaw(v->thumbnail,pixels.data(),128,128,4);overlays->SetOverlayWidthInMeters(v->overlay,physical_width>0?physical_width:(key=="framely.manager"?3.2f:key=="launcher"?3.6f:1.2f));}else if(key!="menu"&&key!="notifications"&&key!="launcher"){anchor_to_head(*v,physical_width>0?physical_width:1.0f);}
  cef_window_info_t info{};info.size=sizeof(info);info.windowless_rendering_enabled=1;info.runtime_style=CEF_RUNTIME_STYLE_ALLOY;cef_browser_settings_t bs{};bs.size=sizeof(bs);bs.windowless_frame_rate=browser_frame_rate();bs.background_color=0;std::cout<<"Browser frame rate "<<key<<" "<<bs.windowless_frame_rate<<"\n";cef_string_t uri{};str(uri,url);auto* browser=cef_browser_host_create_browser_sync(&info,&client.api,&uri,&bs,nullptr,nullptr);cef_string_utf16_clear(&uri);
- if(!browser){overlays->DestroyOverlay(v->overlay);if(v->thumbnail)overlays->DestroyOverlay(v->thumbnail);throw std::runtime_error("Browser creation failed");}v->browser=browser;v->browser_id=browser->get_identifier(browser);v->host=browser->get_host(browser);glGenTextures(2,v->textures);auto* ptr=v.get();views.emplace(key,std::move(v));ptr->host->notify_screen_info_changed(ptr->host);ptr->host->was_resized(ptr->host);ptr->host->was_hidden(ptr->host,key!="notifications");if(dock&&key!="launcher")overlays->ShowDashboard(key.c_str());else if(key!="menu"&&key!="notifications"&&key!="launcher")show(*ptr,true);return *ptr;
+ if(!browser){overlays->DestroyOverlay(v->overlay);if(v->thumbnail)overlays->DestroyOverlay(v->thumbnail);throw std::runtime_error("Browser creation failed");}v->browser=browser;v->browser_id=browser->get_identifier(browser);v->host=browser->get_host(browser);glGenTextures(2,v->textures);auto* ptr=v.get();views.emplace(key,std::move(v));ptr->host->notify_screen_info_changed(ptr->host);ptr->host->was_resized(ptr->host);ptr->host->was_hidden(ptr->host,key!="notifications");if(ptr->dashboard&&key!="launcher")overlays->ShowDashboard(key.c_str());else if(key!="menu"&&key!="notifications"&&key!="launcher")show(*ptr,true);return *ptr;
 }
 static void plugin_thumbnail(View& view,const std::string& encoded){
  if(!view.thumbnail||encoded.empty()||encoded.size()>1400000)return;

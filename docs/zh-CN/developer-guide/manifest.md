@@ -76,7 +76,7 @@
 | 字段 | 说明 |
 | --- | --- |
 | `entry` / `title` | 必填；入口需在 payload；标题非空且最多 120 字节 |
-| `dockIcon` | 默认 false，true 为独立 Dock 窗口 |
+| `dockIcon` | 默认 false，仅控制是否显示 Dock 图标；两种窗口均使用相同的 SteamVR 窗口控件 |
 | `width` / `height` | 默认 1600×900；宽 640–2560，高 360–1440 |
 | `widthMeters` | 默认 3.0；有效值 0.4–4.0 米。源码可读取 null，但打包会省略，再读取采用默认 3.0 |
 | `localWeb` | 默认 false；特殊本机网页窗口由后端 `window.get` 提供 localhost URL |

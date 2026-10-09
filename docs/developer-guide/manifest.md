@@ -76,7 +76,7 @@ Optional `quickPage` points to a payload bundle. `windows` defaults to an empty 
 | Field | Meaning |
 | --- | --- |
 | `entry` / `title` | Required payload entry and nonempty title ≤120 bytes |
-| `dockIcon` | false by default; true creates a Dock window |
+| `dockIcon` | false by default; controls Dock icon visibility only. Both values use the same SteamVR window controls |
 | `width` / `height` | Default 1600×900; width 640–2560, height 360–1440 |
 | `widthMeters` | Default 3.0; finite 0.4–4.0 meters. Source null is accepted but omitted during packaging, then reads back as default 3.0 |
 | `localWeb` | false by default; specialized localhost windows obtain a URL from backend `window.get` |

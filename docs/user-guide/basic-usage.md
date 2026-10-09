@@ -19,7 +19,7 @@ The manager opens a separate large window with five sections: Plugin, APK, Termi
 
 Enable, disable or favorite plugins in the list. Enabled means available for use; backends normally start on demand. Only plugins declaring `autostart` remain resident after startup. Closing a plugin window generally does not disable its backend. Dependency or conflict problems are explained, and affected plugins are shown before changes.
 
-Dock windows use SteamVR close controls. Temporary windows may be destroyed when switching views. Individual plugin interfaces and behavior are maintained by their developers.
+Plugin windows use the same SteamVR move, resize, keyboard and close controls, with or without a Dock icon. Individual plugin interfaces and behavior are maintained by their developers.
 
 ## Settings and diagnostics
 
