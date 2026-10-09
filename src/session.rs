@@ -901,7 +901,8 @@ impl Agent {
                 "cast.window" => {
                     let _=self.core("notification.remove",json!({"plugin":"","id":format!("cast.{id}")}));
                     let w=session["width"].as_u64().unwrap_or(0);let h=session["height"].as_u64().unwrap_or(0);
-                    let width=if w>0 { w.min(1920) } else {640};let height=if w>0&&h>0 {width*h/w}else{240};
+                    let video=session["mediaType"]=="video";
+                    let width=if w>0 { w.min(1920) } else if video {1280} else {640};let height=if w>0&&h>0 {width*h/w}else if video {720}else{240};
                     let frame=self.receivers.lock().unwrap().directory.join(format!("{id}.frame"));
                     push(&self.commands,json!({"kind":"cast.window","id":id,"width":width,"height":height,"frame":frame}));
                 },

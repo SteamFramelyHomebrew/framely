@@ -3,10 +3,10 @@ import {IconMusic,IconPlayerPause,IconPlayerPlay,IconPlayerStop,IconVolume,IconV
 import {api} from './api';
 import {CastRange} from './cast-range';
 import {t} from './i18n';
-type Session={id:string;protocol:string;width?:number;height?:number;error?:string};
+type Session={id:string;protocol:string;mediaType?:string;width?:number;height?:number;error?:string};
 export function CastPlayer(){
  const id=location.pathname.split('/').pop()!,[session,setSession]=useState<Session|null>(null),[status,setStatus]=useState({paused:false,position:0,duration:0,seekable:false}),[error,setError]=useState(''),[volume,setVolume]=useState(1),[seek,setSeek]=useState<number|null>(null),[busy,setBusy]=useState(false),[visible,setVisible]=useState(true);
- const timer=useRef<ReturnType<typeof setTimeout>|null>(null),root=useRef<HTMLElement>(null),video=!!session?.width&&!!session?.height;
+ const timer=useRef<ReturnType<typeof setTimeout>|null>(null),root=useRef<HTMLElement>(null),video=session?.mediaType==='video'||(!!session?.width&&!!session?.height);
  function reveal(){setVisible(true);if(timer.current)clearTimeout(timer.current);if(video&&!status.paused)timer.current=setTimeout(()=>{if(!root.current?.querySelector(':focus-visible'))setVisible(false);},3000);}
  useEffect(()=>{reveal();return()=>{if(timer.current)clearTimeout(timer.current);};},[video,status.paused]);
  useEffect(()=>{let alive=true;const poll=()=>void Promise.all([api<Session>('cast.window',{id}),api<typeof status>('cast.control',{id,action:'status'})]).then(([session,status])=>{if(alive){setSession(session);setStatus(status);}}).catch(e=>{if(alive)setError(e.message);});poll();const interval=setInterval(poll,1000);return()=>{alive=false;clearInterval(interval);};},[id]);

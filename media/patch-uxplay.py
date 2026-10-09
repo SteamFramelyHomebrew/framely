@@ -62,3 +62,18 @@ if 'framely_mirror_request' not in s:
         FrameSink(directory,id,"AirPlay").event("request",(unsigned)*width_source,(unsigned)*height_source);
 ''',1)
     p.write_text(s)
+
+# Classify media before a decoded buffer arrives, including URL playback.
+s=p.read_text()
+if 'framely_media_kind' not in s:
+    marker='if(directory&&id)FrameSink(directory,id,"AirPlay").event("request");'
+    assert marker in s
+    s=s.replace(marker, 'if(directory&&id)FrameSink(directory,id,"AirPlay").event("request",0,0,*usingScreen?"video":"audio"); // framely_media_kind',1)
+    marker='extern "C" void on_video_play(void *cls, const char* location, const float start_position) {'
+    assert marker in s
+    s=s.replace(marker, marker+'\n    const char* directory=getenv("FRAMELY_CAST_DIR"),*id=getenv("FRAMELY_CAST_ID");\n    if(directory&&id)FrameSink(directory,id,"AirPlay").event("request",0,0,"video");',1)
+    # stdout is a file in production; retain useful errors before a restart.
+    s=s.replace('    va_end(vargs);', '    va_end(vargs);\n    fflush(stdout);',1)
+    p.write_text(s)
+from shutil import copyfile
+copyfile(Path(__file__).parent/'native/frame_sink.h',p.parent/'framely/frame_sink.h')

@@ -16,10 +16,10 @@
 struct FrameSink {
  std::string directory,id,protocol; std::atomic<bool> announced{false}; std::atomic<unsigned> width{0},height{0};
  FrameSink(std::string d,std::string i,std::string p):directory(d),id(i),protocol(p){}
- void event(const std::string& type,unsigned w=0,unsigned h=0){
+ void event(const std::string& type,unsigned w=0,unsigned h=0,const std::string& media=""){
   int fd=socket(AF_UNIX,SOCK_DGRAM|SOCK_CLOEXEC,0); if(fd<0)return;
   sockaddr_un a{};a.sun_family=AF_UNIX; auto path=directory+"/events.sock";if(path.size()>=sizeof(a.sun_path)){close(fd);return;}strcpy(a.sun_path,path.c_str());
-  auto msg="{\"event\":\""+type+"\",\"id\":\""+id+"\",\"protocol\":\""+protocol+"\",\"width\":"+std::to_string(w)+",\"height\":"+std::to_string(h)+"}";
+  auto msg="{\"event\":\""+type+"\",\"id\":\""+id+"\",\"protocol\":\""+protocol+"\",\"width\":"+std::to_string(w)+",\"height\":"+std::to_string(h)+",\"mediaType\":\""+media+"\"}";
   sendto(fd,msg.data(),msg.size(),MSG_DONTWAIT,(sockaddr*)&a,sizeof(a));close(fd);
  }
  bool accepted() const {return access((directory+"/"+id+".accept").c_str(),F_OK)==0;}

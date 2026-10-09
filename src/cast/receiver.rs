@@ -216,19 +216,25 @@ impl Receivers {
                 self.sessions.insert(id.clone(), e.clone());
                 self.events
                     .push_back(json!({"kind":"cast.request","session":e}));
-            } else if kind=="request" && e["protocol"]=="AirPlay" && self.sessions[&id]["accepted"]!=true {
-                // SETUP can recur on an open control connection after the
-                // previous consent toast expired. Renew the pending request.
-                self.events.push_back(json!({"kind":"cast.request","session":self.sessions[&id]}));
-            } else if matches!(kind, "video" | "audio") {
+            } else {
                 let session = self.sessions.get_mut(&id).unwrap();
-                if kind == "video" {
+                let mut changed = false;
+                if e["width"].as_u64().unwrap_or(0) > 0 && e["height"].as_u64().unwrap_or(0) > 0 {
+                    changed = session["width"] != e["width"] || session["height"] != e["height"];
                     session["width"] = e["width"].clone();
                     session["height"] = e["height"].clone();
+                    session["mediaType"] = json!("video");
+                } else if e["mediaType"] == "video" && session["mediaType"] != "video" {
+                    session["mediaType"] = json!("video");
+                    changed = true;
                 }
                 if session["accepted"] == true {
-                    self.events
-                        .push_back(json!({"kind":"cast.window","session":session.clone()}));
+                    if changed || matches!(kind, "video" | "audio") {
+                        self.events.push_back(json!({"kind":"cast.window","session":session.clone()}));
+                    }
+                } else if kind == "request" && e["protocol"] == "AirPlay" {
+                    session["createdAt"] = json!(crate::service::now_ms());
+                    self.events.push_back(json!({"kind":"cast.request","session":session.clone()}));
                 }
             }
         } else if matches!(kind, "ended" | "error") {
@@ -520,6 +526,24 @@ mod tests {
             assert!(!root.path().join("0123.accept").exists());
             r.events.clear();
         }
+    }
+    #[test]
+    fn airplay_video_setup_promotes_audio_session_before_decoding() {
+        let root = tempfile::tempdir().unwrap();
+        let mut r = Receivers::new(root.path().to_owned(), root.path().join("bin"));
+        r.airplay_id = "0123".into();
+        r.event(json!({"event":"request","id":"0123","protocol":"AirPlay","mediaType":"audio"}));
+        r.control("0123", "accept", json!({})).unwrap();
+        r.events.clear();
+        r.event(json!({"event":"request","id":"0123","protocol":"AirPlay","mediaType":"video"}));
+        assert_eq!(r.window("0123").unwrap()["mediaType"], "video");
+        assert_eq!(r.events.pop_front().unwrap()["kind"], "cast.window");
+        r.event(json!({"event":"request","id":"0123","protocol":"AirPlay","width":1080,"height":1920}));
+        let update = r.events.pop_front().unwrap();
+        assert_eq!(update["session"]["width"], 1080);
+        assert_eq!(update["session"]["height"], 1920);
+        r.event(json!({"event":"audio","id":"0123","protocol":"AirPlay","mediaType":"audio"}));
+        assert_eq!(r.window("0123").unwrap()["mediaType"], "video");
     }
     #[test]
     fn consent_blocks_playback_controls_and_rejects_stale_airplay_sessions() {
