@@ -264,6 +264,12 @@ impl Casting {
         if self.active_settings.as_ref().is_some_and(|s|s.codec==Codec::H265) {command.args(["-c:v","libx264","-preset","ultrafast","-tune","zerolatency","-profile:v","baseline","-bf","0","-r",&self.active_settings.as_ref().unwrap().fps.to_string(),"-fps_mode","passthrough"]);} else {command.args(["-c:v","copy"]);}
         command.arg(&target);
         self.spawn(&mut command)?;
+        let deadline=Instant::now()+Duration::from_secs(12);
+        while !self.path_ready("dlna") {
+            ensure!(self.workers.last_mut().unwrap().try_wait()?.is_none(),"DLNA 兼容编码启动失败：{}",fs::read_to_string(self.directory.join("stream.log")).unwrap_or_default());
+            ensure!(Instant::now()<deadline,"DLNA 兼容编码启动超时");
+            std::thread::sleep(Duration::from_millis(50));
+        }
         self.dlna_started = true;
         Ok(())
     }
