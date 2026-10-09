@@ -1969,6 +1969,9 @@ pub fn serve(
                     "--disable-background-networking",
                     "--disable-component-update",
                     "--no-default-browser-check",
+                    // Keep Chromium's fork-time stack guard compatible with the
+                    // system libc and helper processes used on SteamOS.
+                    "--change-stack-guard-on-fork=disable",
                 ])
                 .env("FRAMELY_NATIVE_TOKEN", &native_key)
                 .env("FRAMELY_STEAM_ROOT", {
