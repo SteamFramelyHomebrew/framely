@@ -1404,7 +1404,7 @@ impl Agent {
                         && (matches!(
                             view,
                             "menu" | "launcher" | "framely.manager" | "notifications"
-                        ) || view.starts_with("framely.window.")),
+                        ) || view.starts_with("framely.window.") || view.starts_with("framely.cast.")),
                     "Invalid haptic view"
                 );
                 let feedback = p["feedback"].as_str().unwrap_or("hover");
@@ -1935,6 +1935,11 @@ pub fn serve(
                     .contains(&e["kind"].as_str().unwrap_or(""))
                     {
                         let mut command = e.clone();
+                        if command["kind"] == "notification.changed" {
+                            if let Ok(status) = event_agent.core("status", json!({})) {
+                                command["visible"] = json!(status["notifications"].as_array().is_some_and(|items|!items.is_empty()));
+                            }
+                        }
                         if let Some(path) = command["spec"]["iconPath"].as_str() {
                             if let Ok(bytes) = fs::read(path) {
                                 if bytes.len() <= 1024 * 1024 {
