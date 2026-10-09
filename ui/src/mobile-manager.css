@@ -1,0 +1,116 @@
+/* Mobile product navigation: app chrome 30, contextual drawers 70, sheets 80.
+   Preserve the existing neutral theme. 12px controls, 20px sheet tops, pill nav items. */
+.manager-section-icon,.mobile-page-picker,.file-mobile-tools,.terminal-touch-keys{display:none}
+.mobile-sheet-backdrop{position:absolute;inset:0;z-index:80;background:#09090b99;display:flex;align-items:flex-end}
+.mobile-sheet{display:flex;flex-direction:column;width:100%;max-height:90%;background:#242426;border:1px solid #ffffff20;border-bottom:0;border-radius:20px 20px 0 0;padding-bottom:env(safe-area-inset-bottom,0px);overflow:hidden;color:#ededf0}
+.mobile-sheet>header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;flex:none;border-bottom:1px solid #ffffff10}
+.mobile-sheet>header h2{font-size:18px;font-weight:600;margin:0}
+.mobile-sheet>header button{background:transparent;border:0;min-width:44px;min-height:44px;padding:8px;color:#b2b2ba}
+.mobile-sheet-body{overflow:auto;overscroll-behavior:contain;padding:12px 16px 20px;min-height:0}
+.mobile-page-options{display:grid;gap:6px}
+.mobile-page-options button{min-height:52px;background:transparent;border:0;display:flex;justify-content:space-between;padding:12px 14px;border-radius:12px;color:#ededf0;text-align:left;font-size:16px}
+.mobile-page-options button[aria-current]{background:#3a3a3e}
+@media(max-width:767px){
+ html,body,#root{height:100%;height:100dvh;overflow:hidden}
+ .app.manager{height:var(--manager-mobile-height,100dvh);border-radius:0;clip-path:none;padding-top:env(safe-area-inset-top,0px);padding-bottom:calc(68px + env(safe-area-inset-bottom,0px))}
+ .manager .shell-header{min-height:58px;height:auto;padding:8px 14px;gap:8px;flex-wrap:nowrap;position:relative;z-index:30;background:var(--manager-chrome-tint)}
+ .manager .shell-header .brand-title{flex:none;margin-right:auto}
+ .manager .brand-wordmark{width:110px;height:28px}
+ .manager .shell-header>.icon-button{display:none}
+ .manager .shell-header .manager-install-button{font-size:0;min-height:44px;width:44px;padding:10px;border-radius:12px;order:3}
+ .manager .shell-header .manager-install-button svg{width:22px;height:22px}
+ .manager .shell-header .manager-switcher{position:fixed;z-index:30;left:0;right:0;bottom:0;width:100%;max-width:none;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:0;border-top:1px solid #ffffff18;border-radius:0;background:#202022f5;gap:0;padding:6px 6px calc(6px + env(safe-area-inset-bottom,0px));overflow:visible}
+ .manager .manager-switcher button{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:56px;padding:5px 2px;gap:3px;font-size:11px;border-radius:12px;color:#b2b2ba}
+ .manager .manager-switcher button.active{background:transparent;color:#a2c7df}
+ .manager-section-icon{display:flex;padding:3px 12px;border-radius:999px}
+ .manager-switcher button.active .manager-section-icon{background:#a2c7df18}
+ .mobile-page-picker{display:block;min-width:0;max-width:55%}
+ .mobile-page-picker>button{border:0;border-radius:12px;background:#ffffff08;color:var(--text);font-size:14px;min-height:42px;padding:8px 10px;gap:7px;white-space:nowrap}
+ .mobile-page-picker>button:disabled{opacity:1}
+ .mobile-page-picker .mobile-sheet-backdrop{position:fixed}
+ .manager .workspace{display:flex;min-width:0;min-height:0}
+ .manager .workspace>nav{display:none}
+ .manager .content{padding:18px 16px 24px;min-width:0;overscroll-behavior:contain}
+ .manager h1{font-size:24px;letter-spacing:-.4px}
+ .manager h2{font-size:19px}
+ .manager p,.manager .setting p,.manager .store-copy p{font-size:14px;line-height:1.55}
+ .manager button{touch-action:manipulation}
+ .manager .content button{min-height:44px;font-size:14px}
+ .manager input:not([type=checkbox]):not([type=file]),.manager textarea{font-size:16px!important;min-width:0;max-width:100%}
+ .manager .list-heading{gap:14px;margin-bottom:18px;align-items:flex-start}
+ .manager .list-heading>div{min-width:0}
+ .manager .list-heading .search-field,.manager .search-field{min-width:0;width:100%}
+ .manager .list-heading p{font-size:14px}
+ .manager .setting{padding:18px 0;margin:0;width:100%}
+ .manager .setting h2{font-size:18px}
+ .manager .setting label{font-size:14px}
+ .manager .switch-row{gap:14px;width:100%;min-width:0}
+ .manager .switch-row b{font-size:15px}
+ .manager .switch-row small{font-size:13px;line-height:1.5}
+ .manager .ui-switch{flex:none;min-width:50px!important;min-height:30px!important}
+ .manager .plugin-row{padding:16px 0;gap:12px;align-items:flex-start;flex-wrap:wrap}
+ .manager .plugin-copy{min-width:0;flex:1}
+ .manager .plugin-copy h2{font-size:17px}
+ .manager .plugin-copy small{font-size:12px}
+ .manager .plugin-copy p{font-size:14px}
+ .manager .plugin-actions{width:100%;display:flex;justify-content:flex-end}
+ .manager .source-row{padding:16px 0;gap:12px}
+ .manager .store-filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+ .manager .store-filters .search-field{grid-column:1/-1;min-width:0}
+ .manager .store-filters .framely-select{min-width:0;max-width:100%}
+ .manager .store-card{min-width:0}
+ .manager .store-copy h2{font-size:18px}
+ .manager .store-card>.plugin-avatar{width:52px!important;height:52px!important}
+ .manager .detail-heading{gap:12px}
+ .manager .modal{position:absolute;left:0!important;right:0!important;bottom:0!important;top:auto!important;transform:none!important;width:100%;max-width:none;max-height:92%;border-radius:20px 20px 0 0;padding:20px 18px calc(20px + env(safe-area-inset-bottom,0px));box-shadow:0 0 0 2000px #09090b99;border:1px solid #ffffff20;z-index:80;overflow:auto}
+ .manager .modal h2{font-size:21px}
+ .manager .modal footer{display:flex;gap:10px;position:sticky;bottom:0;background:#242426;padding-top:14px}
+ .manager .modal footer button{flex:1;min-height:46px;font-size:15px}
+ .manager .modal.install-review{padding:0}
+ .manager .install-review-body{padding:16px 18px}
+ .manager .install-review-heading{padding:20px 18px}
+ .manager .install-review-footer{padding:14px 18px;flex-direction:column}
+ .manager .install-review-actions{display:grid;grid-template-columns:1fr 1fr;width:100%}
+ .manager .install-review .install-review-actions .primary{grid-row:auto}
+ .manager .app>.error,.manager .app>.banner{margin:8px 14px;font-size:13px}
+ .manager-keyboard-open .manager .shell-header .manager-switcher{display:none}
+ .manager-keyboard-open .app.manager{padding-bottom:0}
+ .manager .apk-row{display:grid;grid-template-columns:52px minmax(0,1fr);gap:12px;padding:16px 0}
+ .manager .apk-row>.plugin-avatar{width:52px!important;height:52px!important}
+ .manager .apk-row .apk-actions{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;width:100%}
+ .manager .apk-copy{min-width:0}
+ .manager .apk-copy h2{font-size:17px;display:flex;flex-wrap:wrap;gap:6px}
+ .manager .apk-copy code,.manager .apk-container code{font-size:12px;overflow-wrap:anywhere}
+ .manager .apk-copy p{font-size:13px}
+ .manager .apk-container{display:flex;flex-direction:column;gap:12px;padding:16px 0}
+ .manager .apk-actions{flex-wrap:wrap;gap:8px}
+ .manager .apk-actions button{flex:1;min-width:0;white-space:normal}
+ .manager .apk-filters{display:grid;grid-template-columns:1fr;gap:10px}
+ .manager .apk-filters>*{width:100%;min-width:0}
+ .manager .apk-cleanup-row{gap:12px;flex-wrap:wrap}
+ .manager .notification-plugin-row,.manager .notification-plugin-columns{grid-template-columns:minmax(0,1fr) 50px 50px}
+ .manager .notification-plugin-name b{font-size:14px}
+ .manager .notification-option p{font-size:13px}
+}
+@media(max-width:767px) and (prefers-reduced-motion:no-preference){.mobile-sheet{animation:manager-sheet-in .18s ease-out} @keyframes manager-sheet-in{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}}
+@media(max-width:767px){
+ .manager .plugin-row{display:grid;grid-template-columns:minmax(0,1fr) 44px 44px;gap:8px}
+ .manager .plugin-main{gap:12px;padding:4px 0;grid-column:1/-1;min-height:62px;width:100%}
+ .manager .plugin-copy b{font-size:17px;white-space:normal}
+ .manager .plugin-copy small{font-size:13px}
+ .manager .plugin-meta{display:flex;font-size:12px}
+ .manager .plugin-switch{display:block;grid-column:1;justify-self:start;padding:0!important}
+ .manager .plugin-switch.ui-switch{width:50px;height:30px}
+ .manager .plugin-row>.icon-button{min-width:44px;min-height:44px;padding:10px}
+ .manager .plugin-row .row-state,.manager .plugin-row .row-version,.manager .list-columns{display:none}
+ .manager .proxy-fields,.manager .manage-grid{grid-template-columns:minmax(0,1fr)}
+ .manager .framely-select button[aria-haspopup]{white-space:normal;overflow-wrap:anywhere}
+ .manager .framely-select [role=listbox]{background:#242426!important;border-color:#55555c!important;max-width:calc(100vw - 32px)!important}
+ .manager .framely-select [role=option]{min-height:44px!important;color:#ededf0}
+ .manager .framely-select [aria-selected=true]{background:#3a3a3e!important}
+}
+@media(max-width:767px){.manager .file-mobile-tools{display:flex}.manager .file-select-mode .file-status-bar>span{visibility:hidden}}
+@media(max-width:767px){
+ .manager .apk-manager>.list-heading>.apk-actions{width:100%;display:grid;grid-template-columns:1fr 1fr}
+ .manager .apk-manager>.list-heading>.apk-actions button{white-space:nowrap;min-height:46px;padding:10px 12px}
+}
