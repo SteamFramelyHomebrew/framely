@@ -2122,7 +2122,7 @@ mod tests {
         let server=Server::http(("0.0.0.0",port)).unwrap();let agent=agent(&server,root.path());
         let mut core=crate::tests::accepted_service(&agent.state,1000).unwrap();
         core.handle("network.save",json!({"enabled":true,"port":port,"passwordEnabled":false,"password":"fixture password"})).unwrap();
-        core.handle("cast.settings.save",json!({"source":std::env::var("FRAMELY_CAST_TEST_SOURCE").unwrap_or_else(|_|"steamVR".into()),"codec":std::env::var("FRAMELY_CAST_TEST_CODEC").unwrap_or_else(|_|"h264".into()),"width":640,"height":360,"fps":30,"systemAudio":true,"dlna":true})).unwrap();
+        core.handle("cast.settings.save",json!({"source":std::env::var("FRAMELY_CAST_TEST_SOURCE").unwrap_or_else(|_|"steamVR".into()),"codec":std::env::var("FRAMELY_CAST_TEST_CODEC").unwrap_or_else(|_|"h264".into()),"width":std::env::var("FRAMELY_CAST_TEST_WIDTH").ok().and_then(|v|v.parse::<u32>().ok()).unwrap_or(640),"height":std::env::var("FRAMELY_CAST_TEST_HEIGHT").ok().and_then(|v|v.parse::<u32>().ok()).unwrap_or(360),"fps":std::env::var("FRAMELY_CAST_TEST_FPS").ok().and_then(|v|v.parse::<u32>().ok()).unwrap_or(30),"systemAudio":true,"dlna":true})).unwrap();
         let socket=UnixListener::bind(&agent.socket).unwrap();let running=Arc::new(AtomicBool::new(true));
         socket.set_nonblocking(true).unwrap();let alive=running.clone();
         let worker=std::thread::spawn(move||{while alive.load(Ordering::Relaxed){if let Ok((mut stream,_))=socket.accept(){let request=ipc::read(&mut stream).unwrap();let result=if request["method"]=="cast.panel.start" {ipc::call(Path::new("/run/framely/control.sock"),"cast.panel.start",json!({}))}else{core.handle(request["method"].as_str().unwrap(),request["params"].clone())};let response=ipc::response(result);let _=ipc::write(&mut stream,&response);}else{std::thread::sleep(Duration::from_millis(5));}}});
@@ -2134,6 +2134,14 @@ mod tests {
         while !start.is_finished() {if let Ok(Some(request))=server.recv_timeout(Duration::from_millis(50)){let a=agent.clone();std::thread::spawn(move||{a.handle_http(request,true).unwrap();});}}
         let response=start.join().unwrap();assert!(response.get("error").is_none(),"HTTP stream startup failed: {response}");
         std::thread::sleep(Duration::from_millis(200));assert_eq!(agent.casting.lock().unwrap().status()["running"],true);
+        if std::env::var_os("FRAMELY_CAST_TEST_THROUGHPUT").is_some() {
+            let capture_frames=||->u64 {fs::read_to_string(root.path().join("cast/stream.log")).unwrap_or_default().lines().filter_map(|line|serde_json::from_str::<Value>(line).ok()).filter(|v|v["event"]=="capture").filter_map(|v|v["frames"].as_u64()).last().unwrap_or(0)};
+            std::thread::sleep(Duration::from_secs(6));let first=capture_frames();
+            std::thread::sleep(Duration::from_secs(10));let last=capture_frames();
+            let fps=(last.saturating_sub(first)) as f64/10.;
+            println!("CAST_THROUGHPUT {fps:.1} fps requested={} with system audio",settings.fps);
+            assert!(fps>=settings.fps as f64*0.8,"Live audio blocked capture: {fps:.1} fps");
+        }
         if std::env::var_os("FRAMELY_CAST_TEST_DLNA").is_some() {
             let mut cast=agent.casting.lock().unwrap();cast.ensure_dlna().unwrap();
             let rtsp=cast.test_rtsp_port();
@@ -2143,12 +2151,15 @@ mod tests {
                 assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
                 let probe:Value=serde_json::from_slice(&output.stdout).unwrap();
                 assert_eq!(probe["streams"][0]["codec_name"],codec);
-                assert_eq!(probe["streams"][0]["width"],640);assert_eq!(probe["streams"][0]["height"],360);
+                assert_eq!(probe["streams"][0]["width"],settings.width);assert_eq!(probe["streams"][0]["height"],settings.height);
                 println!("CAST_CODEC_PASS {path}: {probe}");
             }
         }
         println!("Fixture viewer: http://{}:{port}/cast/watch",network_ipv4_addresses().first().unwrap());
         let probe=std::env::var("FRAMELY_CAST_BROWSER_PROBE").ok();
+        if std::env::var_os("FRAMELY_CAST_TEST_THROUGHPUT").is_some() && probe.is_none() {
+            agent.casting.lock().unwrap().stop();running.store(false,Ordering::Relaxed);worker.join().unwrap();return;
+        }
         let mut browser=probe.map(|executable|Command::new(executable)
             .arg(format!("http://127.0.0.1:{port}/cast/watch"))
             .arg(root.path().join("browser"))

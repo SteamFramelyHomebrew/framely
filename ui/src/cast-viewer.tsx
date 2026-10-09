@@ -12,7 +12,10 @@ export function CastVideo({active,onError,controls=true,aspectRatio,videoRef,onS
   if(!active)return;
   const peer=new RTCPeerConnection(),abort=new AbortController();let resource:string|undefined,closed=false;
   setState('connecting');
-  peer.addTransceiver('video',{direction:'recvonly'});peer.addTransceiver('audio',{direction:'recvonly'});
+  for(const kind of ['video','audio']){
+   const receiver=peer.addTransceiver(kind,{direction:'recvonly'}).receiver;
+   if('jitterBufferTarget' in receiver){try{(receiver as RTCRtpReceiver&{jitterBufferTarget:number|null}).jitterBufferTarget=0;}catch{}}
+  }
   peer.ontrack=event=>{if(video.current){const stream=video.current.srcObject as MediaStream|null??new MediaStream();stream.addTrack(event.track);video.current.srcObject=stream;void video.current.play().catch(()=>{});}};
   peer.onconnectionstatechange=()=>{if(peer.connectionState==='failed'){setState('failed');failure.current?.(t('观看连接失败，请重新连接。'));}};
   void(async()=>{

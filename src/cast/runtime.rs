@@ -450,8 +450,6 @@ impl Casting {
                 "32768",
                 "-analyzeduration",
                 "0",
-                "-use_wallclock_as_timestamps",
-                "1",
                 "-framerate",
                 &s.fps.to_string(),
                 "-f",
