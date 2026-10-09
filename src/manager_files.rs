@@ -1,4 +1,5 @@
 //! Filesystem operations run exclusively inside the unprivileged session service.
+mod upload_paths;
 use crate::jobs::Cancellation;
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -73,8 +74,13 @@ use std::os::unix::fs::OpenOptionsExt;
 struct ViewPreferences {
     #[serde(default = "default_file_view")]
     view: String,
+    #[serde(default = "default_upload_concurrency")]
+    upload_concurrency: u8,
     #[serde(default)]
     folders: BTreeMap<String, FolderSort>,
+}
+fn default_upload_concurrency() -> u8 {
+    3
 }
 fn default_file_view() -> String {
     "list".into()
@@ -91,6 +97,7 @@ fn view_preferences(home: &Path, p: &Value) -> Result<Value> {
     } else {
         ViewPreferences {
             view: default_file_view(),
+            upload_concurrency: default_upload_concurrency(),
             ..Default::default()
         }
     };
@@ -129,6 +136,15 @@ fn view_preferences(home: &Path, p: &Value) -> Result<Value> {
         );
         changed = true;
     }
+    if let Some(n) = p.get("uploadConcurrency") {
+        let n = n.as_u64().context("Invalid upload concurrency")?;
+        ensure!(
+            (1..=8).contains(&n),
+            "Upload concurrency must be between 1 and 8"
+        );
+        preferences.upload_concurrency = n as u8;
+        changed = true;
+    }
     let value = serde_json::to_value(preferences)?;
     if changed {
         save_json(&file, &value)?;
@@ -142,6 +158,7 @@ pub struct Files {
     downloads: Mutex<BTreeMap<String, Download>>,
 }
 struct Upload {
+    anchor: upload_paths::Anchor,
     temp: PathBuf,
     target: PathBuf,
     size: u64,
@@ -153,7 +170,9 @@ struct Upload {
 }
 impl Drop for Upload {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.temp);
+        if let Some(leaf) = self.temp.file_name() {
+            self.anchor.unlink(Path::new(leaf));
+        }
     }
 }
 struct Download {
@@ -661,31 +680,49 @@ impl Files {
                 if downloads.get(id).is_some_and(|d| d.inline && !d.owned) { downloads.remove(id); }
                 Ok(json!(true))
             },
-            "upload.start" => {
-                let parent = PathBuf::from(strparam(p,"directory")?).canonicalize()?;
-                let relative = Path::new(strparam(p,"name")?);
-                ensure!(!relative.is_absolute()&&relative.components().all(|c|matches!(c, Component::Normal(_))),"Invalid upload path");
-                let target = parent.join(relative);
-                let folder = target.parent().context("Missing upload directory")?;
-                let mut ancestor = folder;
-                while !ancestor.exists(){
-                    ancestor = ancestor.parent().context("Invalid upload parent")?;
+            "upload.preflight" => {
+                let anchor=upload_paths::Anchor::root(p)?;
+                let identity=anchor.identity()?;
+                let items=p["items"].as_array().context("Missing upload items")?;
+                ensure!(items.len()<=256,"Too many upload preflight items");
+                let mut result=Vec::new();
+                for item in items {
+                    let name=strparam(item,"name")?;
+                    let relative=upload_paths::relative(name)?;
+                    let directory=item["directory"]==true;
+                    let check=(|| -> Result<bool> {
+                        let root=upload_paths::Anchor::root(p)?;
+                        let parent=root.descend(relative.parent().unwrap_or(Path::new("")),false)?;
+                        let leaf=relative.file_name().context("Missing upload filename")?;
+                        if directory { if let Some(st)=parent.metadata(Path::new(leaf))? {ensure!(st.st_mode&libc::S_IFMT==libc::S_IFDIR,"Upload directory conflicts with a file or symbolic link");Ok(true)} else {Ok(false)} }
+                        else {parent.file_conflict(Path::new(leaf))}
+                    })();
+                    let missing=check.as_ref().err().is_some_and(|e|e.chain().any(|cause|cause.downcast_ref::<std::io::Error>().is_some_and(|e|e.kind()==std::io::ErrorKind::NotFound)));
+                    result.push(match check {Ok(exists)=>json!({"name":name,"exists":exists}),Err(_) if missing=>json!({"name":name,"exists":false}),Err(e)=>json!({"name":name,"error":format!("{e:#}")})});
                 }
-                ensure!(ancestor.canonicalize()?.starts_with(&parent),"Upload path escapes its destination");
-                fs::create_dir_all(folder)?;
-                ensure!(folder.canonicalize()?.starts_with(&parent),"Upload path escapes its destination");
-                ensure!(self.uploads.lock().unwrap().len()<64,"Too many simultaneous uploads");
-                let size = p["size"].as_u64().context("Missing upload size")?;
+                Ok(json!({"directory":anchor.root,"rootIdentity":identity,"items":result}))
+            },
+            "upload.directory" => {
+                let relative=upload_paths::relative(strparam(p,"name")?)?;
+                let anchor=upload_paths::Anchor::root(p)?.descend(relative,true)?;
+                Ok(json!({"status":"done","path":anchor.directory}))
+            },
+            "upload.start" => {
+                let relative=upload_paths::relative(strparam(p,"name")?)?;
+                let policy=p["conflict"].as_str().unwrap_or("error");
+                ensure!(matches!(policy,"skip"|"keep"|"overwrite"|"error"),"Invalid upload conflict policy");
+                let size=p["size"].as_u64().context("Missing upload size")?;
                 ensure!(size<=64*1024*1024*1024,"Upload too large");
-                let id = token();
-                let temp = folder.join(format!(".framely-upload-{id}"));
-                let file = fs::OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&temp)?;
-                self.uploads.lock().unwrap().insert(id.clone(), Upload{
-                    temp, target, size, received:0, file, ranges:BTreeMap::new(), policy:p["conflict"].as_str().unwrap_or("error").into(), created:now()
-                });
-                Ok(json!({
-                    "id":id,"chunkSize":crate::uploads::CHUNK
-                }))
+                let anchor=upload_paths::Anchor::root(p)?.descend(relative.parent().unwrap_or(Path::new("")),true)?;
+                let leaf=Path::new(relative.file_name().context("Missing upload filename")?);
+                if anchor.file_conflict(leaf)?&&policy=="skip" {return Ok(json!({"status":"skipped","path":anchor.directory.join(leaf)}));}
+                let mut uploads=self.uploads.lock().unwrap();
+                ensure!(uploads.len()<64,"Too many simultaneous uploads");
+                let id=token();let temp=anchor.directory.join(format!(".framely-upload-{id}"));
+                let file=anchor.temporary(Path::new(temp.file_name().unwrap()))?;
+                let target=anchor.directory.join(leaf);
+                uploads.insert(id.clone(),Upload{anchor,temp,target,size,received:0,file,ranges:BTreeMap::new(),policy:policy.into(),created:now()});
+                Ok(json!({"id":id,"chunkSize":crate::uploads::CHUNK,"status":"uploading"}))
             },
             "upload.cancel" => {
                 self.uploads.lock().unwrap().remove(strparam(p,"id")?);
@@ -697,13 +734,10 @@ impl Files {
                 let u = uploads.get(id).context("Upload expired")?;
                 ensure!(u.size==u.received,"Upload is incomplete");
                 u.file.sync_all()?;
-                let dest = target(&u.target, &u.policy, p["approve"]==true)?;
-                if let Some(dest) = dest{
-                    ensure!(!fs::symlink_metadata(&dest).is_ok_and(|m|m.is_dir()),"Cannot overwrite a directory with a file");
-                    fs::rename(&u.temp, dest)?;
-                }
+                let dest=u.anchor.finish(Path::new(u.temp.file_name().unwrap()),Path::new(u.target.file_name().unwrap()),&u.policy,p["approve"]==true)?;
+                let result=json!({"status":if dest.is_some(){"done"}else{"skipped"},"path":dest.unwrap_or_else(||u.target.clone())});
                 uploads.remove(id);
-                Ok(json!(true))
+                Ok(result)
             },
             _ => bail!("Unknown file operation")
         }
@@ -1554,6 +1588,88 @@ mod operation_tests {
         assert!(unrelated.exists());
     }
     #[test]
+    fn upload_preflight_empty_folders_conflicts_and_replacement_safety() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path();
+        let manager = Files::default();
+        fs::write(root.join("same"), "old").unwrap();
+        let review=manager.api(root,&json!({"operation":"upload.preflight","directory":root,"items":[{"name":"folder/empty","directory":true},{"name":"same","directory":false}]})).unwrap();
+        assert!(!root.join("folder").exists());
+        assert_eq!(review["items"][1]["exists"], true);
+        let base = json!({"directory":root,"rootIdentity":review["rootIdentity"]});
+        let mut p = base.clone();
+        p["operation"] = json!("upload.directory");
+        p["name"] = json!("folder/empty");
+        manager.api(root, &p).unwrap();
+        assert!(root.join("folder/empty").is_dir());
+        p["operation"] = json!("upload.start");
+        p["name"] = json!("same");
+        p["size"] = json!(0);
+        p["conflict"] = json!("skip");
+        assert_eq!(manager.api(root, &p).unwrap()["status"], "skipped");
+        assert!(manager.uploads.lock().unwrap().is_empty());
+        p["name"] = json!("folder");
+        assert!(manager.api(root, &p).is_err());
+        p["name"] = json!("race");
+        p["conflict"] = json!("keep");
+        let one = manager.api(root, &p).unwrap();
+        let two = manager.api(root, &p).unwrap();
+        let first = manager
+            .api(root, &json!({"operation":"upload.finish","id":one["id"]}))
+            .unwrap();
+        let second = manager
+            .api(root, &json!({"operation":"upload.finish","id":two["id"]}))
+            .unwrap();
+        assert_ne!(first["path"], second["path"]);
+        p["name"] = json!("folder/moved");
+        let start = manager.api(root, &p).unwrap();
+        fs::rename(root.join("folder"), root.join("moved-folder")).unwrap();
+        fs::create_dir(root.join("folder")).unwrap();
+        assert!(manager
+            .api(root, &json!({"operation":"upload.finish","id":start["id"]}))
+            .is_err());
+        manager
+            .api(root, &json!({"operation":"upload.cancel","id":start["id"]}))
+            .unwrap();
+        assert!(!root.join("folder/moved").exists());
+        assert!(!fs::read_dir(root.join("moved-folder")).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".framely-upload-")));
+        let outside = tempfile::tempdir().unwrap();
+        symlink(outside.path(), root.join("escape")).unwrap();
+        p["name"] = json!("escape/file");
+        assert!(manager.api(root, &p).is_err());
+        assert!(!outside.path().join("file").exists());
+        for n in [0, 9] {
+            assert!(manager
+                .api(
+                    root,
+                    &json!({"operation":"view.preferences","uploadConcurrency":n})
+                )
+                .is_err());
+        }
+        assert_eq!(
+            manager
+                .api(root, &json!({"operation":"view.preferences"}))
+                .unwrap()["uploadConcurrency"],
+            3
+        );
+        manager
+            .api(
+                root,
+                &json!({"operation":"view.preferences","uploadConcurrency":8}),
+            )
+            .unwrap();
+        assert_eq!(
+            manager
+                .api(root, &json!({"operation":"view.preferences"}))
+                .unwrap()["uploadConcurrency"],
+            8
+        );
+    }
+    #[test]
     fn upload_is_atomic_and_offsets_are_checked() {
         if unsafe { libc::geteuid() } == 0 {
             return;
@@ -1696,7 +1812,10 @@ mod operation_tests {
         let defaults = manager
             .api(home.path(), &json!({"operation":"view.preferences"}))
             .unwrap();
-        assert_eq!(defaults, json!({"view":"list","folders":{}}));
+        assert_eq!(
+            defaults,
+            json!({"view":"list","folders":{},"uploadConcurrency":3})
+        );
         manager
             .api(
                 home.path(),
