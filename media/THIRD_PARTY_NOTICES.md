@@ -13,6 +13,11 @@
   reception. Its version and source checksum are pinned in `dependencies.json`.
   `patch-uxplay.py` adds session-end events and enforces one sending device.
   Releases include the patched source archive, build recipe and UxPlay/llhttp licenses.
+- [gst-libav](https://gstreamer.freedesktop.org/modules/gst-libav.html), LGPL-2.1-or-later,
+  is bundled as a GStreamer plugin linked to the installed system FFmpeg libraries.
+  Its version and checksum are pinned; releases include its source and license.
+  CI links against the FFmpeg 7 development API to match SteamOS; that build
+  dependency is pinned but its FFmpeg libraries are not distributed.
 - GStreamer and GUPnP are linked as system libraries (LGPL). GStreamer performs
   decoding, audio playback, rotation and pixel aspect correction; GUPnP provides
   UPnP discovery, SOAP and event subscriptions. FFmpeg is invoked as the installed

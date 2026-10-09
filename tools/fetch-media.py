@@ -10,6 +10,6 @@ for name,pin in pins.items():
         raise SystemExit(f'{name}: upstream archive checksum mismatch')
     target=base/'media'/('bin' if name=='mediamtx' else 'source')
     target.mkdir(exist_ok=True)
-    with tarfile.open(fileobj=io.BytesIO(payload),mode='r:gz') as archive:
+    with tarfile.open(fileobj=io.BytesIO(payload),mode='r:*') as archive:
         archive.extractall(target,filter='data')
     if name=='mediamtx':(target/'mediamtx').chmod(0o755)

@@ -19,6 +19,7 @@ mkdir -p media/bin
 cp media/capture/target/release/framely-capture media/capture/target/release/framely-panel-grab media/bin/
 # Native dependencies use the target system's GStreamer and GUPnP libraries.
 python3 tools/fetch-media.py
+bash tools/build-gst-libav.sh
 python3 media/patch-uxplay.py media/source/UxPlay-1.73.7
 cmake -S media/source/UxPlay-1.73.7 -B media/source/uxplay-build -DNO_X11_DEPS=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build media/source/uxplay-build -j"${FRAMELY_BUILD_JOBS:-4}"

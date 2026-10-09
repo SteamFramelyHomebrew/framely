@@ -122,7 +122,8 @@ impl Receivers {
             let mut cmd = Command::new(executable);
             cmd.arg(&self.directory)
                 .arg(self.directory.join("upnp"))
-                .arg(if s.dlna { "1" } else { "0" });
+                .arg(if s.dlna { "1" } else { "0" })
+                .env("GST_PLUGIN_PATH", &self.binaries);
             self.worker = Some(Worker::new(cmd, self.directory.join("receiver.log"))?);
             if s.airplay {
                 self.start_airplay(&s.receiver_name)?;
@@ -170,6 +171,8 @@ impl Receivers {
         let executable = self.binaries.join("uxplay");
         ensure!(executable.is_file(), "缺少内置 AirPlay 接收程序");
         self.airplay_id = crate::session::cast_random_key()[..32].into();
+        let log = fs::OpenOptions::new().create(true).truncate(true).write(true)
+            .open(self.directory.join("airplay.log"))?;
         let mut cmd = Command::new(executable);
         cmd.process_group(0)
             .args([
@@ -184,13 +187,8 @@ impl Receivers {
             .env("FRAMELY_CAST_DIR", &self.directory)
             .env("FRAMELY_CAST_ID", &self.airplay_id)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(
-                fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(self.directory.join("airplay.log"))?,
-            ));
+            .stdout(Stdio::from(log.try_clone()?))
+            .stderr(Stdio::from(log));
         super::runtime::bind_to_session(&mut cmd);
         self.airplay = Some(cmd.spawn()?);
         Ok(())
@@ -301,7 +299,9 @@ impl Receivers {
             .as_mut()
             .and_then(|w| w.try_wait().ok().flatten())
         {
-            self.error = Some(format!("AirPlay 接收程序已退出：{code}"));
+            let details = fs::read_to_string(self.directory.join("airplay.log")).unwrap_or_default();
+            let tail = details.lines().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+            self.error = Some(format!("AirPlay 接收程序已退出：{code}\n{tail}"));
             self.airplay = None;
             self.end_protocol("AirPlay");
         }

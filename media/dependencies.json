@@ -8,5 +8,15 @@
     "version": "1.73.7",
     "url": "https://github.com/FDH2/UxPlay/archive/refs/tags/v1.73.7.tar.gz",
     "sha256": "65feb8732de666a7161a9e562aa603a7f5fe0ebb890c2a30c5e1a9c85c76309f"
+  },
+  "gst-libav": {
+    "version": "1.24.13",
+    "url": "https://gstreamer.freedesktop.org/src/gst-libav/gst-libav-1.24.13.tar.xz",
+    "sha256": "150e2b70588fa32a1294f42665756f2175417ce4b5988e2c2081b683719aa6c1"
+  },
+  "ffmpeg-build-api": {
+    "version": "7.0",
+    "url": "https://ffmpeg.org/releases/ffmpeg-7.0.tar.xz",
+    "sha256": "4426a94dd2c814945456600c8adfc402bee65ec14a70e8c531ec9a2cd651da7b"
   }
 }

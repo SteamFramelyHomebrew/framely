@@ -34,7 +34,8 @@ jobs:
           sudo apt-get install -y g++ cmake pkg-config libgl1-mesa-dev libx11-dev \
             libdrm-dev libvulkan-dev glslc libclang-dev libssl-dev libplist-dev \
             libavahi-compat-libdnssd-dev libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev libgupnp-1.6-dev
+            libgstreamer-plugins-base1.0-dev libgupnp-1.6-dev \
+            meson ninja-build libavfilter-dev libavformat-dev libavcodec-dev libavutil-dev
       - name: Check release version
         env:
           RELEASE_REF: ${{ github.ref }}

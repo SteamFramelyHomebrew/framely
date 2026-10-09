@@ -9,6 +9,12 @@ binaries=Path(args.binaries).resolve()
 with tempfile.TemporaryDirectory(prefix='framely-media-test-') as directory:
     root=Path(directory);events=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM);events.bind(str(root/'events.sock'));events.settimeout(5)
     token='0123456789abcdef0123456789abcdef';env=dict(os.environ,GST_PLUGIN_PATH=str(binaries),FRAMELY_CAST_DIR=directory,FRAMELY_CAST_ID=token)
+    airplay=subprocess.Popen([str(binaries/'uxplay'),'-n','Framely test','-vs','framelyvideosink','-as','framelyaudiosink'],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    try:
+        time.sleep(2);assert airplay.poll() is None,airplay.stdout.read().decode()
+        print('PASS: UxPlay starts with bundled decoders and consent sinks')
+    finally:
+        airplay.terminate();airplay.wait(timeout=3)
     p=subprocess.Popen(['gst-launch-1.0','-q','videotestsrc','is-live=true','!','video/x-raw,width=320,height=240,framerate=10/1','!','framelyvideosink'],env=env,stderr=subprocess.PIPE)
     try:
         event=json.loads(events.recv(4096));assert event['event']=='video' and event['width']==320,event
@@ -73,7 +79,7 @@ with tempfile.TemporaryDirectory(prefix='framely-media-test-') as directory:
                 if not chunk:break
                 target.write(chunk);self.remaining-=len(chunk)
     http=ThreadingHTTPServer(('0.0.0.0',0),Handler);Thread(target=http.serve_forever,daemon=True).start()
-    p=subprocess.Popen([str(binaries/'framely-receiver'),directory,str(xml),'1'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1)
+    p=subprocess.Popen([str(binaries/'framely-receiver'),directory,str(xml),'1'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1,env=env)
     from queue import Queue
     replies=Queue()
     def reader():
@@ -152,7 +158,7 @@ with tempfile.TemporaryDirectory(prefix='framely-media-test-') as directory:
         target_udn='uuid:084442d0-ed68-427b-8dc8-ae4b310f6830'
         description=(target_xml/'device.xml').read_text().replace('uuid:56ce7555-6baf-4360-bbd6-61a32b06b6aa',target_udn)
         (target_xml/'device.xml').write_text(description)
-        target=subprocess.Popen([str(binaries/'framely-receiver'),str(target_dir),str(target_xml),'1'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1)
+        target=subprocess.Popen([str(binaries/'framely-receiver'),str(target_dir),str(target_xml),'1'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1,env=env)
         target_replies=Queue()
         def target_reader():
             for line in target.stdout:target_replies.put(json.loads(line))
