@@ -23,6 +23,10 @@ function run_app_commands() {
 function get_app_hash() { extract_app_hash; }
 function get_app_last_depot_version() { extract_app_last_depot_version; }
 function clear_baked_app_data() { println 'Framely: keeping installed application data'; }
+# Lepton 3 also calls this helper from remove_prefix, independently of
+# LEPTON_NO_CLEANUP. It deletes the persistent /data overlay before removing
+# the temporary prefix. Installed APKs must keep that overlay across launches.
+function prepare_baked_data_for_removal() { :; }
 # Separate native APK overlays in older shared contexts. Keep the installed
 # directory (including extracted libraries/splits), rather than hiding it with
 # a directory containing only the staged base APK.
@@ -395,6 +399,11 @@ function setup_podman_mounts() { setup_mounts; }
 function podman_mount_entry() { :; }
 function print() { printf '%s\n' "$*"; }
 function println() { print "$@"; }
+function prepare_baked_data_for_removal() { rm -rf "$TEST_DATA"; }
+function remove_prefix() {
+    prepare_baked_data_for_removal
+    rm -rf "$LEPTON_PREFIX"
+}
 "#,
         )
         .unwrap();
@@ -403,7 +412,7 @@ set -euo pipefail
 COMMAND=waitforexitandrun
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 source "${SCRIPT_DIR}/liblepton/liblepton.sh"
-function teardown() { clear_baked_app_data 'early exit'; }
+function teardown() { clear_baked_app_data 'early exit'; remove_prefix; }
 case "${COMMAND}" in
 waitforexitandrun)
     is_app_baked
@@ -426,6 +435,9 @@ esac
         fs::create_dir_all(save.parent().unwrap()).unwrap();
         fs::write(&save, b"saved game").unwrap();
         for flat in [true, false] {
+            let prefix = t.path().join("lepton-prefix");
+            fs::create_dir_all(&prefix).unwrap();
+            fs::write(prefix.join("temporary"), b"runtime").unwrap();
             let out = Command::new("bash")
                 .arg(&entry)
                 .env("FRAMELY_LEPTON_DIR", lib.parent().unwrap())
@@ -437,6 +449,7 @@ esac
                 .env("FRAMELY_NATIVE_ACTIVITY", "test.Selected")
                 .env("APP_WANTS_FLATSCREEN", if flat { "true" } else { "false" })
                 .env("TEST_DATA", &data)
+                .env("LEPTON_PREFIX", &prefix)
                 .env("TEST_PROPS", t.path().join("props"))
                 .output()
                 .unwrap();
@@ -454,6 +467,7 @@ esac
             assert!(String::from_utf8_lossy(&out.stdout).contains(expected));
             assert_eq!(fs::read(&save).unwrap(), b"saved game");
             assert_eq!(fs::read(&download).unwrap(), b"resume-me");
+            assert!(!prefix.exists(), "Temporary prefix must still be cleaned up");
         }
         assert!(script("unknown future native entry").is_err());
     }
