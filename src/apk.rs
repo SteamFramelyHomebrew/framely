@@ -1232,6 +1232,24 @@ function framely_prepare_media() {
         mkdir -p -- "$media"
     fi
 }
+function framely_link_host_directory() {
+    local target="$1" source="$2"
+    if [[ -L "$target" ]]; then
+        [[ "$(readlink "$target")" == "$source" ]] || { echo "Unexpected Android storage link: $target" >&2; return 64; }
+        rm -f -- "$target" || return
+    elif [[ -d "$target" ]]; then
+        # An app may replace the link with a real directory. Keep its files
+        # visible inside Android instead of removing or hiding them.
+        if [[ -n "$(find "$target" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+            return 0
+        fi
+        rmdir -- "$target" || return
+    elif [[ -e "$target" ]]; then
+        echo "Unexpected Android storage entry: $target" >&2
+        return 64
+    fi
+    ln -s -- "$source" "$target"
+}
 for framely_mount_hook in setup_mounts setup_podman_mounts; do
     declare -F "$framely_mount_hook" >/dev/null || continue
     framely_mount_body="$(declare -f "$framely_mount_hook")"
@@ -1244,6 +1262,21 @@ for framely_mount_hook in setup_mounts setup_podman_mounts; do
     fi
     if [[ "$framely_mount_body" == *"$framely_media_remove"* ]]; then
         framely_mount_body="${framely_mount_body//"$framely_media_remove"/framely_prepare_media || return}"
+        if [[ "$framely_mount_hook" == setup_mounts ]]; then
+            for framely_host_pair in 'Documents:Documents' 'Download:Downloads' 'Movies:Videos'; do
+                framely_host_target="${framely_host_pair%%:*}"
+                framely_host_source="${framely_host_pair#*:}"
+                framely_host_remove="rm -rf \"\${TARGET_PATH}/$framely_host_target\""
+                framely_host_link="ln -s \"\${HOME}/$framely_host_source\" \"\${TARGET_PATH}/$framely_host_target\""
+                if [[ "$framely_mount_body" == *"$framely_host_remove"* || "$framely_mount_body" == *"$framely_host_link"* ]]; then
+                    [[ "$framely_mount_body" == *"$framely_host_remove"* && "$framely_mount_body" == *"$framely_host_link"* ]] || { echo "Unsupported Lepton host storage links" >&2; exit 64; }
+                    framely_host_replacement="framely_link_host_directory \"\${TARGET_PATH}/$framely_host_target\" \"\${HOME}/$framely_host_source\" || return"
+                    framely_mount_body="${framely_mount_body//"$framely_host_remove"/$framely_host_replacement}"
+                    framely_mount_body="${framely_mount_body//"$framely_host_link"/:}"
+                fi
+            done
+            unset framely_host_pair framely_host_target framely_host_source framely_host_remove framely_host_link framely_host_replacement
+        fi
         if [[ "${FRAMELY_NATIVE_LAUNCH:-false}" == true ]]; then
             framely_native_link='ln -s "${STEAM_COMPAT_DATA_PATH}/external"'
             framely_preserved_link='ln -s "${FRAMELY_EXTERNAL_MEDIA_DIR:?}"'
@@ -3867,6 +3900,73 @@ setup_podman_mounts
         assert!(!run(Some(&compat)).success());
         assert_eq!(fs::read(&part).unwrap(), b"unfinished download");
         assert_eq!(fs::read(&checkpoint).unwrap(), b"offset=19");
+    }
+    #[test]
+    fn direct_boot_keeps_real_android_host_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = dir.path().join("lepton/liblepton");
+        fs::create_dir_all(&library).unwrap();
+        fs::write(library.join("liblepton.sh"), r#"
+function data_mount_path() { echo "$TEST_DATA"; }
+function setup_mounts() {
+    rm -rf "$(data_mount_path)/media/0"
+    mkdir -p "$(data_mount_path)/media"
+    local TARGET_PATH="$TEST_EXTERNAL"
+    mkdir -p "$TARGET_PATH"
+    if [[ -d "${HOME}/Documents" ]]; then
+        rm -rf "${TARGET_PATH}/Documents"
+        ln -s "${HOME}/Documents" "${TARGET_PATH}/Documents"
+    fi
+    if [[ -d "${HOME}/Downloads" ]]; then
+        rm -rf "${TARGET_PATH}/Download"
+        ln -s "${HOME}/Downloads" "${TARGET_PATH}/Download"
+    fi
+    if [[ -d "${HOME}/Videos" ]]; then
+        rm -rf "${TARGET_PATH}/Movies"
+        ln -s "${HOME}/Videos" "${TARGET_PATH}/Movies"
+    fi
+}
+function setup_podman_mounts() { setup_mounts; }
+"#).unwrap();
+        let source = r#"#!/bin/bash
+set -euo pipefail
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+source "${SCRIPT_DIR}/liblepton/liblepton.sh"
+setup_podman_mounts
+"#;
+        let entry = dir.path().join("entry.sh");
+        fs::write(&entry, direct_launch_script(source).unwrap()).unwrap();
+        let home = dir.path().join("home");
+        let external = dir.path().join("external");
+        let data = dir.path().join("data");
+        for folder in ["Documents", "Downloads", "Videos"] {
+            fs::create_dir_all(home.join(folder)).unwrap();
+        }
+        let run = || Command::new("bash")
+            .arg(&entry)
+            .env("FRAMELY_LEPTON_DIR", library.parent().unwrap())
+            .env("HOME", &home)
+            .env("TEST_DATA", &data)
+            .env("TEST_EXTERNAL", &external)
+            .output().unwrap();
+        let first = run();
+        assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+        for (target, source) in [("Documents", "Documents"), ("Download", "Downloads"), ("Movies", "Videos")] {
+            assert_eq!(fs::read_link(external.join(target)).unwrap(), home.join(source));
+        }
+        fs::remove_file(external.join("Documents")).unwrap();
+        fs::create_dir(external.join("Documents")).unwrap();
+        fs::write(external.join("Documents/keep.txt"), b"android file").unwrap();
+        let second = run();
+        assert!(second.status.success(), "{}", String::from_utf8_lossy(&second.stderr));
+        assert_eq!(fs::read(external.join("Documents/keep.txt")).unwrap(), b"android file");
+        assert!(external.join("Documents").is_dir());
+        fs::remove_file(external.join("Download")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("unexpected"), external.join("Download")).unwrap();
+        let third = run();
+        assert!(!third.status.success());
+        assert!(external.join("Download").is_symlink());
+        assert_eq!(fs::read(external.join("Documents/keep.txt")).unwrap(), b"android file");
     }
     #[test]
     fn direct_boot_binds_resources_and_reuses_shader_cache() {
