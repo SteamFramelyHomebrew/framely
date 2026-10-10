@@ -1194,6 +1194,10 @@ fn direct_launch_script(source: &str) -> Result<String> {
         "Unsupported Lepton entry script; cannot safely configure the APK display"
     );
     let hooks = r#"
+# Lepton 3 calls this helper from remove_prefix, independently of
+# LEPTON_NO_CLEANUP. Preserve installed data for both the package-manager
+# container and native Steam launches; temporary prefix removal still runs.
+function prepare_baked_data_for_removal() { :; }
 # Preserve downloaded Android resources in development contexts. Lepton's
 # single-app launcher deletes media/0 before creating its external-storage link.
 function framely_prepare_media() {

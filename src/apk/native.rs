@@ -23,10 +23,6 @@ function run_app_commands() {
 function get_app_hash() { extract_app_hash; }
 function get_app_last_depot_version() { extract_app_last_depot_version; }
 function clear_baked_app_data() { println 'Framely: keeping installed application data'; }
-# Lepton 3 also calls this helper from remove_prefix, independently of
-# LEPTON_NO_CLEANUP. It deletes the persistent /data overlay before removing
-# the temporary prefix. Installed APKs must keep that overlay across launches.
-function prepare_baked_data_for_removal() { :; }
 # Separate native APK overlays in older shared contexts. Keep the installed
 # directory (including extracted libraries/splits), rather than hiding it with
 # a directory containing only the staged base APK.
