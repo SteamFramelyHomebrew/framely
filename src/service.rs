@@ -43,11 +43,22 @@ pub struct Service {
     runtime: BTreeMap<String, Value>,
     waiting: BTreeSet<String>,
     batching: bool,
+    storage_jobs: crate::jobs::Jobs,
+    plugin_migration: bool,
     visibility: crate::visibility::Tracker,
     visibility_pending: BTreeSet<String>,
     launch_contexts: BTreeMap<String, Value>,
 }
 impl Service {
+    fn plugin_store(&self) -> &Path {
+        self.db.plugin_storage.as_deref().unwrap_or(&self.root)
+    }
+    fn ensure_plugin_store(&self) -> Result<()> {
+        let path = self.plugin_store();
+        let meta = if self.db.plugin_storage.is_some() { fs::symlink_metadata(path)? } else { fs::metadata(path)? };
+        ensure!(meta.is_dir() && (self.db.plugin_storage.is_none() || !meta.file_type().is_symlink()), "插件存储目录不可用：{}", path.display());
+        Ok(())
+    }
     pub fn prepare_uninstall(&mut self) -> Result<Value> {
         self.cancel_automatic_check();
         self.updater.ensure_idle()?;
@@ -78,7 +89,7 @@ impl Service {
                 Value::Null,
             )
             .with_context(|| format!("插件 {id} 卸载失败，本体保留，请重试"))?;
-            fs::remove_dir_all(self.root.join("plugins").join(id))?;
+            fs::remove_dir_all(self.plugin_store().join("plugins").join(id))?;
             self.db.plugins.remove(id);
             self.db.notification_settings.plugins.remove(id);
             self.runtime.remove(id);
@@ -99,6 +110,13 @@ impl Service {
         } else {
             Database::default()
         };
+        let migration = root.join("plugin-storage-migration.json");
+        if let Ok(bytes) = fs::read(&migration) {
+            let record: Value = serde_json::from_slice(&bytes)?;
+            if record["target"].as_str() == db.plugin_storage.as_deref().and_then(Path::to_str) {
+                fs::remove_file(migration)?;
+            }
+        }
         db.update_check.validate()?;
         db.launcher.validate()?;
         db.casting.validate()?;
@@ -124,8 +142,9 @@ impl Service {
         if let Ok(bytes) = fs::read(root.join("install-transaction.json")) {
             let journal: Value = serde_json::from_slice(&bytes)?;
             let original: Database = serde_json::from_value(journal["database"].clone())?;
+            restore_replaced(root, &journal)?;
             restore_links(
-                root,
+                original.plugin_storage.as_deref().unwrap_or(root),
                 &original,
                 &serde_json::from_value::<Vec<String>>(journal["targets"].clone())?,
             )?;
@@ -144,7 +163,7 @@ impl Service {
         crate::subscriptions::initialize(&mut db)?;
         // Rehydrate presentation after a state-schema downgrade from immutable payloads.
         for installed in db.plugins.values_mut() {
-            let path = root
+            let path = db.plugin_storage.as_deref().unwrap_or(root)
                 .join("plugins")
                 .join(&installed.manifest.id)
                 .join("versions")
@@ -203,6 +222,8 @@ impl Service {
             runtime: BTreeMap::new(),
             waiting: resume,
             batching: false,
+            storage_jobs: Default::default(),
+            plugin_migration: false,
             visibility: Default::default(),
             visibility_pending: BTreeSet::new(),
             launch_contexts: BTreeMap::new(),
@@ -240,7 +261,7 @@ impl Service {
     fn payload(&self, id: &str) -> Result<PathBuf> {
         let p = self.plugin(id)?;
         Ok(self
-            .root
+            .plugin_store()
             .join("plugins")
             .join(id)
             .join("versions")
@@ -288,7 +309,7 @@ impl Service {
         previous: Option<&str>,
         extra: Value,
     ) -> Value {
-        json!({"pluginId":m.id,"phase":phase,"reason":reason,"version":m.version,"previousVersion":previous,"dataDir":self.root.join("data").join(&m.id).join(match m.run_as(){RunAs::Steamos=>"steamos",RunAs::Root=>"root"}),"exit":extra,"launchContext":self.launch_contexts.get(&format!("{}/quick",m.id))})
+        json!({"pluginId":m.id,"phase":phase,"reason":reason,"version":m.version,"previousVersion":previous,"dataDir":self.plugin_store().join("data").join(&m.id).join(match m.run_as(){RunAs::Steamos=>"steamos",RunAs::Root=>"root"}),"exit":extra,"launchContext":self.launch_contexts.get(&format!("{}/quick",m.id))})
     }
     fn command_hook(
         &mut self,
@@ -315,6 +336,7 @@ impl Service {
             payload,
             self.manager,
             &self.root.join("logs"),
+            self.plugin_store(),
             self.context(m, phase, reason, previous, extra),
             Duration::from_secs(l.timeout_seconds),
         );
@@ -376,6 +398,7 @@ impl Service {
                 self.manager,
                 self.events.clone(),
                 &self.root.join("logs"),
+                self.plugin_store(),
             )?;
             if let Some(l) = m.lifecycle.as_ref().filter(|l| l.on_start) {
                 running.call_timeout(
@@ -634,6 +657,7 @@ impl Service {
         }
     }
     pub fn maintenance(&mut self) {
+        if self.plugin_migration { return; }
         self.expire_notifications();
         if self.visibility.expire(Instant::now()) {
             self.publish_visibility();
@@ -736,6 +760,9 @@ impl Service {
             .is_some_and(|a| a.version == AGREEMENT_VERSION && a.accepted_at > 0)
     }
     pub fn handle(&mut self, method: &str, p: Value) -> Result<Value> {
+        if self.plugin_migration && (method.starts_with("plugin.") || matches!(method, "install" | "install.batch" | "safeMode" | "system.uninstall.prepare")) {
+            bail!("插件存储正在迁移，请等待完成");
+        }
         ensure!(
             self.agreement_accepted()
                 || matches!(
@@ -766,6 +793,7 @@ impl Service {
         }
         let id = p["plugin"].as_str().unwrap_or("").to_owned();
         match method {
+            "storage.plugin.status" => Ok(json!({"path":self.plugin_store(),"bytes":crate::storage_location::bytes(&self.plugin_store().join("plugins"))? + crate::storage_location::bytes(&self.plugin_store().join("data"))?,"available":self.ensure_plugin_store().is_ok(),"migrating":self.plugin_migration,"interrupted":fs::read(self.root.join("plugin-storage-migration.json")).ok().and_then(|b|serde_json::from_slice::<Value>(&b).ok()).map(|v|v["target"].clone())})),
             "host.ui.visibility" => {
                 let views = serde_json::from_value(p)?;
                 if self.visibility.report(views, Instant::now())? {
@@ -1007,9 +1035,9 @@ impl Service {
                 self.db.notification_settings.plugins.remove(&id);
                 self.notifications.retain(|_, n| n.plugin != id);
                 self.save_notifications()?;
-                fs::remove_dir_all(self.root.join("plugins").join(&id))?;
+                fs::remove_dir_all(self.plugin_store().join("plugins").join(&id))?;
                 if p["purge"].as_bool() == Some(true) {
-                    let data = self.root.join("data").join(&id);
+                    let data = self.plugin_store().join("data").join(&id);
                     if data.exists() {
                         fs::remove_dir_all(data)?;
                     }
@@ -2024,35 +2052,41 @@ impl Service {
                 "Unknown installation source"
             );
         }
-        let base = self.root.join("plugins").join(&id);
+        let base = self.plugin_store().join("plugins").join(&id);
+        self.ensure_plugin_store()?;
         fs::create_dir_all(base.join("versions"))?;
         let dest = base.join("versions").join(&v.manifest.version);
         let newly_created = !dest.exists();
-        if newly_created {
-            let stage = base.join(format!(".stage-{}", rand::random::<u64>()));
-            if let Err(e) = package::unpack(&v, &stage) {
-                let _ = fs::remove_dir_all(&stage);
-                return Err(e);
-            }
-            fs::rename(stage, &dest)?;
-        } else {
-            let cached: Manifest = serde_json::from_slice(&fs::read(dest.join("manifest.json"))?)?;
-            ensure!(
-                serde_json::to_value(&cached)? == serde_json::to_value(&v.manifest)?,
-                "同一插件版本的发布内容发生变化，拒绝替换"
-            );
-            for (file, expected) in &v.manifest.files {
-                let path = dest.join(file);
-                ensure!(
-                    fs::symlink_metadata(&path)?.file_type().is_file()
-                        && package::digest(&fs::read(path)?) == *expected,
-                    "本机版本文件校验失败：{file}"
-                );
-            }
+        let stage = base.join(format!(".stage-{}", rand::random::<u64>()));
+        if let Err(e) = package::unpack(&v, &stage) {
+            let _ = fs::remove_dir_all(&stage);
+            return Err(e);
         }
         let was_running = self.running.contains_key(&id);
         let old = self.db.plugins.get(&id).cloned();
+        if !newly_created {
+            if let Err(e) = record_replacement(&self.root, &id, &v.manifest.version, &self.db, was_running, self.batching) {
+                let _ = fs::remove_dir_all(&stage);
+                return Err(e);
+            }
+        }
         self.stop_reason(&id, if old.is_some() { "update" } else { "install" });
+        let switch = if !newly_created {
+            let journal: Value = serde_json::from_slice(&fs::read(self.root.join("install-transaction.json"))?)?;
+            let backup = replacement_path(&self.root, &journal, &id)?;
+            fs::rename(&dest, &backup).and_then(|_| fs::rename(&stage, &dest))
+        } else {
+            fs::rename(&stage, &dest)
+        };
+        if let Err(error) = switch {
+            let _ = fs::remove_dir_all(&stage);
+            if !newly_created {
+                restore_one_replacement(&self.root, &id)?;
+                if !self.batching { clear_replacement_journal(&self.root)?; }
+            }
+            if !self.batching && was_running { let _ = self.start_reason(&id, "install-rollback"); }
+            return Err(error.into());
+        }
         let phase = if old.is_some() {
             "onUpdate"
         } else {
@@ -2066,6 +2100,10 @@ impl Service {
             old.as_ref().map(|p| p.manifest.version.as_str()),
             Value::Null,
         ) {
+            if !newly_created {
+                restore_one_replacement(&self.root, &id)?;
+                if !self.batching { clear_replacement_journal(&self.root)?; }
+            }
             if newly_created {
                 let _ = fs::remove_dir_all(&dest);
             }
@@ -2100,6 +2138,10 @@ impl Service {
         fs::rename(link, base.join("current"))?;
         self.db.plugins.insert(id.clone(), installed);
         if let Err(e) = self.save() {
+            if !newly_created {
+                restore_one_replacement(&self.root, &id)?;
+                if !self.batching { clear_replacement_journal(&self.root)?; }
+            }
             if let Some(old) = old.clone() {
                 let _ = fs::remove_file(base.join("current"));
                 let _ = symlink(
@@ -2125,6 +2167,10 @@ impl Service {
             if let Err(error) = self.start_reason(&id, "install") {
                 // A startup hook failure is an installation failure, not a successful activation.
                 self.stop_reason(&id, "install-rollback");
+                if !newly_created {
+                    restore_one_replacement(&self.root, &id)?;
+                    clear_replacement_journal(&self.root)?;
+                }
                 if let Some(previous) = old {
                     let _ = fs::remove_file(base.join("current"));
                     let _ = symlink(
@@ -2145,6 +2191,9 @@ impl Service {
                 self.save()?;
                 return Err(error);
             }
+        }
+        if !self.batching && !newly_created {
+            clear_replacement_journal(&self.root)?;
         }
         Ok(json!(self.db.plugins[&id]))
     }
@@ -2361,7 +2410,9 @@ impl Service {
                 self.stop_reason(id, "transaction-rollback");
                 self.waiting.remove(id);
             }
-            restore_links(&self.root, &original, &targets)?;
+            let journal: Value = serde_json::from_slice(&fs::read(&path)?)?;
+            restore_replaced(&self.root, &journal)?;
+            restore_links(original.plugin_storage.as_deref().unwrap_or(&self.root), &original, &targets)?;
             self.db = original;
             self.save()?;
             for id in &running {
@@ -2371,7 +2422,9 @@ impl Service {
             fs::remove_file(path)?;
             return Err(error).context("批量安装失败，已恢复原版本和启用状态");
         }
+        let journal: Value = serde_json::from_slice(&fs::read(&path)?)?;
         fs::remove_file(path)?;
+        discard_replacements(&self.root, &journal)?;
         fs::File::open(&self.root)?.sync_all()?;
         for id in impacted {
             process::event(
@@ -2402,6 +2455,70 @@ fn restore_links(root: &Path, original: &Database, targets: &[String]) -> Result
     }
     Ok(())
 }
+fn replacement_path(root: &Path, journal: &Value, id: &str) -> Result<PathBuf> {
+    valid_id(id)?;
+    let name = journal["backups"][id]
+        .as_str()
+        .context("缺少同版本安装备份记录")?;
+    ensure!(name.starts_with(".previous-") && !name.contains('/') && !name.contains('\\'), "无效插件备份路径");
+    let original: Database = serde_json::from_value(journal["database"].clone())?;
+    Ok(original.plugin_storage.as_deref().unwrap_or(root).join("plugins").join(id).join(name))
+}
+fn record_replacement(root: &Path, id: &str, version: &str, original: &Database, running: bool, batching: bool) -> Result<()> {
+    let path = root.join("install-transaction.json");
+    let mut journal: Value = if batching {
+        serde_json::from_slice(&fs::read(&path)?)?
+    } else {
+        json!({"database": original, "targets": [id], "running": if running {vec![id]} else {vec![]}})
+    };
+    let name = format!(".previous-{}-{:016x}", version, rand::random::<u64>());
+    ensure!(!name.contains('/') && !name.contains('\\'), "无效插件版本");
+    journal["backups"][id] = json!(name);
+    journal["replacementVersions"][id] = json!(version);
+    let temporary = root.join("install-transaction.tmp");
+    fs::write(&temporary, serde_json::to_vec(&journal)?)?;
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
+    fs::File::open(&temporary)?.sync_all()?;
+    fs::rename(temporary, &path)?;
+    fs::File::open(root)?.sync_all()?;
+    Ok(())
+}
+fn restore_one_replacement(root: &Path, id: &str) -> Result<()> {
+    let journal: Value = serde_json::from_slice(&fs::read(root.join("install-transaction.json"))?)?;
+    let backup = replacement_path(root, &journal, id)?;
+    if backup.is_dir() {
+        let version = journal["replacementVersions"][id].as_str().context("缺少替换版本")?;
+        let original: Database = serde_json::from_value(journal["database"].clone())?;
+        let dest = original.plugin_storage.as_deref().unwrap_or(root).join("plugins").join(id).join("versions").join(version);
+        if dest.exists() { fs::remove_dir_all(&dest)?; }
+        fs::rename(backup, dest)?;
+    }
+    Ok(())
+}
+fn restore_replaced(root: &Path, journal: &Value) -> Result<()> {
+    if let Some(backups) = journal["backups"].as_object() {
+        for id in backups.keys() {
+            restore_one_replacement(root, id)?;
+        }
+    }
+    Ok(())
+}
+fn discard_replacements(root: &Path, journal: &Value) -> Result<()> {
+    if let Some(backups) = journal["backups"].as_object() {
+        for id in backups.keys() {
+            let path = replacement_path(root, journal, id)?;
+            if path.exists() { fs::remove_dir_all(path)?; }
+        }
+    }
+    Ok(())
+}
+fn clear_replacement_journal(root: &Path) -> Result<()> {
+    let path = root.join("install-transaction.json");
+    let journal: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    fs::remove_file(path)?;
+    fs::File::open(root)?.sync_all()?;
+    discard_replacements(root, &journal)
+}
 fn plugin_restarts(db: &Database, id: &str) -> bool {
     db.plugins.get(id).is_some_and(|p| {
         p.enabled
@@ -2423,6 +2540,105 @@ pub fn now_ms() -> u64 {
         .as_millis() as u64
 }
 fn dispatch(core: &Arc<Mutex<Service>>, method: &str, params: Value) -> Result<Value> {
+    if method == "storage.plugin.job" {
+        let service = core.lock().unwrap();
+        return service.storage_jobs.status(params["job"].as_str().context("缺少任务 ID")?);
+    }
+    if method == "storage.plugin.start" {
+        let path = PathBuf::from(params["path"].as_str().context("缺少目标路径")?);
+        let (jobs, source, target, root, resume, follow_links) = {
+            let mut service = core.lock().unwrap();
+            ensure!(service.agreement_accepted(), "请先同意用户协议和隐私声明");
+            ensure!(!service.plugin_migration, "插件存储正在迁移");
+            ensure!(!service.root.join("install-transaction.json").exists(), "插件安装正在进行");
+            let source = service.plugin_store().to_path_buf();
+            service.ensure_plugin_store()?;
+            let follow_links = service.db.plugin_storage.is_none();
+            let root = service.root.clone();
+            let journal = root.join("plugin-storage-migration.json");
+            let (target, resume) = if journal.exists() {
+                let record: Value = serde_json::from_slice(&fs::read(&journal)?)?;
+                ensure!(record["source"] == json!(source), "存储迁移来源已改变，请检查原目录");
+                if record["target"] == json!(path) {
+                    let resume = path.exists() && crate::storage_location::verified_selected(&source, &path, &["plugins".into(), "data".into()], follow_links)?;
+                    ensure!(!path.exists() || resume || (path.is_dir() && fs::read_dir(&path)?.next().is_none()), "上次迁移副本已与原目录不同，请选择新的空目录");
+                    (path.clone(), resume)
+                } else { (crate::storage_location::validate_target(&source, &path, false)?, false) }
+            } else {
+                (crate::storage_location::validate_target(&source, &path, false)?, false)
+            };
+            service.plugin_migration = true;
+            (service.storage_jobs.clone(), source, target, root, resume, follow_links)
+        };
+        let shared = core.clone();
+        let task = jobs.task_progress("storage:plugin", move |cancel, progress| {
+            let mut running = Vec::new();
+            let result = (|| -> Result<Value> {
+                crate::storage_location::write_journal(&root.join("plugin-storage-migration.json"), &json!({"source":source,"target":target}))?;
+                progress(json!({"step":"stopping"}));
+                {
+                    let mut service = shared.lock().unwrap();
+                    running = service.running.keys().cloned().collect();
+                    for id in running.iter().rev() { service.stop_reason(id, "storage-migration"); }
+                    service.recovery.clear();
+                }
+                cancel.check()?;
+                if !resume { crate::storage_location::copy_selected(&source, &target, &["plugins".into(), "data".into()], follow_links, |step| progress(json!({"step":step})))?; }
+                cancel.check()?;
+                {
+                    let mut service = shared.lock().unwrap();
+                    let previous = service.db.plugin_storage.clone();
+                    service.db.plugin_storage = Some(target.clone());
+                    if let Err(error) = service.save() {
+                        service.db.plugin_storage = previous;
+                        return Err(error);
+                    }
+                    progress(json!({"step":"restarting"}));
+                    let restart = (|| -> Result<()> {
+                        for id in &running { service.start_reason(id, "storage-migration")?; }
+                        Ok(())
+                    })();
+                    if let Err(error) = restart {
+                        for id in &running { service.stop_reason(id, "storage-rollback"); }
+                        service.db.plugin_storage = previous;
+                        service.save()?;
+                        return Err(error).context("迁移后插件启动失败，已恢复原位置");
+                    }
+                }
+                fs::remove_file(root.join("plugin-storage-migration.json"))?;
+                progress(json!({"step":"cleaning"}));
+                let mut cleanup_errors = Vec::new();
+                for name in ["plugins", "data"] {
+                    let old = source.join(name);
+                    if old.exists() {
+                        let remove = if follow_links && fs::symlink_metadata(&old).is_ok_and(|m|m.file_type().is_symlink()) {
+                            let physical = old.canonicalize();
+                            physical.and_then(|directory| {
+                                for entry in fs::read_dir(directory)? {
+                                    let path = entry?.path();
+                                    if path.is_dir() && !fs::symlink_metadata(&path)?.file_type().is_symlink() { fs::remove_dir_all(path)?; }
+                                    else { fs::remove_file(path)?; }
+                                }
+                                Ok(())
+                            })
+                        } else { fs::remove_dir_all(old) };
+                        if let Err(error) = remove { cleanup_errors.push(error.to_string()); }
+                    }
+                }
+                Ok(json!({"path":target,"cleanupWarnings":cleanup_errors}))
+            })();
+            {
+                let mut service = shared.lock().unwrap();
+                if result.is_err() {
+                    for id in &running { let _ = service.start_reason(id, "storage-rollback"); }
+                }
+                service.plugin_migration = false;
+            }
+            result
+        });
+        if task.is_err() { core.lock().unwrap().plugin_migration = false; }
+        return task;
+    }
     if method == "network.password.verify" {
         let (root, verifier) = {
             let service = core.lock().unwrap();
@@ -2576,6 +2792,45 @@ mod request_tests {
             .unwrap();
         assert!(result.get("database").is_some());
         assert_eq!(worker.join().unwrap(), json!(false));
+    }
+}
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+    #[test]
+    fn plugin_storage_migration_moves_files_and_survives_reload() {
+        let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let state = temp.path().join("state");
+        let mut service = crate::tests::accepted_service(&state, unsafe { libc::geteuid() }).unwrap();
+        let package = crate::tests::fixture(temp.path(), "test.storage", "1.0.0", 1, None);
+        service.handle("install", json!({"package":base64::Engine::encode(&base64::engine::general_purpose::STANDARD, package),"approve":true})).unwrap();
+        let data = state.join("data/test.storage/steamos/save.txt");
+        fs::create_dir_all(data.parent().unwrap()).unwrap();
+        fs::write(&data, "saved").unwrap();
+        let persistent = temp.path().join("persistent");
+        fs::create_dir(&persistent).unwrap();
+        for name in ["plugins", "data"] {
+            fs::rename(state.join(name), persistent.join(name)).unwrap();
+            symlink(persistent.join(name), state.join(name)).unwrap();
+        }
+        let target = temp.path().join("relocated");
+        let core = Arc::new(Mutex::new(service));
+        let job = dispatch(&core, "storage.plugin.start", json!({"path":target})).unwrap()["job"].as_str().unwrap().to_owned();
+        let result = loop {
+            let status = dispatch(&core, "storage.plugin.job", json!({"job":job})).unwrap();
+            if status["phase"] == "done" || status["phase"] == "failed" { break status; }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(result["phase"], "done", "{result}");
+        assert_eq!(fs::read_to_string(target.join("data/test.storage/steamos/save.txt")).unwrap(), "saved");
+        assert!(target.join("plugins/test.storage/versions/1.0.0/manifest.json").is_file());
+        assert!(fs::symlink_metadata(state.join("plugins")).unwrap().file_type().is_symlink());
+        assert!(fs::read_dir(persistent.join("plugins")).unwrap().next().is_none());
+        assert!(fs::read_dir(persistent.join("data")).unwrap().next().is_none());
+        drop(core);
+        let loaded = Service::load(&state, unsafe { libc::geteuid() }).unwrap();
+        assert_eq!(loaded.db.plugin_storage.as_deref(), Some(target.as_path()));
+        assert!(loaded.payload("test.storage").unwrap().is_dir());
     }
 }
 

@@ -21,6 +21,7 @@ mod relations;
 mod service;
 mod session;
 mod steam;
+mod storage_location;
 mod subscriptions;
 mod terminal;
 #[cfg(test)]

@@ -80,6 +80,9 @@ impl Default for Jobs {
     }
 }
 impl Jobs {
+    pub fn active_kind(&self, kind: &str) -> bool {
+        self.state.lock().unwrap().jobs.values().any(|job| job.active && job.public["kind"] == kind)
+    }
     fn expire(state: &mut State) {
         for job in state.jobs.values_mut() {
             if !job.active

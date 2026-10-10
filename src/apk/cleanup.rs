@@ -113,7 +113,7 @@ pub(super) fn delete(home: &Path, db: &mut Database, c: &Container, log: &Path) 
     } else {
         c.id.clone()
     };
-    let standard = home.join(".local/share/lepton/contexts").join(&c.id);
+    let standard = (if db.owned_contexts.contains(&c.id) { super::contexts_root(home) } else { home.join(".local/share/lepton/contexts") }).join(&c.id);
     let default_location = !c.id.starts_with("external-")
         && !fs::symlink_metadata(&standard).is_ok_and(|m| m.file_type().is_symlink())
         && fs::canonicalize(&standard).is_ok_and(|p| p == standard && p.join("baked") == c.baked);

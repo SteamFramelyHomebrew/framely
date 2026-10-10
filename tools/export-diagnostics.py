@@ -109,6 +109,18 @@ def collect(state, commands=True, runtime=pathlib.Path('/run/user'), installer_l
         else:
             steam_home = pathlib.Path(steam_home)
             apk = steam_home / '.local/share/framely/apk-manager'
+            storage_file = steam_home / '.local/share/framely/storage.json'
+            if storage_file.is_file() and not storage_file.is_symlink() and storage_file.stat().st_uid == steam_home.stat().st_uid:
+                try:
+                    with storage_file.open('rb') as source:
+                        raw = source.read(65537)
+                    if len(raw) > 65536:
+                        raise ValueError('storage setting exceeds diagnostic size limit')
+                    configured = json.loads(raw).get('apk')
+                    if isinstance(configured, str) and pathlib.Path(configured).is_absolute():
+                        apk = pathlib.Path(configured)
+                except (OSError, ValueError, TypeError) as error:
+                    report['warnings'].append(f'apk: invalid storage setting: {error}')
             try:
                 with (apk / 'state.json').open('rb') as source:
                     raw = source.read(16 * 1024 * 1024 + 1)

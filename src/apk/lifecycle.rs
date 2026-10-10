@@ -214,14 +214,15 @@ fn candidates(home: &Path, db: &Database) -> Vec<Container> {
         .filter(|r| !r.removed)
         .map(|r| r.context.clone())
         .collect();
-    let base = home.join(".local/share/lepton/contexts");
+    let base = super::contexts_root(home);
+    let default_base = home.join(".local/share/lepton/contexts");
     let mut out = Vec::new();
     for id in contexts {
         if !safe(&id) || id.starts_with("steamlaunch-") {
             continue;
         }
         let mut name = id.clone();
-        let mut baked = base.join(&id).join("baked");
+        let mut baked = (if db.owned_contexts.contains(&id) { &base } else { &default_base }).join(&id).join("baked");
         if id.starts_with("external-") {
             let Some(path) = db
                 .roots

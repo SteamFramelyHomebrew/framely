@@ -107,6 +107,45 @@ struct Database {
     #[serde(default)]
     records: BTreeMap<String, Record>,
 }
+#[derive(Default, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct StorageLocations {
+    #[serde(default)]
+    apk: Option<PathBuf>,
+    #[serde(default)]
+    contexts: Option<PathBuf>,
+}
+fn storage_config_path(home: &Path) -> PathBuf {
+    home.join(".local/share/framely/storage.json")
+}
+fn storage_journal_path(home: &Path) -> PathBuf {
+    home.join(".local/share/framely/storage-migration.json")
+}
+fn storage_config(home: &Path) -> Result<StorageLocations> {
+    let path = storage_config_path(home);
+    if !path.exists() { return Ok(StorageLocations::default()); }
+    let meta = fs::symlink_metadata(&path)?;
+    ensure!(meta.is_file() && !meta.file_type().is_symlink() && meta.uid() == unsafe { libc::geteuid() }, "无效 APK 存储设置文件");
+    let config: StorageLocations = serde_json::from_slice(&fs::read(path)?)?;
+    for location in [&config.apk, &config.contexts].into_iter().flatten() {
+        ensure!(location.is_absolute() && location.is_dir() && !fs::symlink_metadata(location)?.file_type().is_symlink(), "配置的存储目录不可用：{}", location.display());
+    }
+    Ok(config)
+}
+fn save_storage_config(home: &Path, config: &StorageLocations) -> Result<()> {
+    let path = storage_config_path(home);
+    fs::create_dir_all(path.parent().unwrap())?;
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, serde_json::to_vec(config)?)?;
+    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+    fs::File::open(&tmp)?.sync_all()?;
+    fs::rename(tmp, &path)?;
+    fs::File::open(path.parent().unwrap())?.sync_all()?;
+    Ok(())
+}
+fn contexts_root(home: &Path) -> PathBuf {
+    storage_config(home).ok().and_then(|c| c.contexts).unwrap_or_else(|| home.join(".local/share/lepton/contexts"))
+}
 impl Default for Database {
     fn default() -> Self {
         Self {
@@ -180,9 +219,10 @@ fn safe(s: &str) -> bool {
         && s != ".."
 }
 fn root(home: &Path) -> PathBuf {
-    home.join(".local/share/framely/apk-manager")
+    storage_config(home).ok().and_then(|c| c.apk).unwrap_or_else(|| home.join(".local/share/framely/apk-manager"))
 }
 fn init(home: &Path) -> Result<PathBuf> {
+    storage_config(home)?;
     let r = root(home);
     for p in [
         home.join(".local"),
@@ -208,6 +248,7 @@ fn init(home: &Path) -> Result<PathBuf> {
     Ok(r)
 }
 fn load(home: &Path) -> Result<Database> {
+    storage_config(home)?;
     let p = root(home).join("state.json");
     if !p.exists() {
         return Ok(Database::default());
@@ -363,13 +404,17 @@ fn validate_baked(p: &Path) -> Result<PathBuf> {
 }
 fn containers(home: &Path, db: &Database) -> Vec<Container> {
     let mut out = Vec::new();
-    let base = home.join(".local/share/lepton/contexts");
-    if let Ok(entries) = fs::read_dir(&base) {
+    let managed_base = contexts_root(home);
+    let legacy_base = home.join(".local/share/lepton/contexts");
+    for base in [&managed_base, &legacy_base] {
+    if let Ok(entries) = fs::read_dir(base) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             if !safe(&name) {
                 continue;
             }
+            if base == &legacy_base && managed_base != legacy_base && db.owned_contexts.contains(&name) && managed_base.join(&name).exists() { continue; }
+            if out.iter().any(|c: &Container| c.name == name) { continue; }
             let baked = e.path().join("baked");
             if let Ok(baked) = validate_baked(&baked) {
                 out.push(Container {
@@ -383,9 +428,10 @@ fn containers(home: &Path, db: &Database) -> Vec<Container> {
             }
         }
     }
+    }
     for id in &db.owned_contexts {
         if safe(id) && !out.iter().any(|c| c.id == *id) {
-            let baked = base.join(id).join("baked");
+            let baked = managed_base.join(id).join("baked");
             if baked.parent().is_some_and(|p| p.is_dir())
                 && !fs::symlink_metadata(&baked).is_ok_and(|m| m.file_type().is_symlink())
             {
@@ -592,7 +638,7 @@ fn automatic_install_context(
             return Ok(id);
         }
         if !records.is_empty()
-            || fs::symlink_metadata(home.join(".local/share/lepton/contexts").join(&id)).is_ok()
+            || fs::symlink_metadata(contexts_root(home).join(&id)).is_ok()
         {
             continue; // Preserve retained records and unreadable/dangling paths.
         }
@@ -949,6 +995,156 @@ pub fn list(home: &Path) -> Result<Value> {
     Ok(
         json!({"apps":apps.iter().map(|a| { let mut v=serde_json::to_value(a).unwrap(); v["steamLaunch"]=json!(db.records.get(&a.id).is_none_or(steam_shortcuts::wanted)); v["steamRegistered"]=json!(db.records.get(&a.id).is_some_and(|r|r.steam_launch));v["steamRegistrationError"]=json!(db.records.get(&a.id).and_then(|r|r.steam_registration_error.as_ref())); v }).collect::<Vec<_>>(),"containers":cs.iter().map(|c| { let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(false); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"retainSteamEntries":db.retain_steam_entries,"gamepadEnabled":db.gamepad_enabled,"gamepadSource":db.gamepad_source,"gamepadRumble":db.gamepad_rumble,"gamepadTriggerThreshold":db.gamepad_trigger_threshold,"autoStopContainer":db.auto_stop_container,"stopContainerOnClose":db.stop_container_on_close}),
     )
+}
+pub fn storage_status(home: &Path) -> Result<Value> {
+    let config = storage_config(home)?;
+    let apk = config.apk.unwrap_or_else(|| home.join(".local/share/framely/apk-manager"));
+    let contexts = config.contexts.unwrap_or_else(|| home.join(".local/share/lepton/contexts"));
+    let db = load(home)?;
+    let mut context_bytes = 0u64;
+    for id in &db.owned_contexts {
+        if safe(id) { context_bytes = context_bytes.saturating_add(crate::storage_location::bytes(&contexts.join(id))?); }
+    }
+    let journal = fs::read(storage_journal_path(home)).ok().and_then(|b|serde_json::from_slice::<Value>(&b).ok());
+    let committed = journal.as_ref().is_some_and(|v| v["target"] == json!(if v["kind"] == "apk" { &apk } else { &contexts }));
+    if committed {
+        let _ = fs::remove_file(storage_journal_path(home));
+    }
+    Ok(json!({"apk":{"path":apk,"bytes":crate::storage_location::bytes(&apk)?},"contexts":{"path":contexts,"bytes":context_bytes},"interrupted":if committed {None} else {journal}}))
+}
+pub fn migrate_storage(home: &Path, kind: &str, target: &Path, cancel: Cancellation, progress: Arc<dyn Fn(Value) + Send + Sync>) -> Result<Value> {
+    ensure!(matches!(kind, "apk" | "contexts"), "无效存储类型");
+    let _guard = MUTATION.try_lock().map_err(|_| anyhow::anyhow!("已有 APK 操作正在运行"))?;
+    cancel.check()?;
+    let config = storage_config(home)?;
+    let old_apk = init(home)?;
+    let lock_file = fs::OpenOptions::new().write(true).create(true).mode(0o600).open(old_apk.join("operation.lock"))?;
+    ensure!(unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0, "已有 APK 操作正在运行");
+    let db = load(home)?;
+    let source = if kind == "apk" { old_apk } else { contexts_root(home) };
+    let journal_path = storage_journal_path(home);
+    if let Ok(bytes) = fs::read(&journal_path) {
+        let record: Value = serde_json::from_slice(&bytes)?;
+        if record["target"] == json!(source) { fs::remove_file(&journal_path)?; }
+    }
+    let (target, resume) = if journal_path.exists() {
+        let record: Value = serde_json::from_slice(&fs::read(&journal_path)?)?;
+        ensure!(record["kind"] == kind && record["source"] == json!(source), "存储迁移来源已改变，请检查原目录");
+        if record["target"] == json!(target) {
+            let verified = if target.exists() { if kind == "apk" { crate::storage_location::verified_equal(&source, target)? } else { crate::storage_location::verified_selected(&source, target, &db.owned_contexts, false)? } } else { false };
+            ensure!(!target.exists() || verified || (target.is_dir() && fs::read_dir(target)?.next().is_none()), "上次迁移副本已与原目录不同，请选择新的空目录");
+            (target.to_path_buf(), verified)
+        } else { (crate::storage_location::validate_target(&source, target, false)?, false) }
+    } else {
+        (crate::storage_location::validate_target(&source, target, false)?, false)
+    };
+    let log = root(home).join("logs/storage-migration.log");
+    let owned: Vec<Container> = containers(home, &db).into_iter()
+        .filter(|c| db.owned_contexts.contains(&c.id)).collect();
+    let active: Vec<Container> = owned.iter().filter(|c| c.running).cloned().collect();
+    let result = (|| -> Result<Value> {
+        crate::storage_location::write_journal(&journal_path, &json!({"kind":kind,"source":source,"target":target}))?;
+        progress(json!({"step":"stopping"}));
+        for c in &owned { stop(c, &log)?; }
+        cancel.check()?;
+        if resume { progress(json!({"step":"verifying"})); }
+        else if kind == "apk" {
+            crate::storage_location::copy_verified(&source, &target, |step| progress(json!({"step":step})))?;
+        } else {
+            crate::storage_location::copy_selected(&source, &target, &db.owned_contexts, false, |step| progress(json!({"step":step})))?;
+        }
+        cancel.check()?;
+        let mut next = config.clone();
+        if kind == "apk" { next.apk = Some(target.clone()); } else { next.contexts = Some(target.clone()); }
+        save_storage_config(home, &next)?;
+        progress(json!({"step":"restarting"}));
+        let new_log = root(home).join("logs/storage-migration.log");
+        let mut started = Vec::new();
+        for c in &active {
+            let mut relocated = c.clone();
+            if kind == "contexts" { relocated.baked = target.join(&c.id).join("baked"); }
+            if let Err(error) = start_container(home, &relocated, None, false, &new_log) {
+                for opened in &started { let _ = stop(opened, &new_log); }
+                let _ = save_storage_config(home, &config);
+                for prior in &active { let _ = start_container(home, prior, None, false, &log); }
+                return Err(error).context("迁移后容器启动失败，已恢复原位置");
+            }
+            started.push(relocated);
+        }
+        fs::remove_file(&journal_path)?;
+        progress(json!({"step":"cleaning"}));
+        let mut warnings = Vec::new();
+        if kind == "apk" {
+            if let Err(error) = fs::remove_dir_all(&source) { warnings.push(error.to_string()); }
+        } else {
+            for id in &db.owned_contexts {
+                if safe(id) && source.join(id).exists() {
+                    if let Err(error) = fs::remove_dir_all(source.join(id)) { warnings.push(error.to_string()); }
+                }
+            }
+        }
+        Ok(json!({"path":target,"cleanupWarnings":warnings}))
+    })();
+    if result.is_err() {
+        for c in &active { let _ = start_container(home, c, None, false, &log); }
+    }
+    result
+}
+#[cfg(test)]
+mod storage_migration_tests {
+    use super::*;
+    #[test]
+    fn apk_and_owned_contexts_move_independently() {
+        let _serial = TEST_SERIAL.lock().unwrap();
+        let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let home = temp.path().join("home");
+        fs::create_dir(&home).unwrap();
+        let original_apk = init(&home).unwrap();
+        fs::write(original_apk.join("apks/example.apk"), b"apk").unwrap();
+        let original_contexts = contexts_root(&home);
+        let baked = original_contexts.join("managed/baked/data_overlay/system");
+        fs::create_dir_all(&baked).unwrap();
+        fs::write(baked.join("packages.xml"), b"<packages/>").unwrap();
+        let external = original_contexts.join("external/baked/data_overlay/system");
+        fs::create_dir_all(&external).unwrap();
+        fs::write(external.join("packages.xml"), b"<packages/>").unwrap();
+        let mut db = load(&home).unwrap();
+        db.owned_contexts.push("managed".into());
+        save(&home, &db).unwrap();
+        let apk_target = temp.path().join("apk-new");
+        migrate_storage(&home,"apk",&apk_target,Cancellation::default(),Arc::new(|_|{})).unwrap();
+        assert_eq!(root(&home), apk_target);
+        assert_eq!(fs::read(root(&home).join("apks/example.apk")).unwrap(), b"apk");
+        assert!(original_contexts.join("managed/baked").is_dir());
+        let context_target = temp.path().join("android-new");
+        migrate_storage(&home,"contexts",&context_target,Cancellation::default(),Arc::new(|_|{})).unwrap();
+        assert_eq!(contexts_root(&home), context_target);
+        assert!(context_target.join("managed/baked/data_overlay/system/packages.xml").is_file());
+        assert!(!context_target.join("external").exists());
+        assert!(original_contexts.join("external/baked").is_dir());
+        assert!(!original_contexts.join("managed").exists());
+        let found = containers(&home,&load(&home).unwrap());
+        assert!(found.iter().any(|c|c.id=="managed" && c.baked.starts_with(&context_target)));
+        assert!(found.iter().any(|c|c.id=="external" && c.baked.starts_with(&original_contexts)));
+    }
+    #[test]
+    fn interrupted_apk_copy_resumes_without_touching_original() {
+        let _serial = TEST_SERIAL.lock().unwrap();
+        let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let home = temp.path().join("home");
+        fs::create_dir(&home).unwrap();
+        let source = init(&home).unwrap();
+        fs::write(source.join("apks/keep.apk"), b"saved apk").unwrap();
+        fs::write(source.join("operation.lock"), b"").unwrap();
+        let target = temp.path().join("apk-resume");
+        crate::storage_location::copy_verified(&source,&target,|_|{}).unwrap();
+        crate::storage_location::write_journal(&storage_journal_path(&home),&json!({"kind":"apk","source":source,"target":target})).unwrap();
+        assert_eq!(storage_status(&home).unwrap()["interrupted"]["target"],json!(target));
+        migrate_storage(&home,"apk",&target,Cancellation::default(),Arc::new(|_|{})).unwrap();
+        assert_eq!(root(&home),target);
+        assert_eq!(fs::read(target.join("apks/keep.apk")).unwrap(),b"saved apk");
+        assert!(!storage_journal_path(&home).exists());
+    }
 }
 pub fn launcher(home: &Path) -> Vec<Value> {
     let Ok(db) = load(home) else { return vec![] };
@@ -1883,17 +2079,21 @@ fn snapshot_inventory(
     Ok(())
 }
 fn recover_restores(home: &Path, db: &mut Database) -> Result<()> {
-    let base = home.join(".local/share/lepton/contexts");
+    let base = contexts_root(home);
+    let legacy = home.join(".local/share/lepton/contexts");
     let mut locations = BTreeMap::new();
     for id in &db.owned_contexts {
         ensure!(safe(id), "Invalid managed context");
         locations.insert(id.clone(), base.join(id));
     }
-    if let Ok(entries) = fs::read_dir(&base) {
-        for e in entries.flatten() {
-            let id = e.file_name().to_string_lossy().into_owned();
-            if safe(&id) && !id.starts_with("steamlaunch-") && e.file_type()?.is_dir() {
-                locations.insert(id, e.path());
+    for directory in [&base, &legacy] {
+        if let Ok(entries) = fs::read_dir(directory) {
+            for e in entries.flatten() {
+                let id = e.file_name().to_string_lossy().into_owned();
+                if safe(&id) && !id.starts_with("steamlaunch-") && e.file_type()?.is_dir()
+                    && (directory == &base || !db.owned_contexts.contains(&id)) {
+                    locations.insert(id, e.path());
+                }
             }
         }
     }
@@ -2739,8 +2939,7 @@ fn operate_internal(
                 let c = existing.unwrap_or_else(|| Container {
                     id: context.clone(),
                     name: context.clone(),
-                    baked: home
-                        .join(".local/share/lepton/contexts")
+                    baked: contexts_root(home)
                         .join(&context)
                         .join("baked"),
                     running: false,

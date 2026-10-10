@@ -1,7 +1,7 @@
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 pub const API_VERSION: u32 = 1;
 
@@ -814,6 +814,8 @@ pub struct AgreementAcceptance {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Database {
+    #[serde(default)]
+    pub plugin_storage: Option<PathBuf>,
     #[serde(default)]
     pub casting: crate::cast::settings::Settings,
     #[serde(default = "default_language")]

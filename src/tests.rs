@@ -253,11 +253,12 @@ fn selected_versions_and_reinstallation_preserve_favorites() {
             *data = serde_json::to_vec(&m).unwrap();
         }
     });
-    assert!(install(&mut core, &altered, json!({}))
-        .unwrap_err()
-        .to_string()
-        .contains("同一插件版本"));
+    install(&mut core, &altered, json!({})).unwrap();
     assert_eq!(core.db.plugins["test.plugin"].manifest.version, "1.0.0");
+    assert_eq!(core.db.plugins["test.plugin"].manifest.name, "Changed release");
+    assert!(core.db.plugins["test.plugin"].favorite);
+    let disk: Value = serde_json::from_slice(&fs::read(state.join("plugins/test.plugin/versions/1.0.0/manifest.json")).unwrap()).unwrap();
+    assert_eq!(disk["name"], "Changed release");
     assert!(!state
         .join("plugins/test.plugin/versions/1.0.0/public-key.hex")
         .exists());
@@ -1145,6 +1146,60 @@ fn batch_hook_failure_and_interrupted_transaction_restore_state() {
     assert!(!restored.root.join("plugins/test.first").exists());
 }
 #[test]
+fn same_version_reinstall_restores_files_after_hook_failure_and_interruption() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _tools = fake_backend_tools(tmp.path());
+    let state = tmp.path().join("state");
+    let mut core = accepted_service(&state, unsafe { libc::geteuid() }).unwrap();
+    let original = relation_package(tmp.path(), "test.same", "1.0.0", json!({}));
+    install(&mut core, &original, json!({})).unwrap();
+    let data = state.join("data/test.same/steamos/save");
+    fs::create_dir_all(data.parent().unwrap()).unwrap();
+    fs::write(&data, b"user data").unwrap();
+    let broken = relation_package(tmp.path(), "test.same", "1.0.0", json!({"name":"broken","lifecycle":{"runAs":"steamos","onUpdate":{"entry":"fail.sh"}}}));
+    assert!(install(&mut core, &broken, json!({})).is_err());
+    let payload = state.join("plugins/test.same/versions/1.0.0");
+    let restored: Value = serde_json::from_slice(&fs::read(payload.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(restored["name"], "test.same");
+    assert_eq!(fs::read(&data).unwrap(), b"user data");
+    assert!(!state.join("install-transaction.json").exists());
+
+    let old_db = core.db.clone();
+    let backup_name = ".previous-1.0.0-interrupted";
+    fs::write(state.join("install-transaction.json"), serde_json::to_vec(&json!({"database":old_db,"targets":["test.same"],"running":[],"backups":{"test.same":backup_name},"replacementVersions":{"test.same":"1.0.0"}})).unwrap()).unwrap();
+    fs::rename(&payload, state.join("plugins/test.same").join(backup_name)).unwrap();
+    fs::create_dir(&payload).unwrap();
+    fs::write(payload.join("manifest.json"), b"replaced").unwrap();
+    let recovered = Service::load(&state, core.manager).unwrap();
+    assert_eq!(recovered.db.plugins["test.same"].manifest.name, "test.same");
+    let manifest: Value = serde_json::from_slice(&fs::read(payload.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["name"], "test.same");
+    assert_eq!(fs::read(&data).unwrap(), b"user data");
+}
+#[test]
+fn batch_failure_restores_same_version_payload() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _tools = fake_backend_tools(tmp.path());
+    let mut core = accepted_service(&tmp.path().join("state"), unsafe { libc::geteuid() }).unwrap();
+    let old = relation_package(tmp.path(), "test.replace", "1.0.0", json!({}));
+    install(&mut core, &old, json!({})).unwrap();
+    let replacement = relation_package(tmp.path(), "test.replace", "1.0.0", json!({"name":"new payload"}));
+    let bad = relation_package(tmp.path(), "test.fails", "1.0.0", json!({"lifecycle":{"runAs":"steamos","onInstall":{"entry":"fail.sh"}}}));
+    let plan = crate::planner::Plan {
+        fingerprint:crate::relations::fingerprint(&core.db).unwrap(), root:"test.fails".into(),
+        items:vec![
+            crate::planner::Item{manifest:package::verify(&replacement).unwrap().manifest,source:None,action:"reinstall".into(),run_as_changed:false},
+            crate::planner::Item{manifest:package::verify(&bad).unwrap().manifest,source:None,action:"install".into(),run_as_changed:false},
+        ], add_sources:vec![], enable:vec!["test.fails".into()], disable:vec![], affected:vec!["test.replace".into(),"test.fails".into()],
+    };
+    let result = apply_prepared(&mut core, crate::planner::Prepared{plan,packages:vec![(package::Staged::from_bytes(&replacement).unwrap(),None),(package::Staged::from_bytes(&bad).unwrap(),None)]});
+    assert!(result.is_err());
+    let manifest:Value=serde_json::from_slice(&fs::read(core.root.join("plugins/test.replace/versions/1.0.0/manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["name"],"test.replace");
+    assert_eq!(core.db.plugins["test.replace"].manifest.name,"test.replace");
+    assert!(!core.root.join("install-transaction.json").exists());
+}
+#[test]
 fn cross_source_resolution_requires_choice_and_uses_the_chosen_package() {
     use tiny_http::{Response, Server};
     let tmp = tempfile::tempdir().unwrap();
@@ -1542,6 +1597,7 @@ fn hook_failure_does_not_stop_plugin_with_hook_suffix() {
         unsafe { libc::geteuid() },
         Default::default(),
         &tmp.path().join("logs"),
+        tmp.path(),
     )
     .unwrap();
     let pid = tmp.path().join("framely-backend-review.foo-hook.pid");
@@ -1575,6 +1631,7 @@ fn hook_failure_does_not_stop_plugin_with_hook_suffix() {
         &hook_payload,
         unsafe { libc::geteuid() },
         &tmp.path().join("logs"),
+        tmp.path(),
         json!({"phase":"onInstall"}),
         std::time::Duration::from_secs(1),
     );

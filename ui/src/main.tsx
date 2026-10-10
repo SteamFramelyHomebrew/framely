@@ -21,6 +21,7 @@ import {configureLanguage,currentLanguage,LanguagePack} from './i18n';
 import {AgreementGate,AgreementState} from './agreement';
 import {ProxySettings,ProxyConfig} from './proxy';
 import {NetworkSettings,NetworkPanel} from './network';
+import {StorageSettings} from './storage-settings';
 import {Subscriptions,Subscription} from './subscriptions';
 import {RelationsInfo} from './relations';
 import {InstallReview} from './install-review';
@@ -113,6 +114,7 @@ function App(){
  {managerMode&&(filesVisited||tab==='files')&&<div className="file-workspace-frame" hidden={tab!=='files'}><FileManager active={tab==='files'}/></div>}
  {tab==='terminal'&&managerMode&&<TerminalManager/>}
  {managerSection==='casting'&&managerMode&&status.database.casting&&<Casting page={tab as CastPage} config={status.database.casting} refresh={refresh} network={status.database.networkPanel??{enabled:true,port:15915}}/>}
+ {tab==='storage'&&managerMode&&<StorageSettings/>}
  {apkPanel&&<ApkManager view={tab==='apk-containers'?'containers':tab==='apk-cleanup'?'cleanup':tab==='apk-settings'?'settings':'apps'} onViewChange={view=>setTab(view==='apps'?'apk':'apk-'+view)}/>}
  {tab==='launcher-settings'&&managerMode&&<><div className="list-heading"><div><h1>{t('启动台')}</h1><p>{t('启动方式、菜单与分类。')}</p></div></div><LauncherSettings config={status.database.launcher} refresh={refresh}/></>}
  {tab==='notification-settings'&&managerMode&&<NotificationSettings config={status.database.notificationSettings??defaultNotificationConfig} plugins={status.database.plugins} refresh={refresh}/>}

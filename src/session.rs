@@ -11,6 +11,7 @@ use std::{
     time::Duration,
 };
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
+static APK_STORAGE_API_GATE: Mutex<()> = Mutex::new(());
 
 struct FrameAccess {
     plugin: String,
@@ -180,10 +181,10 @@ impl Agent {
                     plugin["manifest"]["files"].get(file).is_some(),
                     "Unlisted asset"
                 );
+                let store = status["database"]["pluginStorage"].as_str().map(std::path::PathBuf::from).unwrap_or_else(|| self.state.clone());
                 return send_file(
                     r,
-                    &self
-                        .state
+                    &store
                         .join("plugins")
                         .join(id)
                         .join("versions")
@@ -410,8 +411,8 @@ impl Agent {
             ensure!(!p.is_null(), "Unknown plugin");
             let m: Manifest = serde_json::from_value(p["manifest"].clone())?;
             ensure!(m.files.contains_key(file), "Unlisted asset");
-            let root = self
-                .state
+            let store = status["database"]["pluginStorage"].as_str().map(std::path::PathBuf::from).unwrap_or_else(|| self.state.clone());
+            let root = store
                 .join("plugins")
                 .join(id)
                 .join("versions")
@@ -1035,6 +1036,8 @@ impl Agent {
                 self.launcher_search.lock().unwrap().batch(&path, &names)
             }
             "apk.upload.start" => {
+                let _gate = APK_STORAGE_API_GATE.lock().unwrap();
+                ensure!(!self.jobs.active_kind("apk:storage"), "APK 存储正在迁移");
                 let size = p["size"].as_u64().context("Missing APK upload size")?;
                 let root = crate::apk::upload_dir(&crate::steam::home()?, size)?;
                 self.jobs.uploads.start_in(size, &root)
@@ -1070,6 +1073,17 @@ impl Agent {
                 p["ticket"].as_str().context("Missing APK review")?,
             ),
             "apk.cleanup.list" => crate::apk::cleanup_list(&crate::steam::home()?),
+            "apk.storage.status" => crate::apk::storage_status(&crate::steam::home()?),
+            "apk.storage.start" => {
+                let _gate = APK_STORAGE_API_GATE.lock().unwrap();
+                ensure!(!self.jobs.uploads.active() && !self.jobs.active_kind("apk:storage") && !self.jobs.active_kind("apk:operation"), "请等待 APK 上传或操作完成");
+                let home = crate::steam::home()?;
+                let kind = p["kind"].as_str().context("缺少存储类型")?.to_owned();
+                let path = std::path::PathBuf::from(p["path"].as_str().context("缺少目标目录")?);
+                self.jobs.task_progress("apk:storage", move |cancel, progress| {
+                    crate::apk::migrate_storage(&home, &kind, &path, cancel, progress)
+                })
+            }
             "apk.logs" => crate::apk::logs(
                 &crate::steam::home()?,
                 p["app"].as_str().context("Missing APK application")?,
@@ -1437,6 +1451,9 @@ impl Agent {
                 Ok(json!(true))
             }
             "status"
+            | "storage.plugin.status"
+            | "storage.plugin.start"
+            | "storage.plugin.job"
             | "inspect"
             | "install"
             | "plugin.restart"

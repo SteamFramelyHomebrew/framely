@@ -133,11 +133,9 @@ pub fn open_web_link(url: &str) -> Result<()> {
     Ok(())
 }
 
-fn command(m: &Manifest, payload: &Path, manager: u32, logs: &Path, unit: &str) -> Result<Command> {
+fn command(m: &Manifest, payload: &Path, manager: u32, _logs: &Path, storage: &Path, unit: &str) -> Result<Command> {
     let b = m.backend.as_ref().context("Plugin has no backend")?;
-    let home = logs
-        .parent()
-        .context("Missing state directory")?
+    let home = storage
         .join("data")
         .join(&m.id)
         .join(match b.run_as {
@@ -216,6 +214,7 @@ pub fn hook(
     payload: &Path,
     manager: u32,
     logs: &Path,
+    storage: &Path,
     context: Value,
     timeout: Duration,
 ) -> Result<()> {
@@ -231,7 +230,7 @@ pub fn hook(
         ui_visibility_events: false,
     });
     let unit = format!("framely-hook-{}-{:032x}", m.id, rand::random::<u128>());
-    let cmd = command(&launch, payload, manager, logs, &unit)?;
+    let cmd = command(&launch, payload, manager, logs, storage, &unit)?;
     // Insert env/property arguments before the executable delimiter.
     let args: Vec<_> = cmd.get_args().map(|a| a.to_owned()).collect();
     let split = args
@@ -295,9 +294,10 @@ impl Running {
         manager: u32,
         events: Events,
         logs: &Path,
+        storage: &Path,
     ) -> Result<Self> {
         let unit = format!("framely-backend-{}", m.id);
-        let mut cmd = command(m, payload, manager, logs, &unit)?;
+        let mut cmd = command(m, payload, manager, logs, storage, &unit)?;
         fs::create_dir_all(logs)?;
         cmd.stderr(Stdio::piped());
         let mut child = cmd.spawn().context("Cannot start plugin service")?;

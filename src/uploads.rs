@@ -20,6 +20,11 @@ struct Upload {
     touched: Instant,
 }
 impl Uploads {
+    pub fn active(&self) -> bool {
+        let mut slot = self.0.lock().unwrap();
+        Self::expire(&mut slot);
+        slot.is_some()
+    }
     fn expire(slot: &mut Option<Upload>) {
         if slot
             .as_ref()
