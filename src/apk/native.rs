@@ -30,9 +30,17 @@ if [[ -n "${FRAMELY_NATIVE_APK_DIR:-}" ]]; then
     framely_native_mounts="$(declare -f setup_mounts)"
     framely_native_lower='APP_APK_DIR="$(dirname "$(get_apk_path)")"'
     framely_native_upper='$(get_baked_app_data_dir)/app_overlay'
-    [[ "$framely_native_mounts" == *"$framely_native_lower"* && "$framely_native_mounts" == *"$framely_native_upper"* ]] || { echo 'Unsupported native APK mounts; keeping application data unchanged' >&2; exit 64; }
+    [[ "$framely_native_mounts" == *"$framely_native_lower"* ]] || { echo 'Unsupported native APK mounts; keeping application data unchanged' >&2; exit 64; }
+    if [[ "$framely_native_mounts" == *"$framely_native_upper"* ]]; then
+        framely_native_mounts="${framely_native_mounts//"$framely_native_upper"/'${FRAMELY_NATIVE_OVERLAY:?}/upper'}"
+    elif [[ "$framely_native_mounts" == *'APP_OVERLAY_UPPERDIR="$(app_datadir)"'* ]] && declare -F app_datadir >/dev/null && [[ "$(declare -f app_datadir)" == *'$(get_baked_app_data_dir $@)/app_overlay'* ]]; then
+        # Lepton 3 routes the APK upper directory through app_datadir.
+        function app_datadir() { print "${FRAMELY_NATIVE_OVERLAY:?}/upper"; }
+    else
+        echo 'Unsupported native APK mounts; keeping application data unchanged' >&2
+        exit 64
+    fi
     framely_native_mounts="${framely_native_mounts//"$framely_native_lower"/'APP_APK_DIR="${FRAMELY_NATIVE_APK_DIR:?}"'}"
-    framely_native_mounts="${framely_native_mounts//"$framely_native_upper"/'${FRAMELY_NATIVE_OVERLAY:?}/upper'}"
     function app_workdir() { print "${FRAMELY_NATIVE_OVERLAY:?}/work"; }
     eval "$framely_native_mounts"
     unset framely_native_mounts framely_native_lower framely_native_upper
@@ -344,6 +352,10 @@ function setup_mounts() {{
 setup_mounts
 "#
         );
+        for source in [source.clone(), source.replace(
+            "    local APP_OVERLAY_UPPERDIR=\"$(get_baked_app_data_dir)/app_overlay\"",
+            "    local APP_OVERLAY_UPPERDIR=\"$(app_datadir)\"",
+        ).replacen("function setup_mounts()", "function app_datadir() { print \"$(get_baked_app_data_dir $@)/app_overlay\"; }\nfunction setup_mounts()", 1)] {
         for package in ["one", "two"] {
             let out = Command::new("bash")
                 .args(["-c", &source])
@@ -361,6 +373,7 @@ setup_mounts
             );
             assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), format!("/baked/data_overlay/app/{package}|/baked/native-{package}/upper|/baked/native-{package}/work"));
         }
+    }
     }
     #[test]
     fn native_hooks_keep_storage_and_selected_activity_after_early_exit() {
