@@ -182,10 +182,10 @@ fn resolve_release(
                 let Ok(version) = semver::Version::parse(tag) else {
                     continue;
                 };
-                let testing = channel == UpdateChannel::Testing;
+                let is_prerelease = !version.pre.is_empty();
                 if release.draft
-                    || release.prerelease != testing
-                    || version.pre.is_empty() == testing
+                    || release.prerelease != is_prerelease
+                    || (channel == UpdateChannel::Stable && is_prerelease)
                 {
                     continue;
                 }
@@ -242,7 +242,7 @@ fn resolve_release(
         let release = verify_descriptor(&bytes)?;
         let version = descriptor_version(&release.version)?;
         ensure!(
-            version.pre.is_empty() == (channel == UpdateChannel::Stable),
+            channel == UpdateChannel::Testing || version.pre.is_empty(),
             "更新清单不属于所选渠道，请配置该渠道的清单地址"
         );
         Ok(Some((release, bytes, version.to_string())))
@@ -678,17 +678,29 @@ mod tests {
         let testing = resolve_fixture(UpdateChannel::Testing, releases)
             .unwrap()
             .unwrap();
-        assert_eq!(testing.2, "0.4.2-preview.10");
+        assert_eq!(testing.2, "0.4.2");
         assert!(resolve_fixture(
             UpdateChannel::Stable,
             vec![fixture("0.4.2-preview.1", false)]
         )
         .unwrap()
         .is_none());
-        assert!(
+        assert_eq!(
             resolve_fixture(UpdateChannel::Testing, vec![fixture("0.4.2", false)])
                 .unwrap()
-                .is_none()
+                .unwrap()
+                .2,
+            "0.4.2"
+        );
+        assert_eq!(
+            resolve_fixture(
+                UpdateChannel::Testing,
+                vec![fixture("0.4.2", false), fixture("0.4.3-preview.1", false)]
+            )
+            .unwrap()
+            .unwrap()
+            .2,
+            "0.4.3-preview.1"
         );
     }
     #[test]
@@ -762,9 +774,10 @@ mod tests {
             .ends_with("framely-0.4.2-preview.1-012345abcdef-linux-arm64.tar.gz"));
     }
     #[test]
-    fn custom_descriptors_distinguish_channels_and_ignore_packaging_hashes() {
+    fn custom_descriptors_allow_stable_on_testing_and_ignore_packaging_hashes() {
         for (version, channel) in [
             ("0.4.2", UpdateChannel::Stable),
+            ("0.4.2", UpdateChannel::Testing),
             ("0.4.2-beta.1", UpdateChannel::Testing),
         ] {
             let (_, bytes) = fixture(version, false);
@@ -780,17 +793,14 @@ mod tests {
                 .2,
                 version
             );
-            let other_channel = if channel == UpdateChannel::Stable {
-                UpdateChannel::Testing
-            } else {
-                UpdateChannel::Stable
-            };
-            assert!(
-                resolve_release(&source, other_channel, &Default::default(), &mut |_, _| Ok(
-                    bytes.clone()
-                ))
-                .is_err()
-            );
+            if version.contains('-') {
+                assert!(
+                    resolve_release(&source, UpdateChannel::Stable, &Default::default(), &mut |_, _| Ok(
+                        bytes.clone()
+                    ))
+                    .is_err()
+                );
+            }
         }
     }
     #[test]

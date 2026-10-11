@@ -20,3 +20,6 @@
 /media/bin/
 
 /media/source/
+
+# Local agent operating notes
+/AGENTS.md

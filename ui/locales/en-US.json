@@ -417,7 +417,7 @@
     "正式版": "Stable",
     "测试版": "Testing",
     "仅检查正式版。": "Check stable releases only.",
-    "仅检查测试版（Preview、Beta、RC 等）。": "Check testing releases only (Preview, Beta, RC, etc.).",
+    "检查正式版和测试版（Preview、Beta、RC 等），选择最新版本。": "Check stable and testing releases (Preview, Beta, RC, etc.) and select the newest version.",
     "所选渠道暂无可用发行版本。": "No release is available in the selected channel.",
     "所选版本早于当前版本，安装将切换到较旧版本。": "The selected release is older than your current version. Installing will switch to that older version.",
     "通知": "Notifications",

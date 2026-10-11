@@ -24,6 +24,7 @@ mod cleanup;
 mod graphics;
 mod lifecycle;
 mod native;
+pub(crate) mod permissions;
 mod steam_bridge;
 mod steam_shortcuts;
 pub(crate) mod steam_ui;

@@ -853,6 +853,10 @@ impl Agent {
             if remote && request["method"] == "ui.visibility.get" {
                 request["params"] = json!({"view":""});
             }
+            ensure!(
+                !remote || !request["method"].as_str().is_some_and(|m| m.starts_with("apk.permission.")),
+                "Headset permission window is local only"
+            );
             let result = if remote && request["method"] == "agreement.decline" {
                 Ok(json!({"closed":false}))
             } else {
@@ -867,6 +871,7 @@ impl Agent {
         if path == "/"
             || path == "/cast/watch"
             || path.starts_with("/cast/window/")
+            || path == "/apk/permission"
             || path == "/manager"
             || path == "/notifications"
             || path == "/launcher"
@@ -1074,6 +1079,15 @@ impl Agent {
             ),
             "apk.cleanup.list" => crate::apk::cleanup_list(&crate::steam::home()?),
             "apk.storage.status" => crate::apk::storage_status(&crate::steam::home()?),
+            "apk.permission.pending" => Ok(json!(crate::apk::permissions::pending(&crate::steam::home()?)?)),
+            "apk.permission.frame" => crate::apk::permissions::frame(
+                &crate::steam::home()?, p["id"].as_str().context("Missing permission request")?
+            ),
+            "apk.permission.click" => crate::apk::permissions::click(
+                &crate::steam::home()?, p["id"].as_str().context("Missing permission request")?,
+                p["x"].as_u64().context("Invalid Android input position")?.try_into()?,
+                p["y"].as_u64().context("Invalid Android input position")?.try_into()?,
+            ),
             "apk.storage.start" => {
                 let _gate = APK_STORAGE_API_GATE.lock().unwrap();
                 ensure!(!self.jobs.uploads.active() && !self.jobs.active_kind("apk:storage") && !self.jobs.active_kind("apk:operation"), "请等待 APK 上传或操作完成");
@@ -1901,6 +1915,34 @@ pub fn serve(
         }
         cast_agent.maintain_cast();std::thread::sleep(Duration::from_millis(100));
     }});
+    let permission_agent = agent.clone();
+    std::thread::spawn(move || {
+        let mut shown = String::new();
+        let mut missing = 0u8;
+        loop {
+            if let Ok(home) = crate::steam::home() {
+                if let Ok(pending) = crate::apk::permissions::pending(&home) {
+                    let next = pending.as_ref().map(|p| p.id.clone()).unwrap_or_default();
+                    if next.is_empty() && !shown.is_empty() && missing < 1 {
+                        missing += 1;
+                        std::thread::sleep(Duration::from_secs(2));
+                        continue;
+                    }
+                    missing = 0;
+                    if next != shown {
+                        if !shown.is_empty() {
+                            push(&permission_agent.commands, json!({"kind":"apk.permission.close"}));
+                        }
+                        if let Some(request) = pending {
+                            push(&permission_agent.commands, json!({"kind":"apk.permission.open","id":request.id}));
+                        }
+                        shown = next;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    });
     let file_agent = agent.clone();
     std::thread::spawn(move || loop {
         if let Ok(home) = crate::steam::home() {

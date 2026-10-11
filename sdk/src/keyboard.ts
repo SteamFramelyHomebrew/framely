@@ -18,6 +18,9 @@ export function installKeyboard(open:(params:{existing:string;password:boolean;m
  };
  (window as any).__framelyEditKeyboard=(edit:string)=>{
   if(!field?.isConnected)return;
+  // Embedded editors can consume the native keyboard without mutating their
+  // hidden textarea. Ordinary inputs continue through the path below.
+  if(!field.dispatchEvent(new CustomEvent('framely.keyboard.edit',{detail:edit,cancelable:true})))return;
   const value=field.value;
   let start=field.selectionStart??value.length,end=field.selectionEnd??start;
   const segments=Array.from(new (Intl as any).Segmenter(undefined,{granularity:'grapheme'}).segment(value)) as {index:number;segment:string}[];

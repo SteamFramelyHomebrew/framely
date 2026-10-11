@@ -9,7 +9,14 @@ cargo build --release --locked
 npm ci --no-audit --no-fund
 npm run build
 bash tools/build-native.sh "$cef"
-bash tools/build-media.sh
+if [[ ${FRAMELY_USE_PREBUILT_MEDIA:-0} == 1 ]]; then
+  [[ -z $(git status --porcelain -- media) ]] || { echo 'Media sources changed; rebuild media.' >&2; exit 1; }
+  for file in media/bin/framely-panel-grab media/bin/framely-capture media/bin/mediamtx media/bin/uxplay media/bin/framely-receiver media/bin/libgstframely.so media/bin/libgstlibav.so media/bin/LICENSE media/bin/LICENSE.uxplay media/bin/LICENSE.gst-libav media/bin/LICENSE.llhttp; do
+    [[ -s $file ]] || { echo "Missing prebuilt media: $file" >&2; exit 1; }
+  done
+else
+  bash tools/build-media.sh
+fi
 binary=${CARGO_TARGET_DIR:-target}/release/framely
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 build_id="$version-$(find "$binary" target/native media/bin ui/dist sdk templates/plugin examples/showcase packaging tools docs assets/branding assets/search README.md README.zh-CN.md LICENSE -type f ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)"

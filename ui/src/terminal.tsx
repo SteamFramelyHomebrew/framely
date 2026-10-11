@@ -24,6 +24,13 @@ export function TerminalManager(){
  useEffect(()=>{void refresh();const timer=setInterval(()=>void refresh(),3000);return()=>clearInterval(timer);},[]);
  async function create(){if(busy)return;setBusy(true);try{const s=await managerApi<Session>('terminal',{operation:'create',name:t('终端')});setSelected(s.id);setName(s.name);await refresh();term.current?.focus();}catch(e){setError(String(e));}finally{setBusy(false);}}
  useEffect(()=>{if(!host.current||!selected)return;const terminal=new Terminal({fontSize:matchMedia('(max-width: 767px)').matches?13:16,scrollback:10000,allowTransparency:true,cursorBlink:!matchMedia('(prefers-reduced-motion: reduce)').matches,disableStdin:true,theme:{background:'#00000000',foreground:'#e8e8ed',selectionBackground:'#555555'}}),fitter=new FitAddon();terminal.loadAddon(fitter);terminal.open(host.current);term.current=terminal;fit.current=fitter;terminal.parser.registerOscHandler(52,()=>true);
+  const keyboardInput=(event:Event)=>{
+   event.preventDefault();
+   if(terminal.options.disableStdin)return;
+   const edit=(event as CustomEvent<string>).detail;
+   terminal.input(edit==='\b'?'\x7f':edit==='\n'?'\r':edit,true);
+  };
+  terminal.textarea?.addEventListener('framely.keyboard.edit',keyboardInput);
   terminal.attachCustomKeyEventHandler(event=>{
    if(event.type!=='keydown'||!event.ctrlKey||!event.shiftKey||event.altKey||event.metaKey)return true;
    if(event.code==='KeyV')return false; // Native paste supplies the clipboard to xterm; do not emit Ctrl-V.
@@ -44,7 +51,7 @@ export function TerminalManager(){
    ws.onmessage=e=>{if(!alive||socket.current!==ws)return;lastSeen=performance.now();try{const v=JSON.parse(e.data);setWritable(v.writable);terminal.options.disableStdin=!v.writable||v.exited;setExited(v.exited);if(v.truncated)setTruncated(true);if(v.data){const raw=atob(v.data);terminal.write(Uint8Array.from(raw,c=>c.charCodeAt(0)));}}catch(err){setError(String(err));}};
    ws.onclose=()=>{if(!alive||socket.current!==ws)return;if(timer)clearInterval(timer);setConnected(false);setWritable(false);terminal.options.disableStdin=true;retry=setTimeout(connect,2000);};ws.onerror=()=>setError(t('终端连接中断，正在重连。'));
   }
-  const offline=()=>{if(localPanel)return;terminal.options.disableStdin=true;setConnected(false);setWritable(false);socket.current?.close();};window.addEventListener('offline',offline);window.addEventListener('online',connect);reconnect.current=connect;connect();return()=>{window.removeEventListener('offline',offline);window.removeEventListener('online',connect);alive=false;if(timer)clearInterval(timer);if(retry)clearTimeout(retry);observer.disconnect();input.dispose();socket.current?.close();socket.current=null;terminal.dispose();term.current=null;};
+  const offline=()=>{if(localPanel)return;terminal.options.disableStdin=true;setConnected(false);setWritable(false);socket.current?.close();};window.addEventListener('offline',offline);window.addEventListener('online',connect);reconnect.current=connect;connect();return()=>{window.removeEventListener('offline',offline);window.removeEventListener('online',connect);terminal.textarea?.removeEventListener('framely.keyboard.edit',keyboardInput);alive=false;if(timer)clearInterval(timer);if(retry)clearTimeout(retry);observer.disconnect();input.dispose();socket.current?.close();socket.current=null;terminal.dispose();term.current=null;};
  },[selected]);
  const current=sessions.find(session=>session.id===selected);
  async function rename(){if(!name.trim()||busy)return;setBusy(true);try{await managerApi('terminal',{operation:'rename',id:selected,name:name.trim()});await refresh();setRenaming(false);}catch(e){setError(String(e));}finally{setBusy(false);}}
