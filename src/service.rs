@@ -793,7 +793,18 @@ impl Service {
         }
         let id = p["plugin"].as_str().unwrap_or("").to_owned();
         match method {
-            "storage.plugin.status" => Ok(json!({"path":self.plugin_store(),"bytes":crate::storage_location::bytes(&self.plugin_store().join("plugins"))? + crate::storage_location::bytes(&self.plugin_store().join("data"))?,"available":self.ensure_plugin_store().is_ok(),"migrating":self.plugin_migration,"interrupted":fs::read(self.root.join("plugin-storage-migration.json")).ok().and_then(|b|serde_json::from_slice::<Value>(&b).ok()).map(|v|v["target"].clone())})),
+            "storage.plugin.status" => {
+                let store = self.plugin_store();
+                let (program_bytes, program_incomplete) = crate::storage_location::disk_bytes(&store.join("plugins"))?;
+                let (data_bytes, data_incomplete) = crate::storage_location::disk_bytes(&store.join("data"))?;
+                let details = self.db.plugins.iter().map(|(id, installed)| {
+                    let (program, a) = crate::storage_location::disk_bytes(&store.join("plugins").join(id))?;
+                    let (data, b) = crate::storage_location::disk_bytes(&store.join("data").join(id))?;
+                    Ok(json!({"id":id,"name":installed.manifest.name,"bytes":program.saturating_add(data),"programBytes":program,"dataBytes":data,"sizeIncomplete":a || b}))
+                }).collect::<Result<Vec<Value>>>()?;
+                let device = fs::metadata(store).ok().map(|m| std::os::unix::fs::MetadataExt::dev(&m));
+                Ok(json!({"path":store,"bytes":program_bytes.saturating_add(data_bytes),"sizeIncomplete":program_incomplete || data_incomplete,"device":device,"details":details,"available":self.ensure_plugin_store().is_ok(),"migrating":self.plugin_migration,"interrupted":fs::read(self.root.join("plugin-storage-migration.json")).ok().and_then(|b|serde_json::from_slice::<Value>(&b).ok()).map(|v|v["target"].clone())}))
+            },
             "host.ui.visibility" => {
                 let views = serde_json::from_value(p)?;
                 if self.visibility.report(views, Instant::now())? {

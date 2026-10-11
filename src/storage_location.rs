@@ -3,6 +3,71 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, ffi::CString, fs, io::Read, os::unix::fs::{MetadataExt, FileTypeExt, symlink, PermissionsExt}, path::{Path, PathBuf}, process::Command};
 
+/// Disk blocks used by a tree. The root may be an intentional storage link
+/// (the default plugin directories are links); nested links and mounts are skipped.
+pub fn disk_bytes(path: &Path) -> Result<(u64, bool)> {
+    let root = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, false)),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Ok((0, true)),
+        Err(error) => return Err(error.into()),
+    };
+    let path = if root.file_type().is_symlink() {
+        match path.canonicalize() {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, true)),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Ok((0, true)),
+            Err(error) => return Err(error.into()),
+        }
+    } else { path.to_path_buf() };
+    let root = fs::symlink_metadata(&path)?;
+    let mut seen = std::collections::HashSet::new();
+    let mut total = 0u64;
+    let mut incomplete = false;
+    fn walk(path: &Path, dev: u64, seen: &mut std::collections::HashSet<(u64, u64)>, total: &mut u64, incomplete: &mut bool) -> Result<()> {
+        let meta = match fs::symlink_metadata(path) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => { *incomplete = true; return Ok(()); }
+            Err(error) => return Err(error.into()),
+        };
+        if meta.dev() != dev || !seen.insert((meta.dev(), meta.ino())) { return Ok(()); }
+        *total = total.saturating_add(meta.blocks().saturating_mul(512));
+        if meta.is_dir() && !meta.file_type().is_symlink() {
+            let entries = match fs::read_dir(path) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => { *incomplete = true; return Ok(()); }
+                Err(error) => return Err(error.into()),
+            };
+            for entry in entries {
+                match entry {
+                    Ok(entry) => walk(&entry.path(), dev, seen, total, incomplete)?,
+                    Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => *incomplete = true,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        Ok(())
+    }
+    walk(&path, root.dev(), &mut seen, &mut total, &mut incomplete)?;
+    Ok((total, incomplete))
+}
+
+pub fn volume(path: &Path) -> Result<Value> {
+    let device = fs::metadata(path)?.dev();
+    let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    let result = unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) };
+    if result != 0 { return Err(std::io::Error::last_os_error().into()); }
+    let stat = unsafe { stat.assume_init() };
+    let block = stat.f_frsize as u64;
+    let total = (stat.f_blocks as u64).saturating_mul(block);
+    let free = (stat.f_bfree as u64).saturating_mul(block);
+    Ok(serde_json::json!({"total":total,"free":free,"device":device}))
+}
+
 pub fn bytes(path: &Path) -> Result<u64> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
@@ -23,8 +88,8 @@ pub fn bytes(path: &Path) -> Result<u64> {
     Ok(total)
 }
 
-/// The settings page can show a lower bound when a container contains
-/// root-owned overlay work directories. Migration still uses strict `bytes`.
+/// Legacy logical-size check retained for the migration permission test.
+#[cfg(test)]
 pub fn display_bytes(path: &Path) -> Result<(u64, bool)> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
@@ -363,5 +428,33 @@ mod tests {
         fs::set_permissions(&copied_work, fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(fs::read(copied_work.join("overlay-state")).unwrap(), b"private");
         fs::remove_dir_all(target).unwrap();
+    }
+    #[test]
+    fn disk_usage_does_not_follow_links_or_count_hardlinks_twice() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("payload");
+        fs::write(&file, vec![7; 8192]).unwrap();
+        fs::hard_link(&file, temp.path().join("same-blocks")).unwrap();
+        symlink(&file, temp.path().join("shortcut")).unwrap();
+        let (used, incomplete) = disk_bytes(temp.path()).unwrap();
+        let root_blocks = fs::metadata(temp.path()).unwrap().blocks() * 512;
+        let file_blocks = fs::metadata(&file).unwrap().blocks() * 512;
+        let link_blocks = fs::symlink_metadata(temp.path().join("shortcut")).unwrap().blocks() * 512;
+        assert_eq!(used, root_blocks + file_blocks + link_blocks);
+        assert!(!incomplete);
+    }
+    #[test]
+    fn disk_usage_follows_storage_root_link_but_not_nested_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("real-plugins");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("plugin"), vec![3; 8192]).unwrap();
+        let external = temp.path().join("unrelated");
+        fs::write(&external, vec![4; 8192]).unwrap();
+        symlink(&external, target.join("nested-link")).unwrap();
+        let root = temp.path().join("plugins");
+        symlink(&target, &root).unwrap();
+        assert_eq!(disk_bytes(&root).unwrap(), disk_bytes(&target).unwrap());
+        assert!(disk_bytes(&root).unwrap().0 > 0);
     }
 }

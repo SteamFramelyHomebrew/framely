@@ -1003,20 +1003,40 @@ pub fn storage_status(home: &Path) -> Result<Value> {
     let db = load(home)?;
     let mut context_bytes = 0u64;
     let mut contexts_incomplete = false;
+    let mut context_details = Vec::new();
     for id in &db.owned_contexts {
         if safe(id) {
-            let (size, incomplete) = crate::storage_location::display_bytes(&contexts.join(id))?;
+            let (size, incomplete) = crate::storage_location::disk_bytes(&contexts.join(id))?;
             context_bytes = context_bytes.saturating_add(size);
             contexts_incomplete |= incomplete;
+            context_details.push(json!({"id":id,"name":id,"bytes":size,"sizeIncomplete":incomplete}));
         }
     }
-    let (apk_bytes, apk_incomplete) = crate::storage_location::display_bytes(&apk)?;
+    let (apk_bytes, apk_incomplete) = crate::storage_location::disk_bytes(&apk)?;
+    let mut apk_details = Vec::new();
+    if let Ok(entries) = fs::read_dir(apk.join("apks")) {
+        for entry in entries {
+            let entry = match entry { Ok(entry) => entry, Err(_) => continue };
+            let path = entry.path();
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) { continue; }
+            let key = entry.file_name();
+            let record = db.records.values().find(|record| hash(&record.id) == key.to_string_lossy());
+            let (size, incomplete) = crate::storage_location::disk_bytes(&path)?;
+            let name = record.map_or_else(|| key.to_string_lossy().into_owned(), |record| record.metadata.name.clone());
+            let id = record.map_or_else(|| key.to_string_lossy().into_owned(), |record| record.id.clone());
+            apk_details.push(json!({"id":id,"name":name,"bytes":size,"sizeIncomplete":incomplete}));
+        }
+    }
+    apk_details.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    let apk_device = fs::metadata(&apk).ok().map(|m| m.dev());
+    let context_device = fs::metadata(&contexts).ok().map(|m| m.dev());
+    let volume = crate::storage_location::volume(home)?;
     let journal = fs::read(storage_journal_path(home)).ok().and_then(|b|serde_json::from_slice::<Value>(&b).ok());
     let committed = journal.as_ref().is_some_and(|v| v["target"] == json!(if v["kind"] == "apk" { &apk } else { &contexts }));
     if committed {
         let _ = fs::remove_file(storage_journal_path(home));
     }
-    Ok(json!({"apk":{"path":apk,"bytes":apk_bytes,"sizeIncomplete":apk_incomplete},"contexts":{"path":contexts,"bytes":context_bytes,"sizeIncomplete":contexts_incomplete},"interrupted":if committed {None} else {journal}}))
+    Ok(json!({"apk":{"path":apk,"bytes":apk_bytes,"sizeIncomplete":apk_incomplete,"device":apk_device,"details":apk_details},"contexts":{"path":contexts,"bytes":context_bytes,"sizeIncomplete":contexts_incomplete,"device":context_device,"details":context_details},"volume":volume,"interrupted":if committed {None} else {journal}}))
 }
 pub fn migrate_storage(home: &Path, kind: &str, target: &Path, cancel: Cancellation, progress: Arc<dyn Fn(Value) + Send + Sync>) -> Result<Value> {
     ensure!(matches!(kind, "apk" | "contexts"), "无效存储类型");
@@ -1099,6 +1119,28 @@ pub fn migrate_storage(home: &Path, kind: &str, target: &Path, cancel: Cancellat
 #[cfg(test)]
 mod storage_migration_tests {
     use super::*;
+    #[test]
+    fn storage_status_lists_apk_and_managed_container_sizes() {
+        let _serial = TEST_SERIAL.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        fs::create_dir(&home).unwrap();
+        let apk_root = init(&home).unwrap();
+        fs::create_dir_all(apk_root.join("apks/example")).unwrap();
+        fs::write(apk_root.join("apks/example/base.apk"), vec![1; 8192]).unwrap();
+        let container = contexts_root(&home).join("managed");
+        fs::create_dir_all(&container).unwrap();
+        fs::write(container.join("data"), vec![2; 8192]).unwrap();
+        let mut db = load(&home).unwrap();
+        db.owned_contexts.push("managed".into());
+        save(&home, &db).unwrap();
+        let status = storage_status(&home).unwrap();
+        assert_eq!(status["apk"]["details"][0]["id"], "example");
+        assert!(status["apk"]["details"][0]["bytes"].as_u64().unwrap() > 0);
+        assert_eq!(status["contexts"]["details"][0]["id"], "managed");
+        assert!(status["contexts"]["details"][0]["bytes"].as_u64().unwrap() > 0);
+        assert!(status["volume"]["total"].as_u64().unwrap() > 0);
+    }
     #[test]
     fn apk_and_owned_contexts_move_independently() {
         let _serial = TEST_SERIAL.lock().unwrap();

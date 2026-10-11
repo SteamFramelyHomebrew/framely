@@ -1,17 +1,20 @@
 import React, {useEffect, useState} from 'react';
-import {IconArrowLeft, IconFolder, IconFolderOpen, IconLoader2, IconX} from '@tabler/icons-react';
+import {IconArrowLeft, IconChevronRight, IconDeviceMobile, IconFolder, IconFolderOpen, IconLoader2, IconPackage, IconPuzzle, IconX} from '@tabler/icons-react';
 import {api} from './api';
 import {managerApi} from './manager-api';
 import {t} from './i18n';
 import './storage-settings.css';
 
 type Kind = 'plugin' | 'apk' | 'contexts';
-type Location = {path: string; bytes: number; sizeIncomplete?: boolean; available?: boolean; interrupted?: string | null};
+type Detail = {id: string; name: string; bytes: number; programBytes?: number; dataBytes?: number; sizeIncomplete?: boolean};
+type Location = {path: string; bytes: number; device?: number | null; details?: Detail[]; sizeIncomplete?: boolean; available?: boolean; interrupted?: string | null};
 type Places = Record<Kind, Location>;
+type Volume = {total: number; free: number; device: number};
 type Job = {phase: string; step?: string; error?: string; result?: {path: string; cleanupWarnings?: string[]}};
 type Listing = {path: string; parent: string | null; roots: {name: string; path: string}[]; entries: {name: string; path: string; directory: boolean}[]};
 
 const kinds: Kind[] = ['plugin', 'apk', 'contexts'];
+const kindIcons = {plugin: IconPuzzle, apk: IconPackage, contexts: IconDeviceMobile};
 const labels: Record<Kind, {title: string; description: string; folder: string}> = {
   plugin: {title: '插件', description: '插件程序和运行数据', folder: 'Framely-Plugins'},
   apk: {title: 'APK 文件', description: '安装包、上传文件和备份', folder: 'Framely-APK'},
@@ -61,6 +64,7 @@ function FolderBrowser({close, choose}: {close: () => void; choose: (path: strin
 
 export function StorageSettings() {
   const [places, setPlaces] = useState<Places | null>(null);
+  const [volume, setVolume] = useState<Volume | null>(null);
   const [paths, setPaths] = useState<Record<Kind, string>>({plugin: '', apk: '', contexts: ''});
   const [editing, setEditing] = useState<Kind | null>(null);
   const [picker, setPicker] = useState<Kind | null>(null);
@@ -74,7 +78,7 @@ export function StorageSettings() {
   async function refresh() {
     const [plugin, other] = await Promise.all([
       api<Location>('storage.plugin.status'),
-      api<{apk: Location; contexts: Location; interrupted?: {kind: Kind; target: string} | null}>('apk.storage.status'),
+      api<{apk: Location; contexts: Location; volume: Volume; interrupted?: {kind: Kind; target: string} | null}>('apk.storage.status'),
     ]);
     const next: Places = {
       plugin,
@@ -82,6 +86,7 @@ export function StorageSettings() {
       contexts: {...other.contexts, interrupted: other.interrupted?.kind === 'contexts' ? other.interrupted.target : null},
     };
     setPlaces(next);
+    setVolume(other.volume);
     setPaths(previous => ({
       plugin: previous.plugin || plugin.interrupted || plugin.path,
       apk: previous.apk || next.apk.interrupted || next.apk.path,
@@ -136,24 +141,68 @@ export function StorageSettings() {
     {notice && <p className="banner" role="status">{notice}</p>}
     {error && <p className="error" role="alert">{error}{!places && <button onClick={() => void reload()}>{t('重试')}</button>}</p>}
     {loading && !places && <div className="storage-loading" role="status" aria-label={t('正在读取存储位置')}>{kinds.map(kind => <div key={kind}><i/><span/><small/></div>)}</div>}
+    {places && volume && (() => {
+      const onVolume = (kind: Kind) => places[kind].bytes === 0 || places[kind].device === volume.device;
+      const managed = kinds.reduce((sum, kind) => sum + (onVolume(kind) ? places[kind].bytes : 0), 0);
+      const free = Math.min(volume.free, volume.total);
+      const used = Math.max(0, volume.total - free);
+      const other = Math.max(0, used - managed);
+      const segments = [
+        ...kinds.map(kind => ({key: kind, label: t(labels[kind].title), bytes: onVolume(kind) ? places[kind].bytes : 0, displayBytes: places[kind].bytes, moved: !onVolume(kind)})),
+        {key: 'other', label: t('系统及其他'), bytes: other, displayBytes: other, moved: false},
+        {key: 'free', label: t('空闲'), bytes: free, displayBytes: free, moved: false},
+      ];
+      return <section className="settings-card storage-overview" aria-labelledby="storage-overview-title">
+        <div className="storage-overview-heading"><div><h2 id="storage-overview-title">{t('存储占用')}</h2><p className="sub">{t('头显用户存储卷')}</p></div><div className="storage-overview-total"><strong>{size(volume.total)}</strong><span>{t('总容量')}</span></div></div>
+        <div className="storage-meter" role="img" aria-label={`${t('已使用')} ${size(used)}，${t('空闲')} ${size(free)}`}>{segments.map(segment => <span key={segment.key} className={`storage-meter-${segment.key}`} style={{width: `${volume.total ? segment.bytes / volume.total * 100 : 0}%`}} title={`${segment.label} ${size(segment.bytes)}`}/>)}</div>
+        <div className="storage-overview-usage"><span>{t('已使用')} <strong>{size(used)}</strong></span><span>{t('空闲')} <strong>{size(free)}</strong></span></div>
+        <div className="storage-legend">{segments.map(segment => <div key={segment.key} className="storage-legend-item"><i className={`storage-dot-${segment.key}`}/><span>{segment.label}{segment.moved && <small> · {t('其他磁盘')}</small>}</span><strong>{size(segment.displayBytes)}</strong></div>)}</div>
+        {kinds.some(kind => !onVolume(kind)) && <p className="storage-overview-note">{t('已迁移到其他磁盘的数据仅显示在下方明细，不计入此卷。')}</p>}
+        {kinds.some(kind => places[kind].sizeIncomplete) && <p className="storage-overview-note">{t('部分目录无法读取，Framely 占用可能低于实际值。')}</p>}
+      </section>;
+    })()}
     {places && kinds.map(kind => {
       const place = places[kind];
       const busy = !!job || !!active;
       const changing = editing === kind;
       const migrating = active === kind;
       const unchanged = !paths[kind] || paths[kind] === place.path;
+      const details = [...(place.details ?? [])].sort((a, b) => b.bytes - a.bytes);
+      const remainder = Math.max(0, place.bytes - details.reduce((sum, detail) => sum + detail.bytes, 0));
+      const detailCount = details.length + (remainder > 0 ? 1 : 0);
+      const KindIcon = kindIcons[kind];
       return <section className="settings-card storage-section" key={kind} aria-labelledby={`storage-${kind}`}>
-        <div className="storage-section-heading"><div><h2 id={`storage-${kind}`}>{t(labels[kind].title)}</h2><p className="sub">{t(labels[kind].description)}</p></div><span className="storage-size" title={place.sizeIncomplete ? t('部分目录无法读取，显示可统计的最小占用') : undefined}>{place.sizeIncomplete ? '≥ ' : ''}{size(place.bytes)}</span></div>
-        <div className="storage-location"><div><span>{t('当前位置')}</span><code title={place.path}>{place.path}</code></div><button disabled={busy || place.available === false} onClick={() => changing ? setEditing(null) : edit(kind)}>{changing ? t('取消更改') : place.interrupted ? t('继续迁移') : t('更改位置')}</button></div>
-        {place.available === false && <p className="storage-warning" role="status">{t('当前目录不可用，请先连接存储设备。')}</p>}
-        {place.interrupted && <p className="storage-warning" role="status">{t('上次迁移未完成，原目录仍在使用。可重试原目标或选择新的空目录。')}<code>{place.interrupted}</code></p>}
-        {changing && <div className="storage-change">
-          <label htmlFor={`storage-target-${kind}`}>{t('新位置')}</label>
-          <div className="storage-target"><input id={`storage-target-${kind}`} value={paths[kind]} disabled={busy} onChange={event => setPaths(previous => ({...previous, [kind]: event.target.value}))} spellCheck={false}/><button disabled={busy} onClick={() => setPicker(kind)}><IconFolderOpen size={21}/>{t('浏览')}</button></div>
-          <p className="sub">{t('目标须为空目录，并支持 Linux 文件权限。迁移期间相关程序会暂时停止。')}</p>
-          <div className="storage-actions"><button className="primary" disabled={busy || place.available === false || unchanged} onClick={() => void migrate(kind)}>{t('迁移到新位置')}</button></div>
-        </div>}
-        {migrating && <div className="storage-progress" role="status"><IconLoader2 size={20}/><span>{t(steps[step] ?? step)}</span></div>}
+        <div className="storage-section-layout">
+          <div className="storage-section-heading">
+            <span className={`storage-kind-icon storage-kind-${kind}`} aria-hidden="true"><KindIcon size={26} stroke={1.7}/></span>
+            <div><h2 id={`storage-${kind}`}>{t(labels[kind].title)}</h2><p className="sub">{t(labels[kind].description)}</p></div>
+            <span className="storage-size" title={place.sizeIncomplete ? t('部分目录无法读取，显示可统计的最小占用') : undefined}>{place.sizeIncomplete ? '≥ ' : ''}{size(place.bytes)}</span>
+          </div>
+          <div className="storage-section-content">
+            <div className="storage-location">
+              <IconFolder size={22} stroke={1.7} aria-hidden="true"/>
+              <div><span>{t('当前位置')}</span><code title={place.path}>{place.path}</code></div>
+              <button disabled={busy || place.available === false} onClick={() => changing ? setEditing(null) : edit(kind)}>{changing ? t('取消更改') : place.interrupted ? t('继续迁移') : t('更改位置')}</button>
+            </div>
+            {place.available === false && <p className="storage-warning" role="status">{t('当前目录不可用，请先连接存储设备。')}</p>}
+            {place.interrupted && <p className="storage-warning" role="status">{t('上次迁移未完成，原目录仍在使用。可重试原目标或选择新的空目录。')}<code>{place.interrupted}</code></p>}
+            {changing && <div className="storage-change">
+              <label htmlFor={`storage-target-${kind}`}>{t('新位置')}</label>
+              <div className="storage-target"><input id={`storage-target-${kind}`} value={paths[kind]} disabled={busy} onChange={event => setPaths(previous => ({...previous, [kind]: event.target.value}))} spellCheck={false}/><button disabled={busy} onClick={() => setPicker(kind)}><IconFolderOpen size={21}/>{t('浏览')}</button></div>
+              <p className="sub">{t('目标须为空目录，并支持 Linux 文件权限。迁移期间相关程序会暂时停止。')}</p>
+              <div className="storage-actions"><button className="primary" disabled={busy || place.available === false || unchanged} onClick={() => void migrate(kind)}>{t('迁移到新位置')}</button></div>
+            </div>}
+            {migrating && <div className="storage-progress" role="status"><IconLoader2 size={20}/><span>{t(steps[step] ?? step)}</span></div>}
+            <details className="storage-details">
+              <summary><span>{t('占用明细')}</span><small>{t('{0} 项', {'0': detailCount})}</small><IconChevronRight size={19} aria-hidden="true"/></summary>
+              <div className="storage-detail-list">
+                {details.map(detail => <div className="storage-detail-row" key={detail.id}><div><strong>{detail.name || detail.id}</strong>{detail.id !== detail.name && <small title={detail.id}>{detail.id}</small>}{kind === 'plugin' && <small>{t('程序')} {size(detail.programBytes ?? 0)} · {t('数据')} {size(detail.dataBytes ?? 0)}</small>}</div><span title={detail.sizeIncomplete ? t('部分目录无法读取，显示可统计的最小占用') : undefined}>{detail.sizeIncomplete ? '≥ ' : ''}{size(detail.bytes)}</span></div>)}
+                {remainder > 0 && <div className="storage-detail-row storage-detail-other"><div><strong>{t(kind === 'apk' ? '备份、上传文件及其他' : kind === 'plugin' ? '其他插件文件' : '其他容器文件')}</strong></div><span>{size(remainder)}</span></div>}
+                {detailCount === 0 && <p className="storage-empty">{t('暂无数据')}</p>}
+              </div>
+            </details>
+          </div>
+        </div>
       </section>;
     })}
     {picker && <FolderBrowser close={() => setPicker(null)} choose={parent => setPaths(previous => ({...previous, [picker]: `${parent.replace(/\/$/, '')}/${labels[picker].folder}`}))}/>}
