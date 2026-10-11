@@ -19,7 +19,12 @@ else
 fi
 binary=${CARGO_TARGET_DIR:-target}/release/framely
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-build_id="$version-$(find "$binary" target/native media/bin ui/dist sdk templates/plugin examples/showcase packaging tools docs assets/branding assets/search README.md README.zh-CN.md LICENSE -type f ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)"
+q2f_java=${Q2F_JAVA_HOME:-target/quest-conversion-jre}
+q2f_cli=${Q2F_CLI_JAR:-target/overportcli-1.2.3-all.jar}
+q2f_libraries=${Q2F_LIBRARIES_ZIP:-target/overport-libraries-3.4.3-23204ea.zip}
+q2f_license=${Q2F_LICENSE:-target/overport-source/LICENSE}
+q2f_source=${Q2F_SOURCE_ARCHIVE:-target/q2f-source.tar.gz}
+build_id="$version-$(find "$binary" target/native media/bin ui/dist sdk templates/plugin examples/showcase packaging tools docs assets/branding assets/search README.md README.zh-CN.md LICENSE "$q2f_java" "$q2f_cli" "$q2f_libraries" "$q2f_license" "$q2f_source" -type f ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)"
 stage="$base/release/framely-$build_id"
 [[ ! -e $stage ]] || { echo 'Release already exists.' >&2; exit 1; }
 mkdir -p "$stage"/{bin,lib/cef,lib/openvr,lib/media,share/ui,share/licenses,tools}
@@ -74,10 +79,15 @@ cp -a assets/branding "$stage/tools/source/assets/"
 cp -a examples/showcase "$stage/tools/source/examples/"
 cp -a ui/src ui/locales ui/index.html ui/package.json "$stage/tools/source/ui/"
 cp tools/build-ui.mjs tools/build-branding.mjs tools/plugin-dev.mjs "$stage/tools/source/tools/"
-cp tools/extract-release.py tools/bootstrap.py tools/cef-runtime.py tools/export-diagnostics.py "$stage/tools/"
+cp tools/extract-release.py tools/bootstrap.py tools/cef-runtime.py tools/q2f-runtime.py tools/export-diagnostics.py "$stage/tools/"
 find "$stage/tools/source" -type d -name __pycache__ -prune -exec rm -rf -- {} +
 cp -a docs "$stage/share/"
 printf '%s\n' "$build_id" > "$stage/VERSION"
 chmod 755 "$stage"/*.sh "$stage/bin/"* "$stage/lib/cef/framely-vr"
+python3 tools/package-q2f.py --stage "$stage" --output release \
+  --java-home "$q2f_java" --cli-jar "$q2f_cli" \
+  --libraries-zip "$q2f_libraries" --license "$q2f_license" \
+  --source-archive "$q2f_source" \
+  --repo "${RELEASE_REPO:-SteamFramelyHomebrew/framely}" --tag "${RELEASE_TAG:-v$version}"
 python3 tools/package-runtime.py "$stage" "$cef" "${RELEASE_REPO:-SteamFramelyHomebrew/framely}" "${RELEASE_TAG:-v$version}"
 echo "Package: release/framely-$build_id-linux-arm64.tar.gz"

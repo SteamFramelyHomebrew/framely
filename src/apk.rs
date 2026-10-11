@@ -25,6 +25,7 @@ mod graphics;
 mod lifecycle;
 mod native;
 pub(crate) mod permissions;
+mod q2f;
 mod steam_bridge;
 mod steam_shortcuts;
 pub(crate) mod steam_ui;
@@ -2774,6 +2775,17 @@ pub fn reviews_drop(home: &Path, ticket: &str) -> Result<Value> {
         fs::remove_dir_all(d)?;
     }
     Ok(json!(true))
+}
+pub fn q2f_convert(
+    home: &Path,
+    ticket: &str,
+    cancel: &Cancellation,
+    progress: impl Fn(Value) -> Result<()>,
+) -> Result<Value> {
+    q2f::convert(home, ticket, cancel, progress)
+}
+pub fn q2f_status(home: &Path) -> Result<Value> {
+    q2f::status(home)
 }
 pub fn operate(
     home: &Path,

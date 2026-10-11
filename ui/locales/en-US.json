@@ -1285,6 +1285,18 @@
     "分别设置应用在 Steam 中显示的名称。留空恢复应用原名；更新 APK 后保留。Steam 不可用时将在就绪后同步。": "Set each app’s name in Steam. Leave blank to use its original name. Names survive APK updates and sync when Steam is ready.",
     "Invalid Steam display name": "Invalid Steam display name",
     "Steam display name must be at most 128 characters without control characters": "Steam display name must be at most 128 characters without control characters",
-    "Steam name update was not acknowledged": "Steam name update was not acknowledged"
+    "Steam name update was not acknowledged": "Steam name update was not acknowledged",
+    "Quest 兼容转换": "Quest compatibility conversion",
+    "此 APK 已完成兼容转换并重新签名。": "This APK has been converted and re-signed.",
+    "可选：使用独立 q2f 工具包转换并重新签名 APK。首次使用会下载工具包，转换结果仍需在 Frame 上验证。": "Optional: convert and re-sign this APK with the separate q2f package. The package downloads on first use; the result still needs testing on Frame.",
+    "已转换": "Converted",
+    "转换此 APK": "Convert this APK",
+    "准备 Quest 转换工具": "Preparing Quest converter",
+    "正在转换 APK": "Converting APK",
+    "校验转换结果": "Verifying converted APK",
+    "转换完成，请确认安装。": "Conversion complete. Review the APK before installing.",
+    "正在检查转换工具": "Checking converter",
+    "工具包已缓存": "Converter cached",
+    "首次使用需下载 {0} 工具包": "First use downloads the {0} converter"
   }
 }

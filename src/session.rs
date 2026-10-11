@@ -1077,6 +1077,16 @@ impl Agent {
                 &crate::steam::home()?,
                 p["ticket"].as_str().context("Missing APK review")?,
             ),
+            "apk.q2f.status" => crate::apk::q2f_status(&crate::steam::home()?),
+            "apk.q2f.start" => {
+                let _gate = APK_STORAGE_API_GATE.lock().unwrap();
+                ensure!(!self.jobs.active_kind("apk:storage") && !self.jobs.active_kind("apk:operation"), "请等待 APK 操作或存储迁移完成");
+                let home = crate::steam::home()?;
+                let ticket = p["ticket"].as_str().context("Missing APK review")?.to_owned();
+                self.jobs.task_progress("apk:operation", move |cancel, progress| {
+                    crate::apk::q2f_convert(&home, &ticket, &cancel, |value| { progress(value); Ok(()) })
+                })
+            }
             "apk.cleanup.list" => crate::apk::cleanup_list(&crate::steam::home()?),
             "apk.storage.status" => crate::apk::storage_status(&crate::steam::home()?),
             "apk.permission.pending" => Ok(json!(crate::apk::permissions::pending(&crate::steam::home()?)?)),
