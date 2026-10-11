@@ -1279,6 +1279,12 @@
     "其他容器文件": "Other container files",
     "暂无数据": "No data yet",
     "其他磁盘": "Other drive",
-    "{0} 项": "{0} items"
+    "{0} 项": "{0} items",
+    "自定义 Steam 名称": "Custom Steam name",
+    "Steam 显示名称": "Steam display name",
+    "分别设置应用在 Steam 中显示的名称。留空恢复应用原名；更新 APK 后保留。Steam 不可用时将在就绪后同步。": "Set each app’s name in Steam. Leave blank to use its original name. Names survive APK updates and sync when Steam is ready.",
+    "Invalid Steam display name": "Invalid Steam display name",
+    "Steam display name must be at most 128 characters without control characters": "Steam display name must be at most 128 characters without control characters",
+    "Steam name update was not acknowledged": "Steam name update was not acknowledged"
   }
 }

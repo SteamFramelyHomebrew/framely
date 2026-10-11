@@ -50,6 +50,8 @@ pub(crate) static TEST_SERIAL: Mutex<()> = Mutex::new(());
 #[serde(rename_all = "camelCase")]
 struct Record {
     #[serde(default)]
+    steam_name: Option<String>,
+    #[serde(default)]
     steam_launch: bool,
     #[serde(default)]
     steam_preference: Option<bool>,
@@ -993,7 +995,7 @@ pub fn list(home: &Path) -> Result<Value> {
         }
     }
     Ok(
-        json!({"apps":apps.iter().map(|a| { let mut v=serde_json::to_value(a).unwrap(); v["steamLaunch"]=json!(db.records.get(&a.id).is_none_or(steam_shortcuts::wanted)); v["steamRegistered"]=json!(db.records.get(&a.id).is_some_and(|r|r.steam_launch));v["steamRegistrationError"]=json!(db.records.get(&a.id).and_then(|r|r.steam_registration_error.as_ref())); v }).collect::<Vec<_>>(),"containers":cs.iter().map(|c| { let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(false); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"retainSteamEntries":db.retain_steam_entries,"gamepadEnabled":db.gamepad_enabled,"gamepadSource":db.gamepad_source,"gamepadRumble":db.gamepad_rumble,"gamepadTriggerThreshold":db.gamepad_trigger_threshold,"autoStopContainer":db.auto_stop_container,"stopContainerOnClose":db.stop_container_on_close}),
+        json!({"apps":apps.iter().map(|a| { let mut v=serde_json::to_value(a).unwrap(); v["steamName"]=json!(db.records.get(&a.id).and_then(|r|r.steam_name.as_ref())); v["steamLaunch"]=json!(db.records.get(&a.id).is_none_or(steam_shortcuts::wanted)); v["steamRegistered"]=json!(db.records.get(&a.id).is_some_and(|r|r.steam_launch));v["steamRegistrationError"]=json!(db.records.get(&a.id).and_then(|r|r.steam_registration_error.as_ref())); v }).collect::<Vec<_>>(),"containers":cs.iter().map(|c| { let mut v=serde_json::to_value(c).unwrap(); v["acceptsAdditionalApps"]=json!(false); v }).collect::<Vec<_>>(),"warnings":warnings,"roots":db.roots,"available":runner(home).is_ok(),"retainSteamEntries":db.retain_steam_entries,"gamepadEnabled":db.gamepad_enabled,"gamepadSource":db.gamepad_source,"gamepadRumble":db.gamepad_rumble,"gamepadTriggerThreshold":db.gamepad_trigger_threshold,"autoStopContainer":db.auto_stop_container,"stopContainerOnClose":db.stop_container_on_close}),
     )
 }
 pub fn storage_status(home: &Path) -> Result<Value> {
@@ -2787,7 +2789,7 @@ pub fn operate(
         }
     }
     let result = operate_internal(home, kind, p, cancel, progress, None);
-    if matches!(kind, "install" | "steam.retention.settings") && result.is_ok() {
+    if matches!(kind, "install" | "steam.retention.settings" | "settings") && result.is_ok() {
         steam_shortcuts::wake_registration();
     }
     result
@@ -3163,6 +3165,11 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                 );
                 record_app(&mut db, &a);
                 let rec = db.records.get_mut(id).unwrap();
+                let steam_name = p.get("steamName").map(steam_shortcuts::parse_name).transpose()?;
+                if let Some(name) = &steam_name {
+                    ensure!(!a.steam, "This app is already managed by Steam");
+                    rec.steam_name = name.clone();
+                }
                 if let Some(v) = p.get("activity") {
                     let activity = v.as_str().filter(|s| !s.is_empty());
                     ensure!(
@@ -3193,6 +3200,14 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                     rec.orientation = v.as_str().filter(|s| *s != "auto").map(str::to_owned);
                 }
                 cancel.commit(|| save(home, &db))?;
+                if steam_name.is_some() {
+                    let rec = db.records.get_mut(id).unwrap();
+                    if rec.steam_launch && steam_shortcuts::linked(home, rec) {
+                        let result = steam_shortcuts::update_name(home, &a, rec);
+                        rec.steam_registration_error = result.err().map(|e| format!("{e:#}"));
+                        save(home, &db)?;
+                    }
+                }
                 Ok(json!(true))
             }
             "launch" | "close" | "uninstall" | "purge" | "clear" => {
@@ -4701,6 +4716,38 @@ setup_props
             }
             calls
         })
+    }
+    #[test]
+    fn custom_steam_names_persist_reset_and_preserve_app_identity() {
+        let f = Fixture::new();
+        let id = "test/com.example.app";
+        let before = list(&f.home).unwrap();
+        let original = before["apps"][0]["metadata"]["name"].clone();
+        f.operation("settings", json!({"app":id,"steamName":"  我的游戏 🎮  "})).unwrap();
+        assert_eq!(load(&f.home).unwrap().records[id].steam_name.as_deref(), Some("我的游戏 🎮"));
+        let after = list(&f.home).unwrap();
+        assert_eq!(after["apps"][0]["steamName"], "我的游戏 🎮");
+        assert_eq!(after["apps"][0]["metadata"]["name"], original);
+        for value in [json!(42), json!("bad\nname"), json!("x".repeat(129))] {
+            assert!(f.operation("settings", json!({"app":id,"steamName":value})).is_err());
+            assert_eq!(load(&f.home).unwrap().records[id].steam_name.as_deref(), Some("我的游戏 🎮"));
+        }
+        let mut db = load(&f.home).unwrap();
+        let (a, _) = app(&f.home, &db, id).unwrap();
+        let record = db.records.get_mut(id).unwrap();
+        record.steam_binding = Some(steam_shortcuts::Binding { game_id: steam_shortcuts::game_id(id), native: true, revision: "stale".into() });
+        steam_ui::TEST_RESULT.with(|v| *v.borrow_mut() = Some(json!(true)));
+        steam_shortcuts::update_name(&f.home, &a, record).unwrap();
+        assert_ne!(record.steam_binding.as_ref().unwrap().revision, "stale");
+        let current_revision = record.steam_binding.as_ref().unwrap().revision.clone();
+        record.steam_name = Some("New name".into());
+        steam_ui::TEST_RESULT.with(|v| *v.borrow_mut() = Some(json!(false)));
+        assert!(steam_shortcuts::update_name(&f.home, &a, record).is_err());
+        assert_eq!(record.steam_binding.as_ref().unwrap().revision, current_revision);
+        f.operation("settings", json!({"app":id,"steamName":"  "})).unwrap();
+        assert!(load(&f.home).unwrap().records[id].steam_name.is_none());
+        assert!(list(&f.home).unwrap()["apps"][0]["steamName"].is_null());
+        assert_eq!(fs::read_to_string(f.home.join(".local/share/lepton/contexts/test/baked/data_overlay/data/com.example.app/files/save")).unwrap(), "saved progress");
     }
     #[test]
     fn transient_steam_entry_is_launch_only_protects_newer_launch_and_preserves_data() {

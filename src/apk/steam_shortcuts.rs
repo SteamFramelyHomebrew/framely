@@ -210,7 +210,7 @@ pub(super) fn register(home: &Path, a: &App, r: &mut Record) -> Result<()> {
     r.steam_binding = Some(Binding {
         game_id: game.clone(),
         native: true,
-        revision: revision(a),
+        revision: revision(a, r),
     });
     rpc(home, "create-shortcut", Some(&game))?;
     let v: Value = serde_json::from_str(&rpc(home, "list-shortcuts", None)?)?;
@@ -230,7 +230,7 @@ pub(super) fn register(home: &Path, a: &App, r: &mut Record) -> Result<()> {
     r.steam_app_id = Some(super::steam_ui::configure(
         &game,
         r.steam_app_id,
-        &a.metadata.name,
+        r.steam_name.as_deref().unwrap_or(&a.metadata.name),
         icon.as_deref(),
         &launch,
         &native_apk(home, &a.id),
@@ -238,7 +238,7 @@ pub(super) fn register(home: &Path, a: &App, r: &mut Record) -> Result<()> {
     r.steam_binding = Some(Binding {
         game_id: game,
         native: true,
-        revision: revision(a),
+        revision: revision(a, r),
     });
     Ok(())
 }
@@ -285,8 +285,30 @@ pub(super) fn unregister(home: &Path, r: &Record) -> Result<()> {
     }
     Ok(())
 }
-fn revision(a: &App) -> String {
-    hash(&json!({"metadata":a.metadata,"showWindow":a.show_window}).to_string())
+pub(super) fn parse_name(value: &Value) -> Result<Option<String>> {
+    let name = value.as_str().context("Invalid Steam display name")?.trim();
+    ensure!(name.chars().count() <= 128 && !name.chars().any(char::is_control), "Steam display name must be at most 128 characters without control characters");
+    Ok((!name.is_empty()).then(|| name.to_owned()))
+}
+fn revision(a: &App, r: &Record) -> String {
+    let mut value = json!({"metadata":a.metadata,"showWindow":a.show_window});
+    if let Some(name) = &r.steam_name {
+        value["steamName"] = json!(name);
+    }
+    hash(&value.to_string())
+}
+pub(super) fn update_name(home: &Path, a: &App, r: &mut Record) -> Result<()> {
+    let parameters = json!({"game":game_id(&a.id),"previous":r.steam_app_id,"exe":native_apk(home,&a.id),"name":r.steam_name.as_deref().unwrap_or(&a.metadata.name)});
+    let result = steam_ui::evaluate(&format!(
+        "(async()=>{{const p={parameters};const owned=await ({lookup})(p);SteamClient.Apps.SetShortcutName(owned.id,p.name);return true;}})()",
+        lookup = include_str!("steam_shortcut_lookup.js")
+    ))?;
+    ensure!(result == json!(true), "Steam name update was not acknowledged");
+    let current_revision = revision(a, r);
+    if let Some(binding) = &mut r.steam_binding {
+        binding.revision = current_revision;
+    }
+    Ok(())
 }
 fn icon_file(dir: &Path, metadata: &Metadata) -> Result<Option<PathBuf>> {
     use base64::Engine;
@@ -369,7 +391,7 @@ pub(super) fn ensure_registered(home: &Path, id: &str, force: bool) -> Result<bo
         && rec
             .steam_binding
             .as_ref()
-            .is_some_and(|b| b.native && b.revision == revision(&a))
+            .is_some_and(|b| b.native && b.revision == revision(&a, rec))
     {
         save(home, &db)?;
         return Ok(true);
@@ -421,7 +443,7 @@ pub(super) fn synchronize(home: &Path) -> Result<()> {
                     && linked(home, r)
                     && r.steam_binding
                         .as_ref()
-                        .is_some_and(|b| b.native && b.revision == revision(&a))
+                        .is_some_and(|b| b.native && b.revision == revision(&a, r))
             })
         {
             continue;
