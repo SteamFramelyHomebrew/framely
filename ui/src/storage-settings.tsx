@@ -1,34 +1,161 @@
-import React,{useEffect,useState} from 'react';
-import {IconDeviceFloppy,IconFolder,IconFolderOpen,IconArrowLeft,IconLoader2} from '@tabler/icons-react';
+import React, {useEffect, useState} from 'react';
+import {IconArrowLeft, IconFolder, IconFolderOpen, IconLoader2, IconX} from '@tabler/icons-react';
 import {api} from './api';
 import {managerApi} from './manager-api';
 import {t} from './i18n';
 import './storage-settings.css';
 
-type Kind='plugin'|'apk'|'contexts';
-type Location={path:string;bytes:number;sizeIncomplete?:boolean;migrating?:boolean;available?:boolean;interrupted?:string|null};
-type Places={plugin:Location;apk:Location;contexts:Location};
-type Job={phase:string;step?:string;error?:string;result?:{path:string;cleanupWarnings?:string[]}};
-type Listing={path:string;parent:string|null;roots:{name:string;path:string}[];entries:{name:string;path:string;directory:boolean}[]};
-const labels:Record<Kind,{title:string;description:string;folder:string}>={
- plugin:{title:'插件',description:'已安装插件的程序和运行数据',folder:'Framely Plugins'},
- apk:{title:'APK 文件',description:'安装包、上传文件与恢复备份',folder:'Framely APK'},
- contexts:{title:'安卓容器',description:'由 Framely 创建的 Lepton 容器与应用数据',folder:'Framely Android'},
+type Kind = 'plugin' | 'apk' | 'contexts';
+type Location = {path: string; bytes: number; sizeIncomplete?: boolean; available?: boolean; interrupted?: string | null};
+type Places = Record<Kind, Location>;
+type Job = {phase: string; step?: string; error?: string; result?: {path: string; cleanupWarnings?: string[]}};
+type Listing = {path: string; parent: string | null; roots: {name: string; path: string}[]; entries: {name: string; path: string; directory: boolean}[]};
+
+const kinds: Kind[] = ['plugin', 'apk', 'contexts'];
+const labels: Record<Kind, {title: string; description: string; folder: string}> = {
+  plugin: {title: '插件', description: '插件程序和运行数据', folder: 'Framely-Plugins'},
+  apk: {title: 'APK 文件', description: '安装包、上传文件和备份', folder: 'Framely-APK'},
+  contexts: {title: '安卓容器', description: 'Framely 创建的 Lepton 容器和应用数据', folder: 'Framely-Android'},
 };
-function size(n:number){return n<1024?`${n} B`:n<1048576?`${(n/1024).toFixed(1)} KiB`:n<1073741824?`${(n/1048576).toFixed(1)} MiB`:`${(n/1073741824).toFixed(1)} GiB`;}
-async function browse(path:string):Promise<Listing>{return managerApi<Listing>('files',{operation:'list',path:path||undefined,hidden:false});}
-function FolderBrowser({close,choose}:{close:()=>void;choose:(path:string)=>void}){
- const [listing,setListing]=useState<Listing|null>(null),[error,setError]=useState(''),[loading,setLoading]=useState(false);
- async function open(path:string){setLoading(true);setError('');try{setListing(await browse(path));}catch(e){setError(String(e));}finally{setLoading(false);}}
- useEffect(()=>{void open('');},[]);
- return <div className="storage-picker-backdrop" onClick={e=>{if(e.target===e.currentTarget)close();}}><div className="storage-picker" role="dialog" aria-modal="true" aria-label={t('选择目标目录')}><header><h2>{t('选择目标目录')}</h2><button onClick={close}>×</button></header><p>{t('选择目标目录的上级目录，Framely 将在其中创建专用文件夹。')}</p><div className="storage-picker-location"><button disabled={!listing?.parent||loading} onClick={()=>listing?.parent&&void open(listing.parent)} aria-label={t('上级目录')}><IconArrowLeft size={18}/></button><code>{listing?.path??'…'}</code></div><div className="storage-picker-roots">{listing?.roots.map(root=><button key={root.path} onClick={()=>void open(root.path)}>{root.name}</button>)}</div><div className="storage-picker-folders">{listing?.entries.filter(e=>e.directory).map(entry=><button key={entry.path} onClick={()=>void open(entry.path)}><IconFolder size={19}/>{entry.name}</button>)}{loading&&<span>{t('正在读取目录…')}</span>}</div>{error&&<p role="alert" className="error">{error}</p>}<footer><button onClick={close}>{t('取消')}</button><button className="primary" disabled={!listing||loading} onClick={()=>{choose(listing!.path);close();}}>{t('使用此位置')}</button></footer></div></div>;
+const steps: Record<string, string> = {
+  queued: '准备迁移', loading: '准备迁移', stopping: '停止相关程序',
+  copying: '复制数据', verifying: '核对文件', switching: '切换目录',
+  restarting: '恢复运行', cleaning: '清理旧目录',
+};
+function size(n: number) {
+  return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KiB`
+    : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MiB` : `${(n / 1073741824).toFixed(1)} GiB`;
 }
-export function StorageSettings(){
- const [places,setPlaces]=useState<Places|null>(null),[paths,setPaths]=useState<Record<Kind,string>>({plugin:'',apk:'',contexts:''}),[active,setActive]=useState<Kind|null>(null),[picker,setPicker]=useState<Kind|null>(null),[job,setJob]=useState<{kind:Kind;id:string}|null>(null),[step,setStep]=useState(''),[error,setError]=useState(''),[notice,setNotice]=useState('');
- async function refresh(){const [plugin,other]=await Promise.all([api<Location>('storage.plugin.status'),api<{apk:Location;contexts:Location;interrupted?:{kind:Kind;target:string}|null}>('apk.storage.status')]);const next={plugin,apk:{...other.apk,interrupted:other.interrupted?.kind==='apk'?other.interrupted.target:null},contexts:{...other.contexts,interrupted:other.interrupted?.kind==='contexts'?other.interrupted.target:null}};setPlaces(next);setPaths(v=>({plugin:v.plugin||plugin.interrupted||plugin.path,apk:v.apk||next.apk.interrupted||other.apk.path,contexts:v.contexts||next.contexts.interrupted||other.contexts.path}));}
- useEffect(()=>{void refresh().catch(e=>setError(String(e)));},[]);
- useEffect(()=>{if(!job)return;let alive=true;const poll=async()=>{try{const value=await api<Job>(job.kind==='plugin'?'storage.plugin.job':'job.status',{job:job.id});if(!alive)return;setStep(value.step??value.phase);if(value.phase==='done'){setJob(null);setActive(null);setNotice(value.result?.cleanupWarnings?.length?t('迁移完成；旧目录清理未完成，请检查原位置。'):t('迁移完成'));setPaths(v=>({...v,[job.kind]:value.result?.path??v[job.kind]}));await refresh();}else if(value.phase==='failed'||value.phase==='cancelled'){setJob(null);setActive(null);setError(value.error??t('迁移失败'));await refresh();}}catch(e){if(alive)setError(String(e));}};void poll();const timer=setInterval(()=>void poll(),500);return()=>{alive=false;clearInterval(timer);};},[job]);
- async function migrate(kind:Kind){setError('');setNotice('');setActive(kind);try{const result=await api<{job:string}>(kind==='plugin'?'storage.plugin.start':'apk.storage.start',kind==='plugin'?{path:paths[kind]}:{kind,path:paths[kind]});setJob({kind,id:result.job});setStep('queued');}catch(e){setError(String(e));setActive(null);}}
- const descriptions:Record<string,string>={queued:'排队中',loading:'准备中',stopping:'停止相关程序',copying:'复制数据',verifying:'核对文件',switching:'切换目录',restarting:'恢复运行',cleaning:'清理旧目录'};
- return <div className="storage-settings"><div className="list-heading"><div><h1>{t('存储')}</h1><p>{t('分别管理插件、APK 文件和安卓容器的数据位置。')}</p></div></div><p className="storage-intro">{t('迁移会暂时停止相关程序；完成前原位置仍可用于恢复。目标目录须为空，并支持 Linux 文件权限。')}</p>{error&&<p className="error" role="alert">{error}</p>}{notice&&<p className="storage-notice" role="status">{notice}</p>}{places&&(['plugin','apk','contexts'] as const).map(kind=>{const place=places[kind],busy=!!job||!!active;return <section className="settings-card storage-card" key={kind}><div className="storage-card-heading"><div className="storage-card-icon"><IconDeviceFloppy size={24} stroke={1.6}/></div><div><h2>{t(labels[kind].title)}</h2><p>{t(labels[kind].description)}</p></div><strong title={place.sizeIncomplete?t('部分目录无法读取，显示可统计的最小占用'):undefined}>{place.sizeIncomplete?'≥ ':''}{size(place.bytes)}</strong></div><div className="storage-current"><span>{t('当前位置')}</span><code title={place.path}>{place.path}</code></div>{place.available===false&&<p className="storage-interrupted" role="status">{t('当前存储目录不可用，请先连接存储设备。')}</p>}{place.interrupted&&<p className="storage-interrupted" role="status">{t('上次迁移未完成，原目录仍在使用。可重试原目标或选择新的空目录。原副本不会自动删除：')}<code>{place.interrupted}</code></p>}<label className="storage-target"><span>{t('目标目录')}</span><div><input aria-label={`${t(labels[kind].title)} ${t('目标目录')}`} value={paths[kind]} disabled={busy} onChange={e=>setPaths(v=>({...v,[kind]:e.target.value}))} spellCheck={false}/><button disabled={busy} onClick={()=>setPicker(kind)}><IconFolderOpen size={18}/>{t('浏览')}</button></div></label><div className="storage-actions"><button className="primary" disabled={busy||place.available===false||!paths[kind]||paths[kind]===place.path} onClick={()=>void migrate(kind)}>{active===kind?<><IconLoader2 size={18}/>{t(descriptions[step]??step)}</>:t('迁移到此目录')}</button></div></section>;})}{picker&&<FolderBrowser close={()=>setPicker(null)} choose={parent=>setPaths(v=>({...v,[picker]:parent.replace(/\/$/,'')+'/'+labels[picker].folder.replace(/ /g,'-')}))}/>}</div>;
+async function browse(path: string): Promise<Listing> {
+  return managerApi<Listing>('files', {operation: 'list', path: path || undefined, hidden: false});
+}
+
+function FolderBrowser({close, choose}: {close: () => void; choose: (path: string) => void}) {
+  const [listing, setListing] = useState<Listing | null>(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  async function open(path: string) {
+    setLoading(true);
+    setError('');
+    try { setListing(await browse(path)); }
+    catch (e) { setError(String(e)); }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { void open(''); }, []);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [close]);
+  return <div className="storage-picker-backdrop" onClick={event => { if (event.target === event.currentTarget) close(); }}>
+    <div className="storage-picker" role="dialog" aria-modal="true" aria-label={t('选择目标目录')}>
+      <header><div><h2>{t('选择目标目录')}</h2><p>{t('选择上级目录，Framely 会在其中创建专用文件夹。')}</p></div><button className="icon-button" aria-label={t('关闭')} onClick={close}><IconX size={22}/></button></header>
+      <div className="storage-picker-location"><button className="icon-button" disabled={!listing?.parent || loading} onClick={() => listing?.parent && void open(listing.parent)} aria-label={t('上级目录')}><IconArrowLeft size={22}/></button><code title={listing?.path}>{listing?.path ?? t('正在读取目录…')}</code></div>
+      {!!listing?.roots.length && <div className="storage-picker-roots">{listing.roots.map(root => <button key={root.path} disabled={loading} onClick={() => void open(root.path)}>{root.name}</button>)}</div>}
+      <div className="storage-picker-folders">{listing?.entries.filter(entry => entry.directory).map(entry => <button key={entry.path} disabled={loading} onClick={() => void open(entry.path)}><IconFolder size={21}/><span>{entry.name}</span></button>)}{!loading && listing && !listing.entries.some(entry => entry.directory) && <p className="sub">{t('此目录下没有文件夹')}</p>}{loading && <p className="sub" role="status">{t('正在读取目录…')}</p>}</div>
+      {error && <p role="alert" className="error">{error}</p>}
+      <footer><button onClick={close}>{t('取消')}</button><button className="primary" disabled={!listing || loading} onClick={() => { choose(listing!.path); close(); }}>{t('选择此位置')}</button></footer>
+    </div>
+  </div>;
+}
+
+export function StorageSettings() {
+  const [places, setPlaces] = useState<Places | null>(null);
+  const [paths, setPaths] = useState<Record<Kind, string>>({plugin: '', apk: '', contexts: ''});
+  const [editing, setEditing] = useState<Kind | null>(null);
+  const [picker, setPicker] = useState<Kind | null>(null);
+  const [active, setActive] = useState<Kind | null>(null);
+  const [job, setJob] = useState<{kind: Kind; id: string} | null>(null);
+  const [step, setStep] = useState('');
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  async function refresh() {
+    const [plugin, other] = await Promise.all([
+      api<Location>('storage.plugin.status'),
+      api<{apk: Location; contexts: Location; interrupted?: {kind: Kind; target: string} | null}>('apk.storage.status'),
+    ]);
+    const next: Places = {
+      plugin,
+      apk: {...other.apk, interrupted: other.interrupted?.kind === 'apk' ? other.interrupted.target : null},
+      contexts: {...other.contexts, interrupted: other.interrupted?.kind === 'contexts' ? other.interrupted.target : null},
+    };
+    setPlaces(next);
+    setPaths(previous => ({
+      plugin: previous.plugin || plugin.interrupted || plugin.path,
+      apk: previous.apk || next.apk.interrupted || next.apk.path,
+      contexts: previous.contexts || next.contexts.interrupted || next.contexts.path,
+    }));
+  }
+  async function reload() {
+    setLoading(true);
+    setError('');
+    try { await refresh(); }
+    catch (e) { setError(String(e)); }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { void reload(); }, []);
+  useEffect(() => {
+    if (!job) return;
+    let alive = true;
+    const poll = async () => {
+      try {
+        const value = await api<Job>(job.kind === 'plugin' ? 'storage.plugin.job' : 'job.status', {job: job.id});
+        if (!alive) return;
+        setStep(value.step ?? value.phase);
+        if (value.phase === 'done') {
+          setJob(null); setActive(null); setEditing(null);
+          setNotice(value.result?.cleanupWarnings?.length ? t('迁移完成。旧目录未能清理，请检查原位置。') : t('迁移完成'));
+          setPaths(previous => ({...previous, [job.kind]: value.result?.path ?? previous[job.kind]}));
+          await refresh();
+        } else if (value.phase === 'failed' || value.phase === 'cancelled') {
+          setJob(null); setActive(null);
+          setError(value.error ?? t('迁移失败'));
+          await refresh();
+        }
+      } catch (e) { if (alive) setError(String(e)); }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 750);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [job]);
+  async function migrate(kind: Kind) {
+    setError(''); setNotice(''); setActive(kind);
+    try {
+      const result = await api<{job: string}>(kind === 'plugin' ? 'storage.plugin.start' : 'apk.storage.start', kind === 'plugin' ? {path: paths[kind]} : {kind, path: paths[kind]});
+      setJob({kind, id: result.job}); setStep('queued');
+    } catch (e) { setError(String(e)); setActive(null); }
+  }
+  function edit(kind: Kind) {
+    setError(''); setNotice(''); setEditing(kind);
+    if (places) setPaths(previous => ({...previous, [kind]: places[kind].interrupted || places[kind].path}));
+  }
+  return <div className="storage-settings">
+    <div className="list-heading"><div><h1>{t('存储')}</h1><p>{t('管理插件、APK 文件和安卓容器的存放位置。')}</p></div></div>
+    {notice && <p className="banner" role="status">{notice}</p>}
+    {error && <p className="error" role="alert">{error}{!places && <button onClick={() => void reload()}>{t('重试')}</button>}</p>}
+    {loading && !places && <div className="storage-loading" role="status" aria-label={t('正在读取存储位置')}>{kinds.map(kind => <div key={kind}><i/><span/><small/></div>)}</div>}
+    {places && kinds.map(kind => {
+      const place = places[kind];
+      const busy = !!job || !!active;
+      const changing = editing === kind;
+      const migrating = active === kind;
+      const unchanged = !paths[kind] || paths[kind] === place.path;
+      return <section className="settings-card storage-section" key={kind} aria-labelledby={`storage-${kind}`}>
+        <div className="storage-section-heading"><div><h2 id={`storage-${kind}`}>{t(labels[kind].title)}</h2><p className="sub">{t(labels[kind].description)}</p></div><span className="storage-size" title={place.sizeIncomplete ? t('部分目录无法读取，显示可统计的最小占用') : undefined}>{place.sizeIncomplete ? '≥ ' : ''}{size(place.bytes)}</span></div>
+        <div className="storage-location"><div><span>{t('当前位置')}</span><code title={place.path}>{place.path}</code></div><button disabled={busy || place.available === false} onClick={() => changing ? setEditing(null) : edit(kind)}>{changing ? t('取消更改') : place.interrupted ? t('继续迁移') : t('更改位置')}</button></div>
+        {place.available === false && <p className="storage-warning" role="status">{t('当前目录不可用，请先连接存储设备。')}</p>}
+        {place.interrupted && <p className="storage-warning" role="status">{t('上次迁移未完成，原目录仍在使用。可重试原目标或选择新的空目录。')}<code>{place.interrupted}</code></p>}
+        {changing && <div className="storage-change">
+          <label htmlFor={`storage-target-${kind}`}>{t('新位置')}</label>
+          <div className="storage-target"><input id={`storage-target-${kind}`} value={paths[kind]} disabled={busy} onChange={event => setPaths(previous => ({...previous, [kind]: event.target.value}))} spellCheck={false}/><button disabled={busy} onClick={() => setPicker(kind)}><IconFolderOpen size={21}/>{t('浏览')}</button></div>
+          <p className="sub">{t('目标须为空目录，并支持 Linux 文件权限。迁移期间相关程序会暂时停止。')}</p>
+          <div className="storage-actions"><button className="primary" disabled={busy || place.available === false || unchanged} onClick={() => void migrate(kind)}>{t('迁移到新位置')}</button></div>
+        </div>}
+        {migrating && <div className="storage-progress" role="status"><IconLoader2 size={20}/><span>{t(steps[step] ?? step)}</span></div>}
+      </section>;
+    })}
+    {picker && <FolderBrowser close={() => setPicker(null)} choose={parent => setPaths(previous => ({...previous, [picker]: `${parent.replace(/\/$/, '')}/${labels[picker].folder}`}))}/>}
+  </div>;
 }
