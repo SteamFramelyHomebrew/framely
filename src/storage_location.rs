@@ -4,8 +4,12 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, ffi::CString, fs, io::Read, os::unix::fs::{MetadataExt, FileTypeExt, symlink, PermissionsExt}, path::{Path, PathBuf}, process::Command};
 
 pub fn bytes(path: &Path) -> Result<u64> {
-    if !path.exists() { return Ok(0); }
-    let root = if fs::symlink_metadata(path)?.file_type().is_symlink() { path.canonicalize()? } else { path.to_path_buf() };
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+    };
+    let root = if meta.file_type().is_symlink() { path.canonicalize()? } else { path.to_path_buf() };
     let mut total = 0u64;
     fn walk(path: &Path, total: &mut u64) -> Result<()> {
         let m = fs::symlink_metadata(path)?;
@@ -17,6 +21,44 @@ pub fn bytes(path: &Path) -> Result<u64> {
     }
     walk(&root, &mut total)?;
     Ok(total)
+}
+
+/// The settings page can show a lower bound when a container contains
+/// root-owned overlay work directories. Migration still uses strict `bytes`.
+pub fn display_bytes(path: &Path) -> Result<(u64, bool)> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, false)),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Ok((0, true)),
+        Err(error) => return Err(error.into()),
+    };
+    let root = if meta.file_type().is_symlink() {
+        match path.canonicalize() {
+            Ok(root) => root,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Ok((0, true)),
+            Err(error) => return Err(error.into()),
+        }
+    } else { path.to_path_buf() };
+    fn walk(path: &Path, total: &mut u64, incomplete: &mut bool) -> Result<()> {
+        let meta = match fs::symlink_metadata(path) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => { *incomplete = true; return Ok(()); }
+            Err(error) => return Err(error.into()),
+        };
+        if meta.is_file() { *total = total.saturating_add(meta.len()); }
+        if meta.is_dir() && !meta.file_type().is_symlink() {
+            let entries = match fs::read_dir(path) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => { *incomplete = true; return Ok(()); }
+                Err(error) => return Err(error.into()),
+            };
+            for entry in entries { walk(&entry?.path(), total, incomplete)?; }
+        }
+        Ok(())
+    }
+    let (mut total, mut incomplete) = (0, false);
+    walk(&root, &mut total, &mut incomplete)?;
+    Ok((total, incomplete))
 }
 
 fn inventory(path: &Path) -> Result<BTreeMap<PathBuf, String>> {
@@ -46,7 +88,10 @@ fn inventory(path: &Path) -> Result<BTreeMap<PathBuf, String>> {
     Ok(files)
 }
 pub fn verified_equal(source: &Path, target: &Path) -> Result<bool> {
-    Ok(source.is_dir() && target.is_dir() && inventory(source)? == inventory(target)?)
+    if !source.is_dir() || !target.is_dir() { return Ok(false); }
+    let _source_readable = ReadableDirs::prepare(source)?;
+    let _target_readable = ReadableDirs::prepare(target)?;
+    Ok(inventory(source)? == inventory(target)?)
 }
 fn selected_source(source: &Path, name: &str, follow_root_links: bool) -> Result<PathBuf> {
     let path = source.join(name);
@@ -120,8 +165,55 @@ fn prepare_space(parent: &Path, needed: u64) -> Result<()> {
     result
 }
 
+struct ReadableDirs {
+    root: PathBuf,
+    changed: Vec<(PathBuf, u32)>,
+}
+impl ReadableDirs {
+    fn prepare(root: &Path) -> Result<Self> {
+        Self::prepare_with(root, 0o500)
+    }
+    fn prepare_with(root: &Path, required: u32) -> Result<Self> {
+        let mut guard = Self { root: root.to_path_buf(), changed: Vec::new() };
+        if root.exists() { guard.walk(root, required)?; }
+        Ok(guard)
+    }
+    fn walk(&mut self, path: &Path, required: u32) -> Result<()> {
+        let meta = fs::symlink_metadata(path)?;
+        if !meta.is_dir() || meta.file_type().is_symlink() { return Ok(()); }
+        let mode = meta.permissions().mode() & 0o7777;
+        if mode & required != required {
+            ensure!(meta.uid() == unsafe { libc::geteuid() } || unsafe { libc::geteuid() } == 0,
+                "存储目录权限不足，无法迁移：{}", path.display());
+            fs::set_permissions(path, fs::Permissions::from_mode(mode | required))?;
+            self.changed.push((path.strip_prefix(&self.root)?.to_path_buf(), mode));
+        }
+        for entry in fs::read_dir(path)? { self.walk(&entry?.path(), required)?; }
+        Ok(())
+    }
+    fn restore_copy(&self, copy: &Path) -> Result<()> {
+        for (relative, mode) in self.changed.iter().rev() {
+            fs::set_permissions(copy.join(relative), fs::Permissions::from_mode(*mode))?;
+        }
+        Ok(())
+    }
+}
+impl Drop for ReadableDirs {
+    fn drop(&mut self) {
+        for (relative, mode) in self.changed.iter().rev() {
+            let _ = fs::set_permissions(self.root.join(relative), fs::Permissions::from_mode(*mode));
+        }
+    }
+}
+pub fn remove_tree(path: &Path) -> Result<()> {
+    let _readable = ReadableDirs::prepare_with(path, 0o700)?;
+    fs::remove_dir_all(path)?;
+    Ok(())
+}
+
 pub fn copy_verified(source: &Path, target: &Path, mut progress: impl FnMut(&str)) -> Result<()> {
     let target = validate_target(source, target, false)?;
+    let readable = ReadableDirs::prepare(source)?;
     let parent = target.parent().unwrap();
     prepare_space(parent, bytes(source)?)?;
     let stage = parent.join(format!(".framely-storage-{:016x}", rand::random::<u64>()));
@@ -137,6 +229,7 @@ pub fn copy_verified(source: &Path, target: &Path, mut progress: impl FnMut(&str
         let source_files = if source.exists() { inventory(source)? } else { BTreeMap::new() };
         let target_files = inventory(&stage)?;
         ensure!(source_files == target_files || (!source.exists() && target_files.len() == 1), "迁移后的文件校验失败，仍使用原位置");
+        readable.restore_copy(&stage)?;
         progress("switching");
         if target.exists() { fs::remove_dir(&target)?; }
         fs::rename(&stage, &target)?;
@@ -151,7 +244,12 @@ pub fn copy_selected(source: &Path, target: &Path, names: &[String], follow_root
     let target = validate_target(source, target, false)?;
     let parent = target.parent().unwrap();
     let mut needed = 0u64;
-    for name in names { needed = needed.saturating_add(bytes(&selected_source(source, name, follow_root_links)?)?); }
+    let mut readable = Vec::new();
+    for name in names {
+        let from = selected_source(source, name, follow_root_links)?;
+        readable.push((name.clone(), ReadableDirs::prepare(&from)?));
+        needed = needed.saturating_add(bytes(&from)?);
+    }
     prepare_space(parent, needed)?;
     let stage = parent.join(format!(".framely-storage-{:016x}", rand::random::<u64>()));
     fs::create_dir(&stage)?;
@@ -170,6 +268,7 @@ pub fn copy_selected(source: &Path, target: &Path, names: &[String], follow_root
             let from = selected_source(source, name, follow_root_links)?;
             if from.exists() { ensure!(inventory(&from)? == inventory(&stage.join(name))?, "容器迁移校验失败：{name}"); }
         }
+        for (name, guard) in &readable { if stage.join(name).exists() { guard.restore_copy(&stage.join(name))?; } }
         progress("switching");
         if target.exists() { fs::remove_dir(&target)?; }
         fs::rename(&stage, &target)?;
@@ -211,9 +310,16 @@ mod tests {
             fs::create_dir(source.join(name)).unwrap();
             fs::write(source.join(name).join("state"), name).unwrap();
         }
+        let work = source.join("managed/app_workdir/work");
+        fs::create_dir_all(&work).unwrap();
+        fs::write(work.join("overlay-state"), b"private").unwrap();
+        fs::set_permissions(&work, fs::Permissions::from_mode(0o000)).unwrap();
         let target = temp.path().join("android");
         copy_selected(&source, &target, &["managed".into()], false, |_| {}).unwrap();
         assert_eq!(fs::read_to_string(target.join("managed/state")).unwrap(), "managed");
+        assert!(verified_selected(&source, &target, &["managed".into()], false).unwrap());
+        fs::set_permissions(&work, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(target.join("managed/app_workdir/work"), fs::Permissions::from_mode(0o700)).unwrap();
         assert!(!target.join("external").exists());
         assert!(source.join("external/state").is_file());
     }
@@ -233,5 +339,29 @@ mod tests {
         assert!(!fs::symlink_metadata(target.join("plugins")).unwrap().file_type().is_symlink());
         assert_eq!(fs::read(target.join("plugins/manifest.json")).unwrap(),b"plugin");
         assert!(verified_selected(&source,&target,&["plugins".into()],true).unwrap());
+    }
+    #[test]
+    fn display_size_marks_unreadable_overlay_work_without_hiding_migration_error() {
+        if unsafe { libc::geteuid() } == 0 { return; }
+        let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(temp.path().join("visible"), b"saved").unwrap();
+        let work = temp.path().join("app_workdir/work");
+        fs::create_dir_all(&work).unwrap();
+        fs::write(work.join("overlay-state"), b"private").unwrap();
+        fs::set_permissions(&work, fs::Permissions::from_mode(0o000)).unwrap();
+        let shown = display_bytes(temp.path());
+        let strict = bytes(temp.path());
+        assert_eq!(shown.unwrap(), (5, true));
+        assert!(strict.is_err());
+        let target = temp.path().parent().unwrap().join(format!("framely-storage-test-{:016x}", rand::random::<u64>()));
+        copy_verified(temp.path(), &target, |_| {}).unwrap();
+        assert_eq!(fs::metadata(&work).unwrap().permissions().mode() & 0o777, 0);
+        let copied_work = target.join("app_workdir/work");
+        assert_eq!(fs::metadata(&copied_work).unwrap().permissions().mode() & 0o777, 0);
+        assert!(verified_equal(temp.path(), &target).unwrap());
+        fs::set_permissions(&work, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&copied_work, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(fs::read(copied_work.join("overlay-state")).unwrap(), b"private");
+        fs::remove_dir_all(target).unwrap();
     }
 }

@@ -1002,15 +1002,21 @@ pub fn storage_status(home: &Path) -> Result<Value> {
     let contexts = config.contexts.unwrap_or_else(|| home.join(".local/share/lepton/contexts"));
     let db = load(home)?;
     let mut context_bytes = 0u64;
+    let mut contexts_incomplete = false;
     for id in &db.owned_contexts {
-        if safe(id) { context_bytes = context_bytes.saturating_add(crate::storage_location::bytes(&contexts.join(id))?); }
+        if safe(id) {
+            let (size, incomplete) = crate::storage_location::display_bytes(&contexts.join(id))?;
+            context_bytes = context_bytes.saturating_add(size);
+            contexts_incomplete |= incomplete;
+        }
     }
+    let (apk_bytes, apk_incomplete) = crate::storage_location::display_bytes(&apk)?;
     let journal = fs::read(storage_journal_path(home)).ok().and_then(|b|serde_json::from_slice::<Value>(&b).ok());
     let committed = journal.as_ref().is_some_and(|v| v["target"] == json!(if v["kind"] == "apk" { &apk } else { &contexts }));
     if committed {
         let _ = fs::remove_file(storage_journal_path(home));
     }
-    Ok(json!({"apk":{"path":apk,"bytes":crate::storage_location::bytes(&apk)?},"contexts":{"path":contexts,"bytes":context_bytes},"interrupted":if committed {None} else {journal}}))
+    Ok(json!({"apk":{"path":apk,"bytes":apk_bytes,"sizeIncomplete":apk_incomplete},"contexts":{"path":contexts,"bytes":context_bytes,"sizeIncomplete":contexts_incomplete},"interrupted":if committed {None} else {journal}}))
 }
 pub fn migrate_storage(home: &Path, kind: &str, target: &Path, cancel: Cancellation, progress: Arc<dyn Fn(Value) + Send + Sync>) -> Result<Value> {
     ensure!(matches!(kind, "apk" | "contexts"), "无效存储类型");
@@ -1075,11 +1081,11 @@ pub fn migrate_storage(home: &Path, kind: &str, target: &Path, cancel: Cancellat
         progress(json!({"step":"cleaning"}));
         let mut warnings = Vec::new();
         if kind == "apk" {
-            if let Err(error) = fs::remove_dir_all(&source) { warnings.push(error.to_string()); }
+            if let Err(error) = crate::storage_location::remove_tree(&source) { warnings.push(error.to_string()); }
         } else {
             for id in &db.owned_contexts {
                 if safe(id) && source.join(id).exists() {
-                    if let Err(error) = fs::remove_dir_all(source.join(id)) { warnings.push(error.to_string()); }
+                    if let Err(error) = crate::storage_location::remove_tree(&source.join(id)) { warnings.push(error.to_string()); }
                 }
             }
         }
@@ -1101,10 +1107,18 @@ mod storage_migration_tests {
         fs::create_dir(&home).unwrap();
         let original_apk = init(&home).unwrap();
         fs::write(original_apk.join("apks/example.apk"), b"apk").unwrap();
+        let apk_work = original_apk.join("recovery/old/baked/app_workdir/work");
+        fs::create_dir_all(&apk_work).unwrap();
+        fs::write(apk_work.join("overlay-state"), b"private").unwrap();
+        fs::set_permissions(&apk_work, fs::Permissions::from_mode(0o000)).unwrap();
         let original_contexts = contexts_root(&home);
         let baked = original_contexts.join("managed/baked/data_overlay/system");
         fs::create_dir_all(&baked).unwrap();
         fs::write(baked.join("packages.xml"), b"<packages/>").unwrap();
+        let context_work = original_contexts.join("managed/baked/data_workdir/work");
+        fs::create_dir_all(&context_work).unwrap();
+        fs::write(context_work.join("overlay-state"), b"private").unwrap();
+        fs::set_permissions(&context_work, fs::Permissions::from_mode(0o000)).unwrap();
         let external = original_contexts.join("external/baked/data_overlay/system");
         fs::create_dir_all(&external).unwrap();
         fs::write(external.join("packages.xml"), b"<packages/>").unwrap();
@@ -1115,6 +1129,8 @@ mod storage_migration_tests {
         migrate_storage(&home,"apk",&apk_target,Cancellation::default(),Arc::new(|_|{})).unwrap();
         assert_eq!(root(&home), apk_target);
         assert_eq!(fs::read(root(&home).join("apks/example.apk")).unwrap(), b"apk");
+        assert!(!original_apk.exists());
+        assert_eq!(fs::metadata(apk_target.join("recovery/old/baked/app_workdir/work")).unwrap().permissions().mode() & 0o777, 0);
         assert!(original_contexts.join("managed/baked").is_dir());
         let context_target = temp.path().join("android-new");
         migrate_storage(&home,"contexts",&context_target,Cancellation::default(),Arc::new(|_|{})).unwrap();
@@ -1126,6 +1142,8 @@ mod storage_migration_tests {
         let found = containers(&home,&load(&home).unwrap());
         assert!(found.iter().any(|c|c.id=="managed" && c.baked.starts_with(&context_target)));
         assert!(found.iter().any(|c|c.id=="external" && c.baked.starts_with(&original_contexts)));
+        fs::set_permissions(apk_target.join("recovery/old/baked/app_workdir/work"), fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(context_target.join("managed/baked/data_workdir/work"), fs::Permissions::from_mode(0o700)).unwrap();
     }
     #[test]
     fn interrupted_apk_copy_resumes_without_touching_original() {
@@ -1144,6 +1162,28 @@ mod storage_migration_tests {
         assert_eq!(root(&home),target);
         assert_eq!(fs::read(target.join("apks/keep.apk")).unwrap(),b"saved apk");
         assert!(!storage_journal_path(&home).exists());
+    }
+    #[test]
+    fn storage_status_survives_unreadable_overlay_workdirs() {
+        if unsafe { libc::geteuid() } == 0 { return; }
+        let _serial = TEST_SERIAL.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        fs::create_dir(&home).unwrap();
+        let apk_root = init(&home).unwrap();
+        let apk_work = apk_root.join("recovery/old/baked/app_workdir/work");
+        fs::create_dir_all(&apk_work).unwrap();
+        let context_work = contexts_root(&home).join("managed/baked/data_workdir/work");
+        fs::create_dir_all(&context_work).unwrap();
+        let mut db = load(&home).unwrap();
+        db.owned_contexts.push("managed".into());
+        save(&home, &db).unwrap();
+        for path in [&apk_work, &context_work] { fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap(); }
+        let status = storage_status(&home);
+        for path in [&apk_work, &context_work] { fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap(); }
+        let status = status.unwrap();
+        assert_eq!(status["apk"]["sizeIncomplete"], true);
+        assert_eq!(status["contexts"]["sizeIncomplete"], true);
     }
 }
 pub fn launcher(home: &Path) -> Vec<Value> {
