@@ -230,7 +230,6 @@ pub(super) fn convert(
     })();
     let _ = fs::remove_dir_all(&output);
     let next = result?;
-    let _ = super::reviews_drop(home, ticket);
     Ok(
         json!({"ticket":next["ticket"],"metadata":next["metadata"],"bytes":next["bytes"],
         "q2fVersion":requirement["id"],"originalBytes":original_bytes}),

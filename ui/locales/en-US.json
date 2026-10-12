@@ -1287,6 +1287,8 @@
     "Steam display name must be at most 128 characters without control characters": "Steam display name must be at most 128 characters without control characters",
     "Steam name update was not acknowledged": "Steam name update was not acknowledged",
     "Quest 兼容转换": "Quest compatibility conversion",
+    "这是一个 Quest 游戏？": "Is this a Quest game?",
+    "打开此选项将尝试进行兼容转换，但不保证一定成功": "Turn this on to try a compatibility conversion. Success is not guaranteed.",
     "此 APK 已完成兼容转换并重新签名。": "This APK has been converted and re-signed.",
     "可选：使用独立 q2f 工具包转换并重新签名 APK。首次使用会下载工具包，转换结果仍需在 Frame 上验证。": "Optional: convert and re-sign this APK with the separate q2f package. The package downloads on first use; the result still needs testing on Frame.",
     "已转换": "Converted",
