@@ -10,7 +10,33 @@ concurrency:
   group: framely-release-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  framebridge:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned FrameBridge adapter from source
+        run: |
+          mkdir -p target/q2f-framebridge/source target/q2f-framebridge/artifacts/{arm64-v8a,armeabi-v7a}
+          curl -fsSL --retry 3 -o target/q2f-framebridge/source.tar.gz https://github.com/spoopyghosty0/frameport/archive/80ef9ca6a77eed1ca6b2cc6f746d9897e4178b4e.tar.gz
+          echo 'ea90ea8dd2f0fe49d54d2df5cc61c1876c9562e55fb40fce2651b1d5594dab7c  target/q2f-framebridge/source.tar.gz' | sha256sum -c
+          tar -xzf target/q2f-framebridge/source.tar.gz -C target/q2f-framebridge/source --strip-components=1
+          FRAMEPORT_ARTIFACTS_OUT="$PWD/target/q2f-framebridge/artifacts" python3 target/q2f-framebridge/source/native/build.py --only adapter
+          for abi in arm64-v8a armeabi-v7a; do
+            test -s "target/q2f-framebridge/artifacts/$abi/libopenxr_loader_generic.so"
+            readelf -W --dyn-syms "target/q2f-framebridge/artifacts/$abi/libopenxr_loader_generic.so" | grep xrGetInstanceProcAddr
+          done
+          mkdir -p target/framebridge-upload/artifacts/{arm64-v8a,armeabi-v7a}
+          cp target/q2f-framebridge/source.tar.gz target/framebridge-upload/
+          for abi in arm64-v8a armeabi-v7a; do
+            cp "target/q2f-framebridge/artifacts/$abi/libopenxr_loader_generic.so" "target/framebridge-upload/artifacts/$abi/"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: framely-framebridge
+          path: target/framebridge-upload/
+          if-no-files-found: error
   frame:
+    needs: [framebridge]
     runs-on: ubuntu-24.04-arm
     env:
       CARGO_HOME: ${{ github.workspace }}/target/framely-cargo
@@ -59,6 +85,10 @@ jobs:
           distribution: temurin
           java-version: '25'
           architecture: aarch64
+      - uses: actions/download-artifact@v4
+        with:
+          name: framely-framebridge
+          path: target/q2f-framebridge
       - name: Prepare pinned q2f inputs
         run: |
           mkdir -p target/q2f-input
@@ -99,6 +129,9 @@ jobs:
           Q2F_LIBRARIES_ZIP: target/q2f-input/libraries.zip
           Q2F_LICENSE: target/q2f-input/LICENSE
           Q2F_SOURCE_ARCHIVE: target/q2f-input/source.tar.gz
+          Q2F_FRAMEBRIDGE_SOURCE: target/q2f-framebridge/source.tar.gz
+          Q2F_FRAMEBRIDGE_ARM64: target/q2f-framebridge/artifacts/arm64-v8a/libopenxr_loader_generic.so
+          Q2F_FRAMEBRIDGE_ARM32: target/q2f-framebridge/artifacts/armeabi-v7a/libopenxr_loader_generic.so
         run: |
           bash tools/package-release.sh target/cef
           mkdir -p release-assets

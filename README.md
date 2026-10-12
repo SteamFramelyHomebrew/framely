@@ -98,3 +98,5 @@ See [release maintenance](docs/releases.md) for CEF builds, integration tests, a
 Original Framely code, including the core, installer, SDK, template, and repository examples, uses **AGPL-3.0-only**; see [LICENSE](LICENSE). Third-party dependencies and vendored files retain their respective licenses.
 
 AGPL allows commercial use. Distribution requires complete corresponding source under the license; modified software that interacts with users over a network must also offer source to those users. Release source corresponds to the repository's `v<VERSION>` or `installer-v<VERSION>` tags. Redistributors must provide modifications and build scripts matching their binaries.
+
+The optional Quest converter includes [FrameBridge](https://github.com/spoopyghosty0/frameport) to adapt OpenXR graphics and controller input for Steam Frame. FrameBridge retains its GPL-3.0-only license and corresponding source in the separate q2f package. Existing games are not changed automatically when that package updates; select the original Quest APK again to reconvert and update a game.

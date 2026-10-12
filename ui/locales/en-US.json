@@ -1299,6 +1299,8 @@
     "转换完成，请确认安装。": "Conversion complete. Review the APK before installing.",
     "正在检查转换工具": "Checking converter",
     "工具包已缓存": "Converter cached",
-    "首次使用需下载 {0} 工具包": "First use downloads the {0} converter"
+    "首次使用需下载 {0} 工具包": "First use downloads the {0} converter",
+    "Quest 转换": "Quest conversion",
+    "要使用新版转换运行包，请重新选择原始 Quest APK 安装。": "To use an updated converter, select the original Quest APK and install it again."
   }
 }

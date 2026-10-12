@@ -4,12 +4,57 @@ use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
     fs,
+    io::Read,
     os::unix::fs::{symlink, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
     time::Duration,
 };
+
+fn verify_framebridge(
+    apk: &Path,
+    runtime: &Path,
+    libraries_version: &str,
+    abis: &[String],
+) -> Result<()> {
+    let mut archive = zip::ZipArchive::new(fs::File::open(apk)?)?;
+    let mut found = false;
+    for abi in abis
+        .iter()
+        .filter(|abi| abi.as_str() == "arm64-v8a" || abi.as_str() == "armeabi-v7a")
+    {
+        found = true;
+        let library = runtime
+            .join("libraries")
+            .join(libraries_version)
+            .join("lib")
+            .join(abi);
+        for (apk_name, source_name) in [
+            ("libopenxr_loader_generic.so", "libopenxr_loader_generic.so"),
+            (
+                "libopenxr_loader_original.so",
+                "libopenxr_loader_original.so",
+            ),
+            ("libframe_settings.so", "libframe_settings.so"),
+        ] {
+            let expected = fs::read(library.join(source_name))?;
+            let mut entry = archive.by_name(&format!("lib/{abi}/{apk_name}"))?;
+            ensure!(
+                entry.size() == expected.len() as u64,
+                "Quest adapter file size mismatch: {abi}/{apk_name}"
+            );
+            let mut actual = Vec::with_capacity(expected.len());
+            entry.read_to_end(&mut actual)?;
+            ensure!(
+                actual == expected,
+                "Quest adapter file mismatch: {abi}/{apk_name}"
+            );
+        }
+    }
+    ensure!(found, "Quest APK has no supported FrameBridge architecture");
+    Ok(())
+}
 
 fn release_root() -> Result<PathBuf> {
     Ok(std::env::current_exe()?
@@ -120,6 +165,36 @@ fn workspace(storage: &Path, runtime: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn converted_apk_requires_the_exact_wrapped_loader_and_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = temp.path().join("runtime");
+        let lib = runtime.join("libraries/test/lib/arm64-v8a");
+        fs::create_dir_all(&lib).unwrap();
+        let apk = temp.path().join("converted.apk");
+        let mut writer = zip::ZipWriter::new(fs::File::create(&apk).unwrap());
+        for (name, data) in [
+            ("libopenxr_loader_generic.so", b"framebridge".as_slice()),
+            ("libopenxr_loader_original.so", b"overport".as_slice()),
+            ("libframe_settings.so", b"controller_fix=1\n".as_slice()),
+        ] {
+            fs::write(lib.join(name), data).unwrap();
+            writer
+                .start_file(
+                    format!("lib/arm64-v8a/{name}"),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap();
+        let abis = vec!["arm64-v8a".to_string()];
+        verify_framebridge(&apk, &runtime, "test", &abis).unwrap();
+        fs::write(lib.join("libframe_settings.so"), b"controller_fix=0\n").unwrap();
+        assert!(verify_framebridge(&apk, &runtime, "test", &abis).is_err());
+    }
 
     #[test]
     fn workspace_library_link_survives_apk_storage_move() {
@@ -139,6 +214,34 @@ mod tests {
         assert_eq!(
             fs::read_to_string(new.join("q2f/workspace/libraries/probe")).unwrap(),
             "ok"
+        );
+    }
+
+    #[test]
+    fn runtime_upgrade_keeps_per_app_signing_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = temp.path();
+        for id in ["old", "framebridge"] {
+            let runtime = storage.join("q2f/runtimes").join(id);
+            fs::create_dir_all(runtime.join("libraries")).unwrap();
+            fs::write(runtime.join("overport-installed.json"), "{}").unwrap();
+            fs::write(runtime.join("libraries/probe"), id).unwrap();
+            workspace(storage, &runtime).unwrap();
+            if id == "old" {
+                fs::write(
+                    storage.join("q2f/workspace/signatures/game.keystore"),
+                    "original key",
+                )
+                .unwrap();
+            }
+        }
+        assert_eq!(
+            fs::read_to_string(storage.join("q2f/workspace/signatures/game.keystore")).unwrap(),
+            "original key"
+        );
+        assert_eq!(
+            fs::read_to_string(storage.join("q2f/workspace/libraries/probe")).unwrap(),
+            "framebridge"
         );
     }
 }
@@ -217,16 +320,38 @@ pub(super) fn convert(
     let result = (|| -> Result<Value> {
         ensure!(converted.is_file(), "Quest converter produced no APK");
         progress(json!({"phase":"q2f-verifying","operation":"convert"}))?;
+        let mut verifier = Command::new(runtime.join("java/bin/java"));
+        verifier
+            .arg("-cp")
+            .arg(format!(
+                "{}:{}",
+                runtime.join("overportcli.jar").display(),
+                runtime.display()
+            ))
+            .arg("FramelyQ2FVerify")
+            .arg(&converted);
+        run(verifier, &log, cancel)?;
         let after: Metadata = apk_metadata::read(&converted)?;
         ensure!(
             after.package == before.package && after.version_code == before.version_code,
             "Quest conversion changed APK package or version"
         );
+        verify_framebridge(&converted, &runtime, version, &after.abis)?;
         cancel.check()?;
         // Create a fresh review after conversion so the user has the full
         // review window even when patching takes several minutes.
         drop(_guard);
-        super::inspect(home, &converted, cancel)
+        let inspected = super::inspect(home, &converted, cancel)?;
+        let reviewed = storage.join("reviews").join(
+            inspected["ticket"]
+                .as_str()
+                .context("Converted review has no ticket")?,
+        );
+        fs::write(
+            reviewed.join("q2f-version"),
+            requirement["id"].as_str().context("Invalid q2f identity")?,
+        )?;
+        Ok(inspected)
     })();
     let _ = fs::remove_dir_all(&output);
     let next = result?;

@@ -43,6 +43,17 @@ def validate(root, identity):
     for required in ('java/bin/java', 'overportcli.jar', 'overport-installed.json', 'OVR_PORT_LICENSE'):
         if required not in expected:
             raise ValueError('Incomplete q2f runtime: ' + required)
+    if '-framebridge-' in identity:
+        for required in ('FRAMEBRIDGE_LICENSE', 'FRAMEBRIDGE_SOURCE', 'FRAMEBRIDGE_SOURCE.tar.gz',
+                         'FramelyQ2FVerify.java', 'FramelyQ2FVerify.class'):
+            if required not in expected:
+                raise ValueError('Incomplete q2f runtime: ' + required)
+        releases = root / 'libraries'
+        for abi in ('arm64-v8a', 'armeabi-v7a'):
+            libs = list(releases.glob(f'*/lib/{abi}'))
+            if len(libs) != 1 or not all((libs[0] / name).is_file() for name in (
+                'libopenxr_loader_generic.so', 'libopenxr_loader_original.so', 'libframe_settings.so')):
+                raise ValueError('Incomplete FrameBridge libraries: ' + abi)
 
 
 class HTTPSRedirect(urllib.request.HTTPRedirectHandler):
