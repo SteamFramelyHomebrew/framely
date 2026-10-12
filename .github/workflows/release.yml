@@ -57,7 +57,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '25.0.4.1+1'
+          java-version: '25'
           architecture: aarch64
       - name: Prepare pinned q2f inputs
         run: |
