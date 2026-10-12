@@ -93,10 +93,8 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 
 CEF 构建、集成测试和发布命令见[发行维护](docs/zh-CN/releases.md)。插件支持 `steamos` 和 `root`；哈希校验不代表安全审核，应核对来源和运行用户。
 
-## 许可证
+## 许可证与致谢
 
-Framely 原创代码，包括本体、安装器、SDK、模板和仓库示例，采用 **AGPL-3.0-only**，全文见 [LICENSE](LICENSE)。第三方依赖和 vendored 文件保留各自许可证。
+Framely 采用 **AGPL-3.0-only**，详见 [LICENSE](LICENSE)。第三方项目保留各自的许可证。
 
-AGPL 允许商业使用；分发需按许可提供完整对应源码，修改后通过网络与用户交互还须向这些用户提供源码。发行源码对应本仓库的 `v<版本>` 或 `installer-v<版本>` 标签；重新分发者须提供与自己二进制匹配的修改和构建脚本。
-
-可选的 Quest 转换包使用 [FrameBridge](https://github.com/spoopyghosty0/frameport) 适配 Steam Frame 的 OpenXR 画面与手柄输入。FrameBridge 保留 GPL-3.0-only 许可证，其对应源码随独立 q2f 包提供。转换包更新不会自动修改已安装游戏；要升级游戏，请重新选择原始 Quest APK 转换安装。
+感谢 Lepton 提供安卓运行环境、[OVRPort](https://github.com/ovrport/app) 提供 Quest APK 转换工具，以及 [FramePort 的 FrameBridge](https://github.com/spoopyghosty0/frameport) 提供 OpenXR 画面与手柄适配。可选 q2f 包附有 OVRPort 和 FrameBridge 的许可证及对应源码。
