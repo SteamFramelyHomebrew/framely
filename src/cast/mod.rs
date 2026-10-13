@@ -2,6 +2,7 @@
 //! run as the Steam session user, apart from the framebuffer export helper.
 pub mod settings;
 pub mod runtime;
+mod recording;
 
 pub mod receiver;
 pub mod watch_access;

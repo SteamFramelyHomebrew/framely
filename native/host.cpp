@@ -31,6 +31,7 @@
 #include "brand_mask.h"
 #include "ui_visibility.h"
 #include "ui_feedback.h"
+#include "recording_indicator.h"
 #include "plugin_navigation.h"
 #include <GL/gl.h>
 #include <GL/glx.h>
@@ -167,7 +168,11 @@ static std::vector<uint8_t> icon(bool hover,bool active){
 }
 
 static std::vector<std::string> closed_casts;
-static json poll_http(int port){int fd=socket(AF_INET,SOCK_STREAM,0);if(fd<0)throw std::runtime_error("HTTP socket failed");timeval timeout{1,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));sockaddr_in addr{};addr.sin_family=AF_INET;addr.sin_port=htons(port);inet_pton(AF_INET,"127.0.0.1",&addr.sin_addr);if(connect(fd,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))){close(fd);throw std::runtime_error("UI agent unavailable");}std::string payload;size_t closed_count=0;{std::lock_guard<std::mutex> lock(visibility_mutex);closed_count=closed_casts.size();payload=json{{"views",visible_views},{"closedCasts",closed_casts}}.dump();}std::string req="POST /host/poll HTTP/1.1\r\nHost: 127.0.0.1:"+std::to_string(port)+"\r\nX-Framely-Native: "+token+"\r\nContent-Type: application/json\r\nContent-Length: "+std::to_string(payload.size())+"\r\nConnection: close\r\n\r\n"+payload;size_t sent=0;while(sent<req.size()){auto n=send(fd,req.data()+sent,req.size()-sent,MSG_NOSIGNAL);if(n<=0){close(fd);throw std::runtime_error("HTTP send failed");}sent+=n;}std::string response;char buffer[4096];ssize_t n;while((n=recv(fd,buffer,sizeof(buffer),0))>0){response.append(buffer,n);if(response.size()>4*1024*1024){close(fd);throw std::runtime_error("HTTP body limit");}}close(fd);auto body=response.find("\r\n\r\n");if(body==std::string::npos||response.find("200 OK")==std::string::npos)throw std::runtime_error("Invalid agent response");auto parsed=json::parse(response.substr(body+4));{std::lock_guard<std::mutex> lock(visibility_mutex);closed_casts.erase(closed_casts.begin(),closed_casts.begin()+std::min(closed_count,closed_casts.size()));}return parsed;}
+// Protected by visibility_mutex (outgoing request) / queue_mutex (status).
+static std::string pending_recording_stop;
+static json recording_state=json::object();
+static RecordingIndicator recording_indicator;
+static json poll_http(int port){int fd=socket(AF_INET,SOCK_STREAM,0);if(fd<0)throw std::runtime_error("HTTP socket failed");timeval timeout{1,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));sockaddr_in addr{};addr.sin_family=AF_INET;addr.sin_port=htons(port);inet_pton(AF_INET,"127.0.0.1",&addr.sin_addr);if(connect(fd,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))){close(fd);throw std::runtime_error("UI agent unavailable");}std::string payload;size_t closed_count=0;std::string stop_id;{std::lock_guard<std::mutex> lock(visibility_mutex);closed_count=closed_casts.size();stop_id=pending_recording_stop;payload=json{{"views",visible_views},{"closedCasts",closed_casts},{"stopRecording",stop_id}}.dump();}std::string req="POST /host/poll HTTP/1.1\r\nHost: 127.0.0.1:"+std::to_string(port)+"\r\nX-Framely-Native: "+token+"\r\nContent-Type: application/json\r\nContent-Length: "+std::to_string(payload.size())+"\r\nConnection: close\r\n\r\n"+payload;size_t sent=0;while(sent<req.size()){auto n=send(fd,req.data()+sent,req.size()-sent,MSG_NOSIGNAL);if(n<=0){close(fd);throw std::runtime_error("HTTP send failed");}sent+=n;}std::string response;char buffer[4096];ssize_t n;while((n=recv(fd,buffer,sizeof(buffer),0))>0){response.append(buffer,n);if(response.size()>4*1024*1024){close(fd);throw std::runtime_error("HTTP body limit");}}close(fd);auto body=response.find("\r\n\r\n");if(body==std::string::npos||response.find("200 OK")==std::string::npos)throw std::runtime_error("Invalid agent response");auto parsed=json::parse(response.substr(body+4));{std::lock_guard<std::mutex> lock(visibility_mutex);if(pending_recording_stop==stop_id)pending_recording_stop.clear();closed_casts.erase(closed_casts.begin(),closed_casts.begin()+std::min(closed_count,closed_casts.size()));}return parsed;}
 // Frame renders the native laser cursor in the default overlay sort group.
 // Raising a panel above that group can obscure the runtime cursor.
 // OpenVR owns and renders the laser cursor. Coordinates must remain in the
@@ -501,11 +506,12 @@ static void launcher_gaze(vr::IVRInput* input,bool allowed,const bool (&connecte
  gaze_active=true;
 }
 static void entry_actions(vr::VROverlayHandle_t button,bool available){
- if(!entry_actions_ready)return;auto* input=vr::VRInput();vr::VRActiveActionSet_t sets[2]{};sets[0].ulActionSet=entry_set;sets[1].ulActionSet=gaze_set;
+ const bool pointer_available=available||recording_indicator.active();
+ if(!entry_actions_ready){recording_indicator.cancel_input();return;}auto* input=vr::VRInput();vr::VRActiveActionSet_t sets[2]{};sets[0].ulActionSet=entry_set;sets[1].ulActionSet=gaze_set;
  // Only the eye action participates in overlay priority. Controller bindings
  // keep their existing priority so Steam laser and Dock controls are preserved.
  if(launcher_gaze_allowed()&&!entry_hold.pressed&&!(available&&(entry_pointer.inside||overlays->IsHoverTargetOverlay(button))))sets[1].nPriority=vr::k_nActionSetOverlayGlobalPriorityMin;
- if(input->UpdateActionState(sets,sizeof(sets[0]),gaze_set?2:1)!=vr::VRInputError_None)return;
+ if(input->UpdateActionState(sets,sizeof(sets[0]),gaze_set?2:1)!=vr::VRInputError_None){recording_indicator.cancel_input();return;}
  auto now=std::chrono::steady_clock::now();
  // Dock ownership must be checked before reading confirm edges. Gaze focus
  // alone does not own a trigger aimed at the entry, even before mouse-down
@@ -514,8 +520,8 @@ static void entry_actions(vr::VROverlayHandle_t button,bool available){
  float stick_x=0,stick_y=0;bool stick_active=false;vr::TrackedDeviceIndex_t stick_device=vr::k_unTrackedDeviceIndexInvalid;
  for(int hand=0;hand<2;hand++){
   vr::InputPoseActionData_t pose{};auto device=vr_system->GetTrackedDeviceIndexForControllerRole(hand?vr::TrackedControllerRole_RightHand:vr::TrackedControllerRole_LeftHand);bool hit=available&&entry_pointer.hit(device);
-  bool pose_ok=available&&input->GetPoseActionDataRelativeToNow(aim_action,vr::TrackingUniverseStanding,0,&pose,sizeof(pose),hands[hand])==vr::VRInputError_None&&pose.bActive&&pose.pose.bPoseIsValid;
-  if(available&&!pose_ok&&device!=vr::k_unTrackedDeviceIndexInvalid){
+  bool pose_ok=pointer_available&&input->GetPoseActionDataRelativeToNow(aim_action,vr::TrackingUniverseStanding,0,&pose,sizeof(pose),hands[hand])==vr::VRInputError_None&&pose.bActive&&pose.pose.bPoseIsValid;
+  if(pointer_available&&!pose_ok&&device!=vr::k_unTrackedDeviceIndexInvalid){
    vr::TrackedDevicePose_t tracked[vr::k_unMaxTrackedDeviceCount]{};vr_system->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding,0,tracked,vr::k_unMaxTrackedDeviceCount);
    char model[256]{};vr_system->GetStringTrackedDeviceProperty(device,vr::Prop_RenderModelName_String,model,sizeof(model));
    vr::RenderModel_ControllerMode_State_t mode{};vr::RenderModel_ComponentState_t tip{};
@@ -523,7 +529,7 @@ static void entry_actions(vr::VROverlayHandle_t button,bool available){
     pose.pose.mDeviceToAbsoluteTracking=entry_tip_pose(tracked[device].mDeviceToAbsoluteTracking,tip.mTrackingToComponentLocal);pose_ok=true;
    }
   }
-  if(pose_ok){auto& m=pose.pose.mDeviceToAbsoluteTracking;vr::VROverlayIntersectionParams_t params{};params.eOrigin=vr::TrackingUniverseStanding;for(int r=0;r<3;r++){params.vSource.v[r]=m.m[r][3];params.vDirection.v[r]=-m.m[r][2];}vr::VROverlayIntersectionResults_t result{};hit=hit||(overlays->IsHoverTargetOverlay(button)&&overlays->ComputeOverlayIntersection(button,&params,&result)&&result.vUVs.v[0]>=float(dock_icon_left)/dock_canvas_width&&result.vUVs.v[0]<=float(dock_icon_left+128)/dock_canvas_width);}
+  if(available&&pose_ok){auto& m=pose.pose.mDeviceToAbsoluteTracking;vr::VROverlayIntersectionParams_t params{};params.eOrigin=vr::TrackingUniverseStanding;for(int r=0;r<3;r++){params.vSource.v[r]=m.m[r][3];params.vDirection.v[r]=-m.m[r][2];}vr::VROverlayIntersectionResults_t result{};hit=hit||(overlays->IsHoverTargetOverlay(button)&&overlays->ComputeOverlayIntersection(button,&params,&result)&&result.vUVs.v[0]>=float(dock_icon_left)/dock_canvas_width&&result.vUVs.v[0]<=float(dock_icon_left+128)/dock_canvas_width);}
 
   if(hit)gaze_allowed=false;
   gaze_connected[hand]=device!=vr::k_unTrackedDeviceIndexInvalid&&vr_system->IsTrackedDeviceConnected(device);
@@ -558,6 +564,10 @@ static void entry_actions(vr::VROverlayHandle_t button,bool available){
    if(kind==0&&!active)entry_analog[hand].held=false;
    if(kind==0&&active)gaze_buttons[hand]|=down;
    if(kind==0){
+    // Reuse the same physical tip / analog-trigger fallback as the Dock.
+    // No second action poll or input-focus request for the recording HUD.
+    auto stop_recording=recording_indicator.pointer(hand,pose.pose.mDeviceToAbsoluteTracking,active&&pose_ok,down);
+    if(!stop_recording.empty()){std::lock_guard<std::mutex> lock(visibility_mutex);pending_recording_stop=stop_recording;}
     auto permission=views.find("framely.apk.permission");
     if(permission!=views.end()&&!permission->second->closing&&permission->second->shown&&pose_ok){
      auto& view=*permission->second;
@@ -585,7 +595,7 @@ static void entry_actions(vr::VROverlayHandle_t button,bool available){
    }
    bool was_held=entry_buttons[hand][kind].held;
    entry_buttons[hand][kind].update(active,down,hit,now);
-   if(!(gaze_allowed&&gaze_active)&&kind==0&&active&&down&&!was_held&&launcher_open&&!launcher_calibrating&&!hit&&!launcher_dock_interaction()&&launcher_dismiss.allows(now,true)&&views.count("launcher")&&!overlays->IsHoverTargetOverlay(views.at("launcher")->overlay))launcher_outside_at=now+std::chrono::milliseconds(60);
+   if(!(gaze_allowed&&gaze_active)&&kind==0&&active&&down&&!was_held&&launcher_open&&!launcher_calibrating&&!hit&&!recording_indicator.hovered(hand)&&!launcher_dock_interaction()&&launcher_dismiss.allows(now,true)&&views.count("launcher")&&!overlays->IsHoverTargetOverlay(views.at("launcher")->overlay))launcher_outside_at=now+std::chrono::milliseconds(60);
   }
   if(launcher_open&&hand==1){vr::InputDigitalActionData_t close{};bool active=input->GetDigitalActionData(close_action,&close,sizeof(close),hands[hand])==vr::VRInputError_None&&close.bActive;bool down=close.bState;
    if(!active&&device!=vr::k_unTrackedDeviceIndexInvalid&&vr_system->IsTrackedDeviceConnected(device)){char model[256]{};vr_system->GetStringTrackedDeviceProperty(device,vr::Prop_RenderModelName_String,model,sizeof(model));vr::RenderModel_ControllerMode_State_t mode{};vr::RenderModel_ComponentState_t state{};active=vr::VRRenderModels()->GetComponentStateForDevicePath(model,"button_b",hands[hand],&mode,&state);down=active&&(state.uProperties&vr::VRComponentProperty_IsPressed);}
@@ -644,10 +654,10 @@ int main(int argc,char** argv){
  vr::VROverlayHandle_t button=0;auto err=overlays->CreateOverlay("framely.dock.button","Framely",&button);if(err){cef_shutdown();vr::VR_Shutdown();return 6;}auto pixels=dock_icon(false,false);DockIconTexture icon_texture;icon_texture.init();if(!icon_texture.submit(button,pixels)){icon_texture.destroy();overlays->DestroyOverlay(button);cef_shutdown();vr::VR_Shutdown();return 6;}overlays->SetOverlayInputMethod(button,vr::VROverlayInputMethod_Mouse);vr::HmdVector2_t scale{{dock_canvas_width,dock_canvas_height}};overlays->SetOverlayMouseScale(button,&scale);vr::VROverlayIntersectionMaskPrimitive_t mask{};mask.m_nPrimitiveType=vr::OverlayIntersectionPrimitiveType_Rectangle;mask.m_Primitive.m_Rectangle={dock_icon_left,0,128,128};if(overlays->SetOverlayIntersectionMask(button,&mask,1)){std::cerr<<"Dock input mask unavailable\n";overlays->DestroyOverlay(button);icon_texture.destroy();cef_shutdown();vr::VR_Shutdown();return 6;}overlays->SetOverlayFlag(button,vr::VROverlayFlags_VisibleInDashboard,true);overlays->SetOverlayFlag(button,vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,true);overlays->SetOverlayFlag(button,vr::VROverlayFlags_SortWithNonSceneOverlays,false);overlays->SetOverlaySortOrder(button,0);overlays->SetOverlayFlag(button,vr::VROverlayFlags_HideLaserIntersection,false);
  try{create_view("menu","Framely",initial,false,600,840);}catch(const std::exception& e){std::cerr<<e.what()<<"\n";running=0;}
  const char* steam_root=std::getenv("FRAMELY_STEAM_ROOT");if(!ui_audio.prepare(steam_root?steam_root:""))std::cerr<<"Steam UI sounds unavailable\n";
- std::thread poller([port]{int failures=0;json last_feedback;json last_gaze;bool gaze_loaded=false;while(running){try{auto data=poll_http(port);notification_badge_count.store(data.value("notificationBadge",0u));launcher_prioritize_ui.store(data.value("launcher",json::object()).value("prioritizeUi",true));std::lock_guard<std::mutex> lock(queue_mutex);auto feedback=data.value("feedback",json::object());if(!feedback.is_object())feedback=json::object();if(feedback!=last_feedback){queue.push_back({{"kind","feedback.settings"},{"haptics",feedback.value("haptics",true)},{"sounds",feedback.value("sounds",false)}});last_feedback=feedback;}auto calibration=data.value("gazeCalibration",json(nullptr));if(!gaze_loaded||calibration!=last_gaze){queue.push_back({{"kind","gaze.correction"},{"calibration",calibration}});last_gaze=calibration;gaze_loaded=true;}for(const auto& c:data.at("commands")){if(queue.size()<256)queue.push_back(c);}failures=0;}catch(const std::exception& e){if(++failures>=10){std::cerr<<"Agent connection lost: "<<e.what()<<"\n";running=0;}}std::this_thread::sleep_for(std::chrono::milliseconds(100));}});
+ std::thread poller([port]{int failures=0;json last_feedback;json last_gaze;bool gaze_loaded=false;while(running){try{auto data=poll_http(port);notification_badge_count.store(data.value("notificationBadge",0u));launcher_prioritize_ui.store(data.value("launcher",json::object()).value("prioritizeUi",true));std::lock_guard<std::mutex> lock(queue_mutex);recording_state=data.value("recording",json::object());if(!recording_state.is_object())recording_state=json::object();auto feedback=data.value("feedback",json::object());if(!feedback.is_object())feedback=json::object();if(feedback!=last_feedback){queue.push_back({{"kind","feedback.settings"},{"haptics",feedback.value("haptics",true)},{"sounds",feedback.value("sounds",false)}});last_feedback=feedback;}auto calibration=data.value("gazeCalibration",json(nullptr));if(!gaze_loaded||calibration!=last_gaze){queue.push_back({{"kind","gaze.correction"},{"calibration",calibration}});last_gaze=calibration;gaze_loaded=true;}for(const auto& c:data.at("commands")){if(queue.size()<256)queue.push_back(c);}failures=0;}catch(const std::exception& e){if(++failures>=10){std::cerr<<"Agent connection lost: "<<e.what()<<"\n";running=0;}}std::this_thread::sleep_for(std::chrono::milliseconds(100));}});
  std::thread priority_worker([]{LauncherPriority priority;while(running){priority.update(launcher_priority_active.load());std::this_thread::sleep_for(std::chrono::milliseconds(100));}});
  DockUVState uv{};OverlayPlacement button_placement;bool icon_active=false,icon_hover=false;unsigned icon_badge=0;int icon_progress=0;vr::VROverlayHandle_t last_dock=0;bool was_visible=false;vr::HmdMatrix34_t saved_anchor{},saved_frame{};float saved_size=0;DockCurveEvidence saved_evidence{};auto button_haptic_at=std::chrono::steady_clock::time_point{};auto anchored_at=std::chrono::steady_clock::time_point{};auto sampled_at=std::chrono::steady_clock::time_point{};
- while(running){auto frame_start=std::chrono::steady_clock::now();cef_do_message_loop_work();commands();vr::VREvent_t global{};while(vr_system->PollNextEvent(&global,sizeof(global))){if(global.eventType==vr::VREvent_Quit){vr_system->AcknowledgeQuit_Exiting();running=0;}observe_dashboard(global);keyboard_event(global);}launcher_priority_active.store(launcher_open&&launcher_prioritize_ui.load());vr::VROverlayHandle_t dock=0;vr::HmdVector2_t mouse_scale{};bool visible=!overlays->FindOverlay("valve.steam.gamepadui.bar",&dock)&&overlays->IsDashboardVisible()&&overlays->IsOverlayVisible(dock)&&!overlays->GetOverlayMouseScale(dock,&mouse_scale);
+ while(running){auto frame_start=std::chrono::steady_clock::now();cef_do_message_loop_work();commands();json recording;{std::lock_guard<std::mutex> lock(queue_mutex);recording=recording_state;}recording_indicator.tick(overlays,recording.value("active",false)?recording.value("id",std::string{}):std::string{},recording.value("elapsedSeconds",uint64_t(0)));vr::VREvent_t global{};while(vr_system->PollNextEvent(&global,sizeof(global))){if(global.eventType==vr::VREvent_Quit){vr_system->AcknowledgeQuit_Exiting();running=0;}observe_dashboard(global);keyboard_event(global);}launcher_priority_active.store(launcher_open&&launcher_prioritize_ui.load());vr::VROverlayHandle_t dock=0;vr::HmdVector2_t mouse_scale{};bool visible=!overlays->FindOverlay("valve.steam.gamepadui.bar",&dock)&&overlays->IsDashboardVisible()&&overlays->IsOverlayVisible(dock)&&!overlays->GetOverlayMouseScale(dock,&mouse_scale);
   if(visible&&(!was_visible||dock!=last_dock)){uv={};anchored_at={};sampled_at={};}last_dock=dock;
   // Width and aspect are only ray-solver seeds; physical size comes from intersections.
   float width=0,height=0;bool fresh=visible&&!overlays->GetOverlayWidthInMeters(dock,&width)&&std::isfinite(width)&&width>0&&width<10&&std::isfinite(mouse_scale.v[0])&&std::isfinite(mouse_scale.v[1])&&mouse_scale.v[0]>0&&mouse_scale.v[1]>0;
@@ -802,5 +812,6 @@ int main(int argc,char** argv){
   // only for immediate API failures, so a broken sync call cannot busy-spin.
   if(sync!=vr::VROverlayError_None&&sync!=vr::VROverlayError_TimedOut)std::this_thread::sleep_until(frame_start+std::chrono::milliseconds(8));
  }
+ recording_indicator.destroy();
  close_keyboard();for(auto&[key,v]:views)close_view(*v);auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);while(std::chrono::steady_clock::now()<deadline){cef_do_message_loop_work();bool all=true;for(auto&[key,v]:views)all&=v->closed;if(all)break;std::this_thread::sleep_for(std::chrono::milliseconds(5));}poller.join();priority_worker.join();for(auto&[key,v]:views)if(!v->closed){std::cerr<<"Browser shutdown timed out\n";_Exit(7);}for(auto&[key,v]:views){overlays->DestroyOverlay(v->overlay);if(v->thumbnail)overlays->DestroyOverlay(v->thumbnail);glDeleteTextures(2,v->textures);}views.clear();overlays->DestroyOverlay(button);icon_texture.destroy();cef_shutdown();vr::VR_Shutdown();glXMakeContextCurrent(xdisplay,None,None,nullptr);glXDestroyContext(xdisplay,glcontext);glXDestroyPbuffer(xdisplay,glsurface);XCloseDisplay(xdisplay);return 0;
 }

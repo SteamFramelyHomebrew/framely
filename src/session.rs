@@ -408,6 +408,9 @@ impl Agent {
                 r.as_reader().take(32769).read_to_end(&mut bytes)?;
                 ensure!(bytes.len() <= 32768, "Visibility report too large");
                 let views: Value = serde_json::from_slice(&bytes)?;
+                if let Some(id) = views["stopRecording"].as_str() {
+                    self.casting.lock().unwrap().stop_recording_id(id);
+                }
                 if views["views"].is_object() {
                     self.core("host.ui.visibility",views["views"].clone())?;
                     if let Some(ids)=views["closedCasts"].as_array(){ensure!(ids.len()<=32,"Too many closed casts");for id in ids{if let Some(id)=id.as_str(){let _=self.receivers.lock().unwrap().control(id,"stop",json!({}));}}}
@@ -437,7 +440,7 @@ impl Agent {
                 .unwrap_or(json!({}));
             return send_json(
                 r,
-                json!({"feedback":database["feedback"],"commands":commands,"notificationBadge":badge,"gazeCalibration":self.core("launcher.gaze.calibration.get",json!({})).unwrap_or(Value::Null),"launcher":database["launcher"]}),
+                json!({"feedback":database["feedback"],"commands":commands,"notificationBadge":badge,"gazeCalibration":self.core("launcher.gaze.calibration.get",json!({})).unwrap_or(Value::Null),"launcher":database["launcher"],"recording":self.casting.lock().unwrap().recording_status()}),
             );
         }
         if let Some(rel) = path.strip_prefix("/plugin-assets/") {
@@ -1098,6 +1101,23 @@ impl Agent {
                 self.casting.lock().unwrap().start(&settings, panel.as_deref())
             }
             "cast.stop" => Ok(self.casting.lock().unwrap().stop()),
+            "cast.record.start" => {
+                let mut cast = self.casting.lock().unwrap();
+                let auto_started = cast.status()["running"] != true;
+                if auto_started {
+                    let status = self.core("status", json!({}))?;
+                    let settings: crate::cast::settings::Settings = serde_json::from_value(status["database"]["casting"].clone())?;
+                    let panel = if settings.source == crate::cast::settings::Source::Screen {
+                        let response = self.core("cast.panel.start", json!({}))?;
+                        Some(PathBuf::from(response["socket"].as_str().context("Missing panel socket")?))
+                    } else {None};
+                    cast.start(&settings, panel.as_deref())?;
+                }
+                let result = cast.start_recording(&crate::steam::home()?.join("Videos/framely"));
+                if result.is_err() && auto_started {cast.stop();}
+                result
+            },
+            "cast.record.stop" => self.casting.lock().unwrap().stop_recording(),
             "launcher.search.index" => {
                 let names: Vec<String> = serde_json::from_value(p["names"].clone())?;
                 ensure!(

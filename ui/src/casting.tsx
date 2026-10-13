@@ -9,11 +9,12 @@ import {CastVideo,type CastStreamInfo} from './cast-viewer';
 import {FramingEditor} from './cast-framing-editor';
 import {framePresets,frameRatios,type ReferenceView} from './cast-framing';
 import './casting.css';
+import {RecordingButton,type RecordingStatus} from './cast-recording';
 
 export type CastSettings={source:'screen'|'steamVR';codec:'h264'|'h265';output:'eye'|'raw';eye:'steamVR'|'left'|'right';width:number;height:number;fps:number;bitrateMbps:number;horizontalFov:number|null;centerX:number;centerY:number;systemAudio:boolean;microphone:boolean;airplay:boolean;dlna:boolean;receiverName:string};
 type CastSession={id:string;protocol:string;accepted:boolean;width?:number;height?:number};
 type Device={id:string;name:string};
-type Runtime={running:boolean;error:string|null;dominantEye:number|null;watchPath:string|null;watchAccessEnabled?:boolean;elapsedSeconds:number|null;preview?:boolean;view?:ReferenceView|null;receiverError?:string|null;sessions?:CastSession[];watchAddresses?:string[]};
+type Runtime={running:boolean;recording?:RecordingStatus;error:string|null;dominantEye:number|null;watchPath:string|null;watchAccessEnabled?:boolean;elapsedSeconds:number|null;preview?:boolean;view?:ReferenceView|null;receiverError?:string|null;sessions?:CastSession[];watchAddresses?:string[]};
 export type CastPage='casting'|'casting-picture'|'casting-receive'|'casting-devices';
 const titles:Record<CastPage,[string,string]>={casting:['网页观看','把头显画面分享给同一网络中的手机或电脑。'],'casting-picture':['画面与声音','选择画面来源，直接调整取景和输出画质。'],'casting-receive':['接收投屏','接收其他设备的音频和视频，在头显中打开。'],'casting-devices':['投到设备','选择同一网络中的设备，播放当前头显画面。']};
 function Choices<T extends string|number>({label,value,options,onChange,disabled=false}:{label:string;value:T;options:{value:T;label:string;description?:string}[];onChange:(value:T)=>void;disabled?:boolean}){
@@ -48,7 +49,9 @@ export function Casting({config,refresh,network,page='casting'}:{config:CastSett
   {errorMessage&&<div className="cast-error" role="alert"><strong>{t('操作未完成')}</strong><p>{errorMessage}</p></div>}
   {page==='casting'&&<>
    <div className="cast-monitor"><CastVideo key={epoch} active={!!runtime?.running&&!runtime.preview} onError={setError} onStreamInfo={setStreamInfo}/>{!runtime?.running&&<div className="cast-monitor-empty"><IconDeviceVisionPro size={44} stroke={1.5}/><h2>{t('分享你看到的画面')}</h2><p>{t('启动后，手机和电脑可以通过网页实时观看。')}</p></div>}</div>
-   <div className="cast-stream-bar"><div><strong>{t(config.source==='screen'?'屏幕采集':'SteamVR')}</strong><span>{config.width} × {config.height}<i/> {config.fps} fps</span></div><button className={runtime?.running?'':'primary'} disabled={busy||!runtime} onClick={()=>void action('start',async()=>{if(runtime?.running)await api('cast.stop');else{if(dirty)await apply();await api('cast.start');}setEpoch(v=>v+1);})}>{runtime?.running?<IconPlayerStop size={21}/>:<IconPlayerPlay size={21}/>}<span>{pending==='start'?t('正在启动…'):runtime?.running?t('停止串流'):t('开始串流')}</span></button></div>
+   <div className="cast-stream-bar"><div><strong>{t(config.source==='screen'?'屏幕采集':'SteamVR')}</strong><span>{config.width} × {config.height}<i/> {config.fps} fps</span></div><div className="cast-stream-actions"><button className={runtime?.running?'':'primary'} disabled={busy||!runtime} onClick={()=>void action('start',async()=>{if(runtime?.running)await api('cast.stop');else{if(dirty)await apply();await api('cast.start');}setEpoch(v=>v+1);})}>{runtime?.running?<IconPlayerStop size={21}/>:<IconPlayerPlay size={21}/>}<span>{pending==='start'?t('正在启动…'):runtime?.running?t('停止串流'):t('开始串流')}</span></button><RecordingButton recording={runtime?.recording} disabled={busy||!runtime||!!runtime.preview} onClick={()=>void action('record',async()=>{if(!runtime?.recording?.active&&!runtime?.running&&dirty)await apply();await api(runtime?.recording?.active?'cast.record.stop':'cast.record.start');setEpoch(v=>v+1);})}/></div></div>
+   <p className="cast-record-path">{t('录制保存到 /home/steamos/Videos/framely')}{runtime?.recording?.path&&<> · <span>{runtime.recording.path.split('/').pop()}</span></>}</p>
+   {runtime?.recording?.error&&<p className="error" role="alert">{runtime.recording.error}</p>}
    {runtime?.running&&<section className="cast-share"><div><IconWifi size={24}/><div><h2>{t('在其他设备上观看')}</h2><p>{t('连接同一网络，打开观看地址。')}</p></div></div><SwitchRow label={t('免验证')} checked={runtime.watchAccessEnabled??false} disabled={busy} onChange={enabled=>void action('watch-access',async()=>{await api('cast.watchAccess.save',{enabled});setCopied(false);})}/><p>{t('持有此链接的人无需密码即可观看。')}</p><div className="cast-share-link"><code>{watchAddress}</code><button disabled={busy} onClick={()=>void action('copy',copy)} aria-label={t('复制观看地址')}>{copied?<IconCheck size={20}/>:<IconCopy size={20}/>}<span>{copied?t('已复制'):t('复制')}</span></button><a className="cast-icon-link" href={watchAddress} aria-label={t('打开观看网页')}><IconExternalLink size={21}/></a></div></section>}
 
   </>}

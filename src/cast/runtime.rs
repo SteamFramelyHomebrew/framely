@@ -26,6 +26,9 @@ pub struct Casting {
     pub stream_key: String,
     error: Option<String>,
     preview_restore: Option<Option<Settings>>,
+    recording: Option<super::recording::Recording>,
+    recording_error: Option<String>,
+    recording_path: Option<PathBuf>,
 }
 fn port() -> Result<u16> {
     Ok(std::net::TcpListener::bind("127.0.0.1:0")?
@@ -50,9 +53,21 @@ impl Casting {
             stream_key: String::new(),
             error: None,
             preview_restore: None,
+            recording: None,
+            recording_error: None,
+            recording_path: None,
         }
     }
     pub fn status(&mut self) -> Value {
+        self.poll_recording();
+        self.poll_workers();
+        let view = fs::File::open(self.directory.join("stream.log")).ok().and_then(|file| { let mut log = String::new(); file.take(65536).read_to_string(&mut log).ok()?; Some(log) }).and_then(|log| log.lines().filter_map(|line|serde_json::from_str::<Value>(line).ok()).find(|v|v["event"]=="view"));
+        json!({"running":self.started.is_some(),"error":self.error,"preview":self.preview_restore.is_some(),"view":view,
+            "watchPath":if self.started.is_some(){Some("/cast/watch")}else{None},
+            "elapsedSeconds":self.started.map(|t|t.elapsed().as_secs()),
+            "codec":self.active_settings.as_ref().map(|s|s.codec.name()),"dominantEye":dominant_eye().ok(),"recording":self.recording_status()})
+    }
+    fn poll_workers(&mut self) {
         let exited = self
             .workers
             .iter_mut()
@@ -61,13 +76,43 @@ impl Casting {
             self.error = Some(format!("串流进程已退出：{code}"));
             self.stop_workers();
         }
-        let view = fs::File::open(self.directory.join("stream.log")).ok().and_then(|file| { let mut log = String::new(); file.take(65536).read_to_string(&mut log).ok()?; Some(log) }).and_then(|log| log.lines().filter_map(|line|serde_json::from_str::<Value>(line).ok()).find(|v|v["event"]=="view"));
-        json!({"running":self.started.is_some(),"error":self.error,"preview":self.preview_restore.is_some(),"view":view,
-            "watchPath":if self.started.is_some(){Some("/cast/watch")}else{None},
-            "elapsedSeconds":self.started.map(|t|t.elapsed().as_secs()),
-            "codec":self.active_settings.as_ref().map(|s|s.codec.name()),"dominantEye":dominant_eye().ok()})
+    }
+    pub fn recording_status(&self) -> Value {
+        let mut value = self.recording.as_ref().map(|r|r.status()).unwrap_or(json!({"active":false,"path":self.recording_path}));
+        value["error"] = json!(self.recording_error);
+        value
+    }
+    fn poll_recording(&mut self) {
+        if self.recording.as_mut().is_some_and(|r|r.exited().unwrap_or(true)) {
+            self.recording_error = Some(format!("录制进程意外退出：{}",self.recording.as_ref().unwrap().detail()));
+            let _ = self.stop_recording();
+        }
+    }
+    pub fn start_recording(&mut self, output: &Path) -> Result<Value> {
+        self.status();
+        ensure!(self.started.is_some(), "请先开始串流");
+        ensure!(self.preview_restore.is_none(), "取景预览期间不能录制");
+        ensure!(self.recording.is_none(), "录制已在运行");
+        self.recording_error = None;
+        match super::recording::Recording::start(self.rtsp_port, &self.directory, output) {
+            Ok(recording) => {self.recording = Some(recording); Ok(self.recording_status())},
+            Err(error) => {self.recording_error = Some(format!("{error:#}")); Err(error)}
+        }
+    }
+    pub fn stop_recording(&mut self) -> Result<Value> {
+        if let Some(mut recording) = self.recording.take() {
+            match recording.finish() {
+                Ok(path) => self.recording_path = Some(path),
+                Err(error) => {self.recording_error = Some(format!("{error:#}")); return Err(error);}
+            }
+        }
+        Ok(self.recording_status())
+    }
+    pub fn stop_recording_id(&mut self, id: &str) {
+        if self.recording.as_ref().is_some_and(|r|r.id == id) {let _ = self.stop_recording();}
     }
     fn stop_workers(&mut self) {
+        let _ = self.stop_recording();
         for child in &mut self.workers {
             if child.try_wait().ok().flatten().is_some() {
                 continue;
@@ -195,6 +240,8 @@ impl Casting {
         }
     }
     pub fn maintain(&mut self) {
+        self.poll_recording();
+        self.poll_workers();
         if self.compatibility_poll.elapsed() < Duration::from_secs(2) {
             return;
         }
@@ -284,6 +331,7 @@ impl Casting {
         json!(true)
     }
     pub fn start_preview(&mut self, settings: &Settings, socket: &Path) -> Result<Value> {
+        ensure!(self.recording.is_none(), "请先停止录制再调整取景");
         ensure!(self.preview_restore.is_none(), "取景预览已在运行");
         let restore = self.active_settings.clone();
         self.stop_workers();
@@ -673,6 +721,31 @@ mod tests {
                 .collect()
             )
         );
+    }
+    #[test]
+    fn cast_recording_stale_indicator_does_not_stop_new_recording_and_stream_stop_finishes() {
+        let dir=tempfile::tempdir().unwrap();let output=dir.path().join("videos");
+        let mut cast=Casting::new(dir.path().into(),dir.path().into());
+        assert!(cast.start_recording(&output).is_err());
+        cast.started=Some(Instant::now());
+        cast.recording=Some(super::super::recording::test_recording(dir.path(),&output,false));
+        assert!(cast.start_recording(&output).is_err());
+        assert!(cast.start_preview(&Settings::default(),dir.path()).is_err());
+        cast.stop_recording_id("old-recording-id");assert!(cast.recording.is_some());
+        let id=cast.recording.as_ref().unwrap().id.clone();cast.stop_recording_id(&id);
+        assert!(cast.recording.is_none());assert!(cast.started.is_some());
+        cast.recording=Some(super::super::recording::test_recording(dir.path(),&output,false));
+        cast.stop();assert!(cast.recording.is_none());assert!(cast.started.is_none());
+        assert_eq!(fs::read_to_string(cast.recording_path.as_ref().unwrap()).unwrap(),"header\ntrailer\n");
+    }
+    #[test]
+    fn cast_recording_process_failure_keeps_stream_and_reports_error() {
+        let dir=tempfile::tempdir().unwrap();let output=dir.path().join("videos");
+        let mut cast=Casting::new(dir.path().into(),dir.path().into());cast.started=Some(Instant::now());
+        cast.recording=Some(super::super::recording::test_recording(dir.path(),&output,true));
+        let end=Instant::now()+Duration::from_secs(3);
+        while cast.recording.is_some()&&Instant::now()<end {cast.maintain();std::thread::sleep(Duration::from_millis(25));}
+        assert!(cast.recording.is_none());assert!(cast.started.is_some());assert!(cast.recording_error.is_some());
     }
     #[test]
     fn copied_video_packets_receive_frame_timestamps() {
