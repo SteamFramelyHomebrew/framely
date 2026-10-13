@@ -3,21 +3,49 @@ import {IconArrowLeft,IconPlayerPause,IconPlayerPlay,IconVolume,IconVolumeOff,Ic
 import {CastRange} from './cast-range';
 import {t} from './i18n';
 
-export function CastVideo({active,onError,controls=true,aspectRatio,videoRef,onState,showStatus=true}:{active:boolean;onError?:(error:string)=>void;controls?:boolean;aspectRatio?:number;videoRef?:React.RefObject<HTMLVideoElement|null>;onState?:(state:'connecting'|'playing'|'failed')=>void;showStatus?:boolean}){
+export type CastStreamInfo={width:number|null;height:number|null;codec:string|null;fps:number|null};
+export function CastVideo({active,onError,controls=true,aspectRatio,videoRef,onState,onStreamInfo,showStatus=true}:{active:boolean;onError?:(error:string)=>void;controls?:boolean;aspectRatio?:number;videoRef?:React.RefObject<HTMLVideoElement|null>;onState?:(state:'connecting'|'playing'|'failed')=>void;onStreamInfo?:(info:CastStreamInfo|null)=>void;showStatus?:boolean}){
  const localVideo=useRef<HTMLVideoElement>(null),video=videoRef??localVideo,failure=useRef(onError);failure.current=onError;
+ const streamInfo=useRef(onStreamInfo);streamInfo.current=onStreamInfo;
  const [state,setState]=useState<'connecting'|'playing'|'failed'>('connecting');
  useEffect(()=>{onState?.(state);},[state,onState]);
  const [ratio,setRatio]=useState(16/9),[retry,setRetry]=useState(0);
  useEffect(()=>{
   if(!active)return;
   const peer=new RTCPeerConnection(),abort=new AbortController();let resource:string|undefined,closed=false;
+  let previous:{id:string;frames:number;timestamp:number}|undefined,statsBusy=false;
+  streamInfo.current?.(null);
+  async function reportStreamInfo(){
+   if(closed||statsBusy||!streamInfo.current)return;
+   if(peer.connectionState!=='connected'){previous=undefined;streamInfo.current?.(null);return;}
+   statsBusy=true;
+   try{
+    const stats=await peer.getStats();if(closed)return;
+    let inbound:RTCInboundRtpStreamStats|undefined;
+    stats.forEach(report=>{if(report.type==='inbound-rtp'&&(report.kind==='video'||report.mediaType==='video'))inbound=report;});
+    if(!inbound){previous=undefined;streamInfo.current?.(null);return;}
+    const {id,framesDecoded,timestamp,frameWidth,frameHeight,codecId}=inbound;
+    let fps:number|null=null;
+    if(typeof framesDecoded==='number'){
+     if(previous?.id===id&&framesDecoded>=previous.frames&&timestamp>previous.timestamp)fps=(framesDecoded-previous.frames)*1000/(timestamp-previous.timestamp);
+     previous={id,frames:framesDecoded,timestamp};
+    }
+    let mime:string|undefined;
+    stats.forEach(report=>{if(report.id===codecId&&report.type==='codec')mime=report.mimeType;});
+    const name=typeof mime==='string'?mime.replace(/^video\//i,''):null;
+    const codec=name?/^(H265|HEVC)$/i.test(name)?'H.265':/^H264$/i.test(name)?'H.264':name.toUpperCase():null;
+    streamInfo.current?.({width:typeof frameWidth==='number'&&frameWidth>0?frameWidth:video.current?.videoWidth||null,height:typeof frameHeight==='number'&&frameHeight>0?frameHeight:video.current?.videoHeight||null,codec,fps});
+   }catch{if(!closed){previous=undefined;streamInfo.current?.(null);}}
+   finally{statsBusy=false;}
+  }
+  const statsTimer=setInterval(()=>void reportStreamInfo(),1000);
   setState('connecting');
   for(const kind of ['video','audio']){
    const receiver=peer.addTransceiver(kind,{direction:'recvonly'}).receiver;
    if('jitterBufferTarget' in receiver){try{(receiver as RTCRtpReceiver&{jitterBufferTarget:number|null}).jitterBufferTarget=0;}catch{}}
   }
   peer.ontrack=event=>{if(video.current){const stream=video.current.srcObject as MediaStream|null??new MediaStream();stream.addTrack(event.track);video.current.srcObject=stream;void video.current.play().catch(()=>{});}};
-  peer.onconnectionstatechange=()=>{if(peer.connectionState==='failed'){setState('failed');failure.current?.(t('观看连接失败，请重新连接。'));}};
+  peer.onconnectionstatechange=()=>{if(peer.connectionState==='failed'){previous=undefined;streamInfo.current?.(null);setState('failed');failure.current?.(t('观看连接失败，请重新连接。'));}};
   void(async()=>{
    try{
     await peer.setLocalDescription(await peer.createOffer());
@@ -34,7 +62,7 @@ export function CastVideo({active,onError,controls=true,aspectRatio,videoRef,onS
     await peer.setRemoteDescription({type:'answer',sdp:await response.text()});
    }catch(error){if(!abort.signal.aborted){setState('failed');failure.current?.(String(error));}}
   })();
-  return()=>{closed=true;abort.abort();peer.close();if(resource)void fetch(resource,{method:'DELETE'}).catch(()=>{});if(video.current)video.current.srcObject=null;};
+  return()=>{closed=true;clearInterval(statsTimer);streamInfo.current?.(null);abort.abort();peer.close();if(resource)void fetch(resource,{method:'DELETE'}).catch(()=>{});if(video.current)video.current.srcObject=null;};
  },[active,retry]);
  return <div className="cast-video-stage" style={{aspectRatio:aspectRatio??ratio}}><video ref={video} autoPlay playsInline muted controls={controls} onLoadedMetadata={()=>{if(video.current?.videoHeight)setRatio(video.current.videoWidth/video.current.videoHeight);}} onPlaying={()=>setState('playing')}/>{showStatus&&active&&state==='connecting'&&<span role="status">{t('正在连接画面…')}</span>}{showStatus&&active&&state==='failed'&&<div className="cast-video-failure"><p>{t('观看连接失败，请重新连接。')}</p><button onClick={()=>setRetry(v=>v+1)}>{t('重新连接')}</button></div>}{!active&&<span>{t('开始串流后显示头显画面。')}</span>}</div>;
 }

@@ -452,6 +452,11 @@ impl Casting {
                 "0",
                 "-framerate",
                 &s.fps.to_string(),
+                // Timestamp raw packets before FFmpeg schedules the inputs.
+                // Use the capture frame count rather than arrival wallclock:
+                // pipe reads can batch frames and distort scheduler pacing.
+                "-bsf:v",
+                &video_packet_timestamps(s.fps),
                 "-f",
                 if s.codec == Codec::H265 {"hevc"} else {"h264"},
                 "-i",
@@ -460,7 +465,6 @@ impl Casting {
         } else {
             ffmpeg.args(["-thread_queue_size", "4", "-f", "v4l2", "-i", "/dev/video99"]);
         }
-        let audio = s.system_audio || s.microphone;
         if s.system_audio {
             add_pulse_input(&mut ffmpeg, "@DEFAULT_MONITOR@");
         }
@@ -468,22 +472,15 @@ impl Casting {
             add_pulse_input(&mut ffmpeg, "default");
         }
         ffmpeg.args(["-map", "0:v:0"]);
-        if s.system_audio && s.microphone {
-            ffmpeg.args([
-                "-filter_complex",
-                "[1:a][2:a]amix=inputs=2:duration=longest:normalize=0[a]",
-                "-map",
-                "[a]",
-            ]);
-        } else if audio {
-            ffmpeg.args(["-map", "1:a:0"]);
-        }
+        let audio = map_audio(&mut ffmpeg, s.system_audio, s.microphone);
         if s.source == Source::Screen {
             ffmpeg.args(["-c:v", "copy"]);
-            if s.codec==Codec::H265 {
+            if s.codec == Codec::H265 {
                 // Iris HEVC headers omit reliable frame timing. Write the requested
                 // timing without decoding/re-encoding, avoiding false 50 fps playback.
-                ffmpeg.args(["-bsf:v",&format!("hevc_metadata=tick_rate={}:num_ticks_poc_diff_one=1",s.fps)]);
+                ffmpeg.args(["-bsf:v", &format!(
+                    "hevc_metadata=tick_rate={}:num_ticks_poc_diff_one=1", s.fps
+                )]);
             }
         } else {
             ffmpeg.args(["-vf", &format!("fps={},scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,format=yuv420p",s.fps,s.width,s.height,s.width,s.height),
@@ -598,6 +595,29 @@ fn add_pulse_input(command: &mut Command, device: &str) {
     command.args(["-thread_queue_size", "4", "-f", "pulse", "-sample_rate", "48000", "-channels", "2", "-fragment_size", "3840", "-i", device]);
 }
 
+// Pulse capture timestamps use the audio server's clock, while raw panel video
+// starts at zero. Generate audio PTS from the sample count in that same origin.
+// libopus low-delay mode subtracts its 120-sample pre-roll from packet PTS, so
+// offset the input by 120 samples and keep the first RTSP packet non-negative.
+fn map_audio(command: &mut Command, system_audio: bool, microphone: bool) -> bool {
+    let audio = system_audio || microphone;
+    if system_audio && microphone {
+        command.args([
+            "-filter_complex",
+            "[1:a][2:a]amix=inputs=2:duration=longest:normalize=0,asetpts=(N+120)/SR/TB[a]",
+            "-map",
+            "[a]",
+        ]);
+    } else if audio {
+        command.args(["-map", "1:a:0", "-af", "asetpts=(N+120)/SR/TB"]);
+    }
+    audio
+}
+
+fn video_packet_timestamps(fps: u32) -> String {
+    format!("setts=time_base=1/{fps}:pts=N:dts=N:duration=1")
+}
+
 pub fn bind_to_session(command: &mut Command) {
     // Linux PDEATHSIG follows the spawning thread, not the session process.
     // HTTP request threads end immediately after returning a response. Worker
@@ -608,6 +628,53 @@ pub fn bind_to_session(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn audio_mapping_generates_monotonic_timestamps() {
+        let arguments = |system_audio, microphone| {
+            let mut command = Command::new("ffmpeg");
+            let enabled = map_audio(&mut command, system_audio, microphone);
+            let arguments = command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            (enabled, arguments)
+        };
+        assert_eq!(arguments(false, false), (false, vec![]));
+        for inputs in [(true, false), (false, true)] {
+            assert_eq!(
+                arguments(inputs.0, inputs.1),
+                (
+                    true,
+                    vec!["-map", "1:a:0", "-af", "asetpts=(N+120)/SR/TB"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect()
+                )
+            );
+        }
+        assert_eq!(
+            arguments(true, true),
+            (
+                true,
+                vec![
+                    "-filter_complex",
+                    "[1:a][2:a]amix=inputs=2:duration=longest:normalize=0,asetpts=(N+120)/SR/TB[a]",
+                    "-map",
+                    "[a]",
+                ]
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+            )
+        );
+    }
+    #[test]
+    fn copied_video_packets_receive_frame_timestamps() {
+        assert_eq!(
+            video_packet_timestamps(60),
+            "setts=time_base=1/60:pts=N:dts=N:duration=1"
+        );
+    }
     #[test]
     fn media_worker_survives_the_http_request_thread() {
         let mut child = std::thread::spawn(|| {
