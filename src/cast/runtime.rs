@@ -100,6 +100,12 @@ impl Casting {
     /// All VP8 viewers share one on-demand compatibility encoder.
     #[cfg(test)]
     pub(crate) fn test_rtsp_port(&self) -> u16 {self.rtsp_port}
+    #[cfg(test)]
+    pub(crate) fn test_whep_server(&mut self, port: u16) {
+        self.started = Some(Instant::now());
+        self.active_settings = Some(Settings::default());
+        self.whep_port = port;
+    }
     pub fn codec(&self) -> Codec { self.active_settings.as_ref().map(|s|s.codec).unwrap_or_default() }
     pub fn ensure_vp8(&mut self) -> Result<()> {
         ensure!(self.status()["running"] == true, "请先开始头显串流");
@@ -409,11 +415,11 @@ impl Casting {
                 if let Some(fov) = s.horizontal_fov {
                     command.args(["--fov", &fov.to_string()]);
                 }
+                // Bind signed values to their options: older capture workers'
+                // clap parser treats a separate negative number as a new flag.
                 command.args([
-                    "--center-x",
-                    &s.center_x.to_string(),
-                    "--center-y",
-                    &s.center_y.to_string(),
+                    format!("--center-x={}", s.center_x),
+                    format!("--center-y={}", s.center_y),
                 ]);
             }
             bind_to_session(&mut command);

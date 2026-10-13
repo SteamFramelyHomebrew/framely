@@ -779,6 +779,7 @@ impl Service {
                         | "agreement.revoke"
                         | "network.password.verify"
                         | "network.password.configured"
+                        | "cast.watchAccess.get"
                         | "network.password.setup"
                         | "system.uninstall.prepare"
                 ),
@@ -1119,6 +1120,11 @@ impl Service {
                 self.db.launcher = settings;
                 self.save()?;
                 Ok(json!(true))
+            }
+            "cast.watchAccess.get" => Ok(serde_json::to_value(crate::cast::watch_access::Grant::load(&self.root)?)?),
+            "cast.watchAccess.save" => {
+                let enabled = p["enabled"].as_bool().context("Missing enabled")?;
+                Ok(serde_json::to_value(crate::cast::watch_access::Grant::save(&self.root, enabled)?)?)
             }
             "cast.settings.save" => {
                 let settings: crate::cast::settings::Settings = serde_json::from_value(p)?;

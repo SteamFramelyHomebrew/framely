@@ -37,6 +37,7 @@ struct Agent {
     files: Arc<crate::manager_files::Files>,
     catalog_cache: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
     casting: Mutex<crate::cast::runtime::Casting>,
+    watch_access: Mutex<crate::cast::watch_access::Access>,
     receivers: Mutex<crate::cast::receiver::Receivers>,
 }
 #[derive(Default)]
@@ -75,6 +76,25 @@ fn push(q: &Mutex<VecDeque<Value>>, v: Value) {
     q.push_back(v);
 }
 impl Agent {
+    fn watch_cookie(r: &Request) -> Option<String> {
+        r.headers().iter().filter(|h| h.field.equiv("Cookie"))
+            .flat_map(|h| h.value.as_str().split(';'))
+            .find_map(|cookie| cookie.trim().strip_prefix("framely-watch=").map(str::to_owned))
+    }
+    fn watch_resource(path: &str, method: &Method) -> bool {
+        (method == &Method::Get && matches!(path, "/cast/watch" | "/cast/access" | "/assets/app.js" | "/assets/app.css"))
+            || ((path == "/cast/whep" || path.starts_with("/cast/whep/"))
+                && matches!(method, Method::Post | Method::Patch | Method::Delete | Method::Options))
+    }
+    fn watch_expired(r: Request) -> Result<()> {
+        r.respond(Response::from_string("<!doctype html><meta charset=\"utf-8\"><title>Framely</title><p>观看链接已失效</p>")
+            .with_status_code(403)
+            .with_header(header("Content-Type", "text/html; charset=utf-8"))
+            .with_header(header("X-Framely-Watch-Expired", "1"))
+            .with_header(header("Cache-Control", "no-store"))
+            .with_header(header("Referrer-Policy", "no-referrer")))?;
+        Ok(())
+    }
     fn core(&self, m: &str, p: Value) -> Result<Value> {
         ipc::call(&self.socket, m, p)
     }
@@ -229,8 +249,30 @@ impl Agent {
                 return Ok(());
             }
         }
-        let configured = remote && self.core("network.password.configured", json!({}))? == true;
-        if remote && (!configured || !self.network_authorized(&r)) {
+        let watch_cookie = Self::watch_cookie(&r);
+        if remote && path == "/cast/watch" && r.method() == &Method::Get {
+            let token = r.url().split_once('?').and_then(|(_, query)| url::form_urlencoded::parse(query.as_bytes()).find(|(key,_)| key == "token").map(|(_,value)| value.into_owned()));
+            if let Some(token) = token {
+                if !self.watch_access.lock().unwrap().accepts(&token) { return Self::watch_expired(r); }
+                r.respond(Response::empty(StatusCode(303))
+                    .with_header(header("Location", "/cast/watch"))
+                    .with_header(header("Set-Cookie", &format!("framely-watch={token}; Path=/; HttpOnly; SameSite=Strict")))
+                    .with_header(header("Cache-Control", "no-store"))
+                    .with_header(header("Referrer-Policy", "no-referrer")))?;
+                return Ok(());
+            }
+        }
+        let manager_authorized = remote && self.network_authorized(&r);
+        let guest = remote && !manager_authorized && Self::watch_resource(&path, r.method())
+            && watch_cookie.as_ref().is_some_and(|token| self.watch_access.lock().unwrap().accepts(token));
+        if remote && Self::watch_resource(&path, r.method()) && !manager_authorized && !guest
+            && (watch_cookie.is_some() || path == "/cast/access") { return Self::watch_expired(r); }
+        if remote && path == "/cast/access" && (guest || manager_authorized) {
+            r.respond(Response::empty(StatusCode(204)).with_header(header("Cache-Control", "no-store")))?;
+            return Ok(());
+        }
+        let configured = remote && !guest && self.core("network.password.configured", json!({}))? == true;
+        if remote && !guest && (!configured || !manager_authorized) {
             let status = self.core("status", json!({}))?;
             let protected = status["database"]["networkPanel"]["passwordEnabled"]
                 .as_bool()
@@ -511,6 +553,15 @@ impl Agent {
         }
         if let Some(rel) = path.strip_prefix("/assets/") {
             safe_path(rel)?;
+            if guest {
+                let mime = if path.ends_with(".js") { "text/javascript" } else { "text/css" };
+                r.respond(Response::from_data(fs::read(self.assets.join(&path[1..]))?)
+                    .with_header(header("Content-Type", mime))
+                    .with_header(header("X-Content-Type-Options", "nosniff"))
+                    .with_header(header("Cache-Control", "no-store"))
+                    .with_header(header("Referrer-Policy", "no-referrer")))?;
+                return Ok(());
+            }
             return send_file(r, &self.assets.join(&path[1..]), true);
         }
         if let Some(key) = path.strip_prefix("/boot/") {
@@ -538,7 +589,7 @@ impl Agent {
         }
         ensure!(
             if remote {
-                self.network_authorized(&r)
+                guest || self.network_authorized(&r)
             } else {
                 self.authorized(&r)
             },
@@ -791,11 +842,20 @@ impl Agent {
             );
         }
         if path == "/cast/whep" || path.starts_with("/cast/whep/") {
+            // Serialize guest creation/registration with revocation: disabling
+            // cannot miss a WHEP session that is still being created upstream.
+            let mut grant = if guest { Some(self.watch_access.lock().unwrap()) } else { None };
+            if let Some(access) = grant.as_ref() {
+                if !watch_cookie.as_ref().is_some_and(|token| access.accepts(token)) { return Self::watch_expired(r); }
+            }
             ensure!(matches!(r.method(), Method::Post | Method::Patch | Method::Delete | Method::Options), "Invalid WHEP method");
             let origin = r.headers().iter().find(|h| h.field.equiv("Origin")).map(|h|h.value.as_str());
             ensure!(origin == Some(expected_origin.as_str()), "Cross-origin playback request denied");
             if r.method()==&Method::Options {r.respond(Response::empty(StatusCode(204)).with_header(header("Accept-Post","application/sdp")))?;return Ok(());}
             let suffix = path.strip_prefix("/cast/whep").unwrap();
+            if let Some(access) = grant.as_ref() {
+                if !suffix.is_empty() && !access.sessions.contains_key(&path) { return Self::watch_expired(r); }
+            }
             let mut body = Vec::new();
             r.as_reader().take(65537).read_to_end(&mut body)?;
             ensure!(body.len() <= 65536, "SDP too large");
@@ -819,7 +879,7 @@ impl Agent {
             }
             let response = match request.send_bytes(&body) { Ok(v) => v, Err(ureq::Error::Status(_,v)) => v, Err(e) => return Err(e.into()) };
             let code = response.status();
-            let mut headers = vec![header("Cache-Control", "no-store")];
+            let mut headers = vec![header("Cache-Control", "no-store"), header("Referrer-Policy", "no-referrer")];
             for name in ["Content-Type", "ETag", "Accept-Patch"] {
                 if let Some(value) = response.header(name) { headers.push(header(name,value)); }
             }
@@ -828,6 +888,14 @@ impl Agent {
                 let prefix=format!("/{media_path}/whep/");
                 ensure!(parsed.path().starts_with(&prefix), "Invalid media session location");
                 headers.push(header("Location", &format!("/cast/whep/{codec}/{}",parsed.path().strip_prefix(&prefix).unwrap())));
+                if (200..300).contains(&code) {
+                    if let Some(access) = grant.as_mut() {
+                        access.sessions.insert(format!("/cast/whep/{codec}/{}", parsed.path().strip_prefix(&prefix).unwrap()), parsed.to_string());
+                    }
+                }
+            }
+            if r.method() == &Method::Delete && matches!(code, 200..=299 | 404 | 410) {
+                if let Some(access) = grant.as_mut() { access.sessions.remove(&path); }
             }
             let mut bytes = Vec::new(); response.into_reader().take(65537).read_to_end(&mut bytes)?;
             ensure!(bytes.len() <= 65536, "Media response too large");
@@ -889,7 +957,8 @@ impl Agent {
             } else {
                 data
             };
-            let response=Response::from_data(data).with_header(header("Content-Type","text/html; charset=utf-8")).with_header(header("Content-Security-Policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; media-src 'self' blob:; frame-src 'self' http://localhost:*; connect-src 'self'; base-uri 'none'; form-action 'none'"));
+            let data = if guest { String::from_utf8(data)?.replacen("<head>", "<head><meta name=\"framely-cast-guest\" content=\"true\">", 1).into_bytes() } else { data };
+            let response=Response::from_data(data).with_header(header("Content-Type","text/html; charset=utf-8")).with_header(header("Cache-Control","no-store")).with_header(header("Referrer-Policy","no-referrer")).with_header(header("Content-Security-Policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; media-src 'self' blob:; frame-src 'self' http://localhost:*; connect-src 'self'; base-uri 'none'; form-action 'none'"));
             r.respond(response)?;
             return Ok(());
         }
@@ -898,6 +967,10 @@ impl Agent {
     }
     fn maintain_cast(&self) {
         self.casting.lock().unwrap().maintain();
+        // Retry failed disconnects, without interrupting authenticated viewers.
+        if let Ok(mut access) = self.watch_access.try_lock() {
+            if !access.revoked.is_empty() { access.disconnect_revoked(); }
+        }
         let events=self.receivers.lock().unwrap().poll();
         for event in events {
             let session=&event["session"];
@@ -945,13 +1018,25 @@ impl Agent {
         match method {
             "cast.status" => {
                 let mut value = self.casting.lock().unwrap().status();
+                let access = self.watch_access.lock().unwrap();
+                let watch_path = access.path();
+                value["watchAccessEnabled"] = json!(access.token.is_some());
+                value["watchPath"] = json!(watch_path);
                 let receivers = self.receivers.lock().unwrap();
                 value["sessions"] = json!(receivers.sessions.values().collect::<Vec<_>>());
                 value["receiverError"] = json!(receivers.error);
                 let network=self.network_status.lock().unwrap();
-                value["watchAddresses"]=if network["enabled"]==true{json!(network_ipv4_addresses().into_iter().map(|ip|format!("http://{ip}:{}/cast/watch",network["port"])).collect::<Vec<_>>())}else{json!([])};
+                value["watchAddresses"]=if network["enabled"]==true{json!(network_ipv4_addresses().into_iter().map(|ip|format!("http://{ip}:{}{watch_path}",network["port"])).collect::<Vec<_>>())}else{json!([])};
                 Ok(value)
             },
+            "cast.watchAccess.save" => {
+                let mut access = self.watch_access.lock().unwrap();
+                let result = self.core(method, p)?;
+                access.replace(result["token"].as_str().map(str::to_owned));
+                access.disconnect_revoked();
+                Ok(json!({"enabled":access.token.is_some()}))
+            },
+            "cast.watchAccess.get" => anyhow::bail!("Internal watch access operation"),
             "cast.settings.save" => {
                 let settings: crate::cast::settings::Settings = serde_json::from_value(p.clone())?;
                 settings.validate()?;
@@ -1898,6 +1983,10 @@ pub fn serve(
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
     let agent = Arc::new(Agent {
+        watch_access: Mutex::new(crate::cast::watch_access::Access {
+            token: ipc::call(&socket, "cast.watchAccess.get", json!({}))?["token"].as_str().map(str::to_owned),
+            ..Default::default()
+        }),
         casting: Mutex::new(crate::cast::runtime::Casting::new(runtime.join("cast"), crate::cast::runtime::binary_directory(&assets))),
         receivers: Mutex::new(crate::cast::receiver::Receivers::new(runtime.join("receive"), crate::cast::runtime::binary_directory(&assets))),
         socket,
@@ -2431,6 +2520,7 @@ mod tests {
 
     fn agent(server: &Server, root: &Path) -> Arc<Agent> {
         Arc::new(Agent {
+            watch_access: Mutex::default(),
             casting: Mutex::new(crate::cast::runtime::Casting::new(root.join("cast"), root.join("media"))),
             receivers: Mutex::new(crate::cast::receiver::Receivers::new(root.join("receive"), root.join("media"))),
             socket: root.join("control.sock"),
@@ -2878,6 +2968,126 @@ mod tests {
         assert_eq!(reply.header("Content-Length"), Some("10"));
         assert!(reply.into_string().unwrap().is_empty());
         thread.join().unwrap();
+    }
+
+    #[test]
+    fn watch_access_limits_http_routes_and_revokes_only_guest_whep() {
+        let root = tempfile::tempdir().unwrap();
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let agent = agent(&server, root.path());
+        let mut core = crate::tests::accepted_service(&agent.state, unsafe { libc::geteuid() }).unwrap();
+        // Authentication is exercised through existing manager cookies, not a
+        // password hash, so no password derivation is needed in this fixture.
+        fs::write(agent.state.join("network-password.json"), b"{}").unwrap();
+        core.db.network_panel.password_enabled = true;
+        let socket = UnixListener::bind(&agent.socket).unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let core_stop = stop.clone();
+        let core_worker = std::thread::spawn(move || {
+            while !core_stop.load(Ordering::Relaxed) {
+                if let Ok((mut stream,_)) = socket.accept() {
+                    let request = ipc::read(&mut stream).unwrap();
+                    let response = ipc::response(core.handle(request["method"].as_str().unwrap(), request["params"].clone()));
+                    ipc::write(&mut stream, &response).unwrap();
+                } else { std::thread::sleep(Duration::from_millis(5)); }
+            }
+        });
+        let worker_agent = agent.clone();
+        let worker_stop = stop.clone();
+        let worker = std::thread::spawn(move || {
+            while !worker_stop.load(Ordering::Relaxed) {
+                if let Ok(Some(r)) = server.recv_timeout(Duration::from_millis(50)) {
+                    let _ = worker_agent.handle_http(r, true);
+                }
+            }
+        });
+        let media = Server::http("127.0.0.1:0").unwrap();
+        agent.casting.lock().unwrap().test_whep_server(media.server_addr().to_ip().unwrap().port());
+        let media_stop = stop.clone();
+        let deleted = Arc::new(Mutex::new(Vec::new()));
+        let media_deleted = deleted.clone();
+        let (creating_tx, creating_rx) = std::sync::mpsc::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let media_worker = std::thread::spawn(move || {
+            let mut number = 0;
+            while !media_stop.load(Ordering::Relaxed) {
+                if let Ok(Some(r)) = media.recv_timeout(Duration::from_millis(50)) {
+                    if r.method() == &Method::Post {
+                        number += 1;
+                        if number == 3 {
+                            creating_tx.send(()).unwrap();
+                            finish_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+                        }
+                        r.respond(Response::from_string("answer").with_status_code(201)
+                            .with_header(header("Location", &format!("/headset/whep/00000000-0000-0000-0000-{number:012}")))).unwrap();
+                    } else if r.method() == &Method::Delete {
+                        media_deleted.lock().unwrap().push(r.url().to_owned());
+                        r.respond(Response::empty(StatusCode(204))).unwrap();
+                    } else { r.respond(Response::empty(StatusCode(400))).unwrap(); }
+                }
+            }
+        });
+        agent.api(json!({"method":"cast.watchAccess.save","params":{"enabled":true}})).unwrap();
+        let token = agent.watch_access.lock().unwrap().token.clone().unwrap();
+        let client = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(3)).build();
+        let origin = &agent.origin;
+        let grant = client.get(&format!("{origin}/cast/watch?token={token}")).call().unwrap();
+        assert_eq!(grant.status(), 303);
+        assert_eq!(grant.header("Location"), Some("/cast/watch"));
+        assert_eq!(grant.header("Referrer-Policy"), Some("no-referrer"));
+        let cookie_header = grant.header("Set-Cookie").unwrap();
+        assert!(cookie_header.contains("HttpOnly") && cookie_header.contains("SameSite=Strict"));
+        let cookie = cookie_header.split(';').next().unwrap().to_owned();
+        fs::remove_file(agent.state.join("network-password.json")).unwrap();
+        let watch = client.get(&format!("{origin}/cast/watch")).set("Cookie", &cookie).call().unwrap();
+        assert_eq!(watch.header("Cache-Control"), Some("no-store"));
+        assert!(watch.into_string().unwrap().contains("framely-cast-guest"));
+        for asset in ["app.js", "app.css"] {
+            assert!(client.get(&format!("{origin}/assets/{asset}")).set("Cookie", &cookie).call().is_ok());
+        }
+        fs::write(agent.state.join("network-password.json"), b"{}").unwrap();
+        let manager = client.get(&format!("{origin}/manager")).set("Cookie", &cookie).call().unwrap().into_string().unwrap();
+        assert!(manager.contains("action=\"/login\""));
+        for path in ["/api", "/manager-api/files", "/api/upload/a/0", "/host/poll"] {
+            assert!(client.post(&format!("{origin}{path}")).set("Cookie", &cookie).set("Origin", origin).send_json(json!({"method":"cast.watchAccess.save","params":{"enabled":false}})).is_err());
+        }
+        assert!(client.get(&format!("{origin}/cast/watch?token=invalid")).call().is_err());
+        assert!(client.post(&format!("{origin}/cast/whep")).set("Cookie", &cookie).set("Origin", "http://evil.test").send_string("a=rtpmap:96 H264/90000").is_err());
+        let guest = client.post(&format!("{origin}/cast/whep")).set("Cookie", &cookie).set("Origin", origin).send_string("a=rtpmap:96 H264/90000").unwrap();
+        assert_eq!(guest.status(), 201);
+        let guest_resource = guest.header("Location").unwrap().to_owned();
+        let manager_cookie = format!("framely-network={}", agent.network_key.lock().unwrap());
+        let logged_in = client.post(&format!("{origin}/cast/whep")).set("Cookie", &manager_cookie).set("Origin", origin).send_string("a=rtpmap:96 H264/90000").unwrap();
+        assert_eq!(logged_in.status(), 201);
+        assert_eq!(agent.watch_access.lock().unwrap().sessions.len(), 1);
+        agent.api(json!({"method":"cast.watchAccess.save","params":{"enabled":false}})).unwrap();
+        assert_eq!(deleted.lock().unwrap().as_slice(), &["/headset/whep/00000000-0000-0000-0000-000000000001"]);
+        assert!(client.get(&format!("{origin}/cast/access")).set("Cookie", &cookie).call().is_err());
+        assert!(client.get(&format!("{origin}/cast/watch?token={token}")).call().is_err());
+        assert!(client.delete(&format!("{origin}{guest_resource}")).set("Cookie", &cookie).set("Origin", origin).call().is_err());
+        assert_eq!(client.get(&format!("{origin}/cast/access")).set("Cookie", &manager_cookie).call().unwrap().status(), 204);
+        // Revoke while the upstream WHEP POST is in flight. Disabling must
+        // wait for registration and then delete that new session as well.
+        agent.api(json!({"method":"cast.watchAccess.save","params":{"enabled":true}})).unwrap();
+        let new_token = agent.watch_access.lock().unwrap().token.clone().unwrap();
+        assert_ne!(new_token, token);
+        let race_origin = origin.clone();
+        let creating = std::thread::spawn(move || {
+            ureq::post(&format!("{race_origin}/cast/whep")).set("Cookie", &format!("framely-watch={new_token}"))
+                .set("Origin", &race_origin).send_string("a=rtpmap:96 H264/90000").unwrap().status()
+        });
+        creating_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(agent.watch_access.try_lock().is_err());
+        let disabling_agent = agent.clone();
+        let disabling = std::thread::spawn(move || disabling_agent.api(json!({"method":"cast.watchAccess.save","params":{"enabled":false}})).unwrap());
+        finish_tx.send(()).unwrap();
+        assert_eq!(creating.join().unwrap(), 201);
+        disabling.join().unwrap();
+        assert_eq!(deleted.lock().unwrap().len(), 2);
+        assert!(deleted.lock().unwrap()[1].ends_with("000000000003"));
+        stop.store(true, Ordering::Relaxed);
+        worker.join().unwrap(); core_worker.join().unwrap(); media_worker.join().unwrap();
     }
 
     #[test]

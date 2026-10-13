@@ -39,6 +39,17 @@ export function CastVideo({active,onError,controls=true,aspectRatio,videoRef,onS
    finally{statsBusy=false;}
   }
   const statsTimer=setInterval(()=>void reportStreamInfo(),1000);
+  const guest=!!document.querySelector('meta[name="framely-cast-guest"]');
+  let accessBusy=false;
+  const accessTimer=guest?setInterval(()=>{
+   if(closed||accessBusy)return;accessBusy=true;
+   void fetch('/cast/access',{cache:'no-store',signal:abort.signal}).then(response=>{
+    if(!closed&&response.headers.get('X-Framely-Watch-Expired')==='1'){
+     closed=true;abort.abort();peer.close();if(video.current)video.current.srcObject=null;
+     setState('failed');failure.current?.(t('观看链接已失效'));
+    }
+   }).catch(()=>{}).finally(()=>{accessBusy=false;});
+  },2000):undefined;
   setState('connecting');
   for(const kind of ['video','audio']){
    const receiver=peer.addTransceiver(kind,{direction:'recvonly'}).receiver;
@@ -56,13 +67,14 @@ export function CastVideo({active,onError,controls=true,aspectRatio,videoRef,onS
      peer.addEventListener('icegatheringstatechange',check);abort.signal.addEventListener('abort',cancel,{once:true});check();
     });
     const response=await fetch('/cast/whep',{method:'POST',headers:{'Content-Type':'application/sdp'},body:peer.localDescription?.sdp,signal:abort.signal});
+    if(response.headers.get('X-Framely-Watch-Expired')==='1')throw Error(t('观看链接已失效'));
     if(!response.ok)throw Error(await response.text()||t('串流尚未就绪，请稍后重试。'));
     resource=response.headers.get('Location')??undefined;
     if(closed){if(resource)void fetch(resource,{method:'DELETE'});return;}
     await peer.setRemoteDescription({type:'answer',sdp:await response.text()});
    }catch(error){if(!abort.signal.aborted){setState('failed');failure.current?.(String(error));}}
   })();
-  return()=>{closed=true;clearInterval(statsTimer);streamInfo.current?.(null);abort.abort();peer.close();if(resource)void fetch(resource,{method:'DELETE'}).catch(()=>{});if(video.current)video.current.srcObject=null;};
+  return()=>{closed=true;clearInterval(statsTimer);clearInterval(accessTimer);streamInfo.current?.(null);abort.abort();peer.close();if(resource)void fetch(resource,{method:'DELETE'}).catch(()=>{});if(video.current)video.current.srcObject=null;};
  },[active,retry]);
  return <div className="cast-video-stage" style={{aspectRatio:aspectRatio??ratio}}><video ref={video} autoPlay playsInline muted controls={controls} onLoadedMetadata={()=>{if(video.current?.videoHeight)setRatio(video.current.videoWidth/video.current.videoHeight);}} onPlaying={()=>setState('playing')}/>{showStatus&&active&&state==='connecting'&&<span role="status">{t('正在连接画面…')}</span>}{showStatus&&active&&state==='failed'&&<div className="cast-video-failure"><p>{t('观看连接失败，请重新连接。')}</p><button onClick={()=>setRetry(v=>v+1)}>{t('重新连接')}</button></div>}{!active&&<span>{t('开始串流后显示头显画面。')}</span>}</div>;
 }
@@ -74,13 +86,14 @@ export function CastViewer(){
  useEffect(()=>{const changed=()=>setFullscreen(!!document.fullscreenElement);document.addEventListener('fullscreenchange',changed);return()=>document.removeEventListener('fullscreenchange',changed);},[]);
  useEffect(()=>{const el=video.current;if(!el)return;const play=()=>setPaused(false),pause=()=>setPaused(true);el.addEventListener('play',play);el.addEventListener('pause',pause);return()=>{el.removeEventListener('play',play);el.removeEventListener('pause',pause);};},[key]);
  useEffect(()=>{if(video.current){video.current.muted=muted;video.current.volume=volume;}},[muted,volume,key,state]);
- function reconnect(){setError('');setPaused(false);setKey(v=>v+1);reveal();}
+ const expired=error.includes(t('观看链接已失效'));
+ function reconnect(){if(expired)return;setError('');setPaused(false);setKey(v=>v+1);reveal();}
  function togglePlay(){const el=video.current;if(!el)return;if(el.paused)void el.play().catch(()=>setError(t('无法播放，请重新连接。')));else el.pause();reveal();}
  async function toggleFullscreen(){try{if(document.fullscreenElement)await document.exitFullscreen();else if(root.current?.requestFullscreen)await root.current.requestFullscreen();else (video.current as HTMLVideoElement&{webkitEnterFullscreen?:()=>void})?.webkitEnterFullscreen?.();}catch{setError(t('此浏览器暂不支持全屏。'));}reveal();}
  return <main ref={root} tabIndex={-1} className={`cast-watch ${visible||state!=='playing'||paused?'controls-visible':''}`} onPointerMove={e=>{if(e.pointerType==='mouse')reveal();}} onClick={e=>{if(!(e.target as HTMLElement).closest('button,a,input')){reveal();}}} onFocusCapture={reveal} onBlurCapture={reveal} onKeyDown={e=>{if((e.target as HTMLElement).closest('button,a,input'))return;if(e.code==='Space'){e.preventDefault();togglePlay();}else if(e.key==='Escape')reveal();}}>
   <CastVideo key={key} active controls={false} videoRef={video} onState={setState} onError={setError} showStatus={false}/>
   <header className="cast-watch-top cast-watch-overlay"><a href="/manager#casting" className="cast-watch-icon" aria-label={t('返回投屏设置')} title={t('返回投屏设置')}><IconArrowLeft size={22}/></a><strong className="cast-watch-title">{t('头显画面')}</strong><span className="cast-watch-connection" role="status">{state==='playing'?t('实时画面'):state==='connecting'?t('正在连接'):t('连接已断开')}</span></header>
-  {state!=='playing'&&<div className="cast-watch-message" role={state==='failed'?'alert':'status'}>{state==='connecting'?<><span className="cast-spinner"/><h1>{t('正在连接头显')}</h1><p>{t('画面即将开始，请稍候。')}</p></>:<><h1>{t('暂时无法观看')}</h1><p>{error||t('确认头显已开始串流，然后重新连接。')}</p><button className="primary" onClick={reconnect}><IconRefresh size={20}/>{t('重新连接')}</button></>}</div>}
+  {state!=='playing'&&<div className="cast-watch-message" role={state==='failed'?'alert':'status'}>{state==='connecting'?<><span className="cast-spinner"/><h1>{t('正在连接头显')}</h1><p>{t('画面即将开始，请稍候。')}</p></>:<><h1>{t(expired?'观看链接已失效':'暂时无法观看')}</h1><p>{error||t('确认头显已开始串流，然后重新连接。')}</p>{!expired&&<button className="primary" onClick={reconnect}><IconRefresh size={20}/>{t('重新连接')}</button>}</>}</div>}
   {error&&state==='playing'&&<p className="cast-watch-toast" role="alert">{error}</p>}
   <footer className="cast-watch-bottom cast-watch-overlay"><div className="cast-watch-controls"><button className="cast-watch-icon" aria-label={t(paused?'播放':'暂停')} title={t(paused?'播放':'暂停')} disabled={state!=='playing'} onClick={togglePlay}>{paused?<IconPlayerPlay size={24}/>:<IconPlayerPause size={24}/>}</button><div className="cast-watch-sound"><button className="cast-watch-icon" aria-label={t(muted?'开启声音':'静音')} title={t(muted?'开启声音':'静音')} aria-pressed={!muted} onClick={()=>{setMuted(v=>!v);reveal();}}>{muted||volume===0?<IconVolumeOff size={23}/>:<IconVolume size={23}/>}</button><CastRange aria-label={t('音量')} min={0} max={1} step={.05} value={muted?0:volume} onChange={e=>{setVolume(+e.target.value);setMuted(false);reveal();}}/></div><span className="cast-watch-live">{t('实时')}</span><div className="cast-watch-tools"><button className="cast-watch-icon" aria-label={t('重新连接')} title={t('重新连接')} onClick={reconnect}><IconRefresh size={22}/></button><button className="cast-watch-icon" aria-label={t(fullscreen?'退出全屏':'全屏')} title={t(fullscreen?'退出全屏':'全屏')} onClick={()=>void toggleFullscreen()}>{fullscreen?<IconMinimize size={22}/>:<IconMaximize size={22}/>}</button></div></div></footer>
  </main>;

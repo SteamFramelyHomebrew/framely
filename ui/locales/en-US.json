@@ -3,6 +3,9 @@
   "locale": "en-US",
   "name": "English",
   "messages": {
+    "免验证": "Password-free viewing",
+    "持有此链接的人无需密码即可观看。": "Anyone with this link can watch without a password.",
+    "观看链接已失效": "This viewing link has expired",
     "正在读取串流信息…": "Reading stream information…",
     "当前浏览器实际接收并解码的串流信息": "Actual stream received and decoded by this browser",
     "L2 / R2 按键触发行程": "L2 / R2 button activation threshold",
