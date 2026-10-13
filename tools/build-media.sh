@@ -18,6 +18,8 @@ cargo build --release --locked --manifest-path media/capture/Cargo.toml
 mkdir -p media/bin
 capture_target=$(cargo metadata --locked --no-deps --format-version 1 --manifest-path media/capture/Cargo.toml | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 cp "$capture_target/release/framely-capture" "$capture_target/release/framely-panel-grab" media/bin/
+# Incremental release builds may reuse unchanged AirPlay/MediaMTX artifacts.
+[[ ${FRAMELY_CAPTURE_ONLY:-0} != 1 ]] || exit 0
 # Native dependencies use the target system's GStreamer and GUPnP libraries.
 python3 tools/fetch-media.py
 bash tools/build-gst-libav.sh

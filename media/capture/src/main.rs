@@ -4,6 +4,7 @@ mod encoder;
 mod gpu;
 mod kms;
 mod lut;
+mod panel_geometry;
 
 use anyhow::{Context, Result};
 use clap::Parser;

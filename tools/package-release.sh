@@ -10,7 +10,12 @@ npm ci --no-audit --no-fund
 npm run build
 bash tools/build-native.sh "$cef"
 if [[ ${FRAMELY_USE_PREBUILT_MEDIA:-0} == 1 ]]; then
-  [[ -z $(git status --porcelain -- media) ]] || { echo 'Media sources changed; rebuild media.' >&2; exit 1; }
+  if [[ ${FRAMELY_REBUILD_CAPTURE_ONLY:-0} == 1 ]]; then
+    [[ -z $(git status --porcelain -- media ':!media/capture') ]] || { echo 'Non-capture media sources changed; rebuild all media.' >&2; exit 1; }
+    FRAMELY_CAPTURE_ONLY=1 bash tools/build-media.sh
+  else
+    [[ -z $(git status --porcelain -- media) ]] || { echo 'Media sources changed; rebuild media.' >&2; exit 1; }
+  fi
   for file in media/bin/framely-panel-grab media/bin/framely-capture media/bin/mediamtx media/bin/uxplay media/bin/framely-receiver media/bin/libgstframely.so media/bin/libgstlibav.so media/bin/LICENSE media/bin/LICENSE.uxplay media/bin/LICENSE.gst-libav media/bin/LICENSE.llhttp; do
     [[ -s $file ]] || { echo "Missing prebuilt media: $file" >&2; exit 1; }
   done

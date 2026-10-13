@@ -5,6 +5,7 @@
 use anyhow::{bail, Result};
 
 use framely_capture::openvr::OpenVr;
+use crate::panel_geometry::PanelGeometry;
 
 /// Output pixels between grid points. The mapping is smooth, 8 is plenty.
 const STEP: u32 = 8;
@@ -113,6 +114,7 @@ struct EyeModel {
     t: f64,
     b: f64,
     roll: f64,
+    panel_geometry: Option<PanelGeometry>,
     /// Panel -> render target, sampled on a grid, per channel.
     forward: Vec<[[f64; 2]; 3]>,
     /// Render target spots the compositor never draws.
@@ -125,6 +127,20 @@ impl EyeModel {
     fn new(vr: &OpenVr, eye: usize) -> Result<Self> {
         let proj = vr.projection(eye);
         let roll = vr.eye_roll(eye);
+        // Parallel render cameras report identity even though the physical
+        // Frame panels are clocked. Do not apply both transforms twice.
+        let panel_geometry = if roll.abs() < 1e-5 {
+            match PanelGeometry::load(eye) {
+                Ok(geometry) => {
+                    log::info!("eye {eye}: experimental factory panel orientation correction enabled");
+                    Some(geometry)
+                }
+                Err(error) => {
+                    log::warn!("eye {eye}: factory panel orientation unavailable, retaining OpenVR mapping: {error}");
+                    None
+                }
+            }
+        } else { None };
         log::info!(
             "eye {eye} projection: {proj:?}, render target {:?}, roll {:.2}°",
             vr.render_target_size(),
@@ -139,13 +155,21 @@ impl EyeModel {
         for j in 0..n {
             for i in 0..n {
                 let (u, v) = (i as f32 / (n - 1) as f32, j as f32 / (n - 1) as f32);
-                if let Some(d) = vr.distortion(eye, u, v) {
-                    forward[j * n + i] = d.map(|c| [c[0] as f64, c[1] as f64]);
+                let (du, dv) = if panel_geometry.is_some() { (1. - u, 1. - v) } else { (u, v) };
+                if let Some(d) = vr.distortion(eye, du, dv) {
+                    forward[j * n + i] = d.map(|c| if panel_geometry.is_some() {
+                        [1. - c[0] as f64, 1. - c[1] as f64]
+                    } else { [c[0] as f64, c[1] as f64] });
                 }
             }
         }
 
-        let triangles = vr.hidden_area(eye);
+        let mut triangles = vr.hidden_area(eye);
+        if panel_geometry.is_some() {
+            for triangle in &mut triangles {
+                for point in triangle { *point = [1. - point[0], 1. - point[1]]; }
+            }
+        }
         let hidden = rasterize(&triangles);
         if log::log_enabled!(log::Level::Debug) {
             let rows: Vec<String> = (0..32)
@@ -168,6 +192,7 @@ impl EyeModel {
             t: proj.top as f64,
             b: proj.bottom as f64,
             roll,
+            panel_geometry,
             forward,
             hidden,
             covered,
@@ -177,8 +202,12 @@ impl EyeModel {
     /// Render target UV for a view direction given as tangents, with the
     /// eye's roll undone so the video stays level with the head.
     fn target(&self, tx: f64, ty: f64) -> [f64; 2] {
-        let (s, c) = (-self.roll).sin_cos();
-        let (rx, ry) = (tx * c - ty * s, tx * s + ty * c);
+        let [rx, ry] = if let Some(geometry) = self.panel_geometry {
+            geometry.tangents(tx, ty)
+        } else {
+            let (s, c) = (-self.roll).sin_cos();
+            [tx * c - ty * s, tx * s + ty * c]
+        };
         [(rx - self.l) / (self.r - self.l), (ry - self.t) / (self.b - self.t)]
     }
 
