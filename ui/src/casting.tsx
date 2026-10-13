@@ -5,7 +5,7 @@ import {api} from './api';
 import {Switch,SwitchRow} from './switch';
 import {CastRange} from './cast-range';
 import {t} from './i18n';
-import {CastVideo} from './cast-viewer';
+import {CastVideo,type CastStreamInfo} from './cast-viewer';
 import {FramingEditor} from './cast-framing-editor';
 import {framePresets,frameRatios,type ReferenceView} from './cast-framing';
 import './casting.css';
@@ -20,6 +20,7 @@ function Choices<T extends string|number>({label,value,options,onChange,disabled
  return <div className="cast-choice-group" role="radiogroup" aria-label={label}>{options.map((option,i)=><button type="button" role="radio" aria-checked={value===option.value} className={value===option.value?'selected':''} disabled={disabled} key={option.value} onClick={()=>onChange(option.value)} onKeyDown={e=>{if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)){e.preventDefault();const next=(i+(['ArrowLeft','ArrowUp'].includes(e.key)?-1:1)+options.length)%options.length;onChange(options[next].value);(e.currentTarget.parentElement?.children[next] as HTMLElement)?.focus();}}}><span>{option.label}</span>{option.description&&<small>{option.description}</small>}</button>)}</div>;
 }
 export function Casting({config,refresh,network,page='casting'}:{config:CastSettings;refresh:()=>Promise<void>;network:NetworkPanel;page?:CastPage}){
+ const [streamInfo,setStreamInfo]=useState<CastStreamInfo|null>(null);
  const [draft,setDraft]=useState(config),[runtime,setRuntime]=useState<Runtime|null>(null),[pending,setPending]=useState(''),[error,setError]=useState(''),[saved,setSaved]=useState(false),[epoch,setEpoch]=useState(0),[devices,setDevices]=useState<Device[]>([]),[sending,setSending]=useState<string>(''),[copied,setCopied]=useState(false),[editing,setEditing]=useState(false),[searched,setSearched]=useState(false);
  const beforeFraming=useRef<Pick<CastSettings,'horizontalFov'|'centerX'|'centerY'>|null>(null),editorActive=useRef(false),deviceScan=useRef(0),alive=useRef(true);
  const captureSettings=({airplay,dlna,receiverName,...capture}:CastSettings)=>capture;
@@ -42,10 +43,10 @@ export function Casting({config,refresh,network,page='casting'}:{config:CastSett
  const presets=framePresets(aspect);
  function chooseAspect(value:number){const edge=Math.max(draft.width,draft.height);const size=value>=1?{width:edge,height:Math.round(edge/value/2)*2}:{width:Math.round(edge*value/2)*2,height:edge};change(size);}
  return <div className="casting cast-workspace">
-  <header className="cast-page-heading"><div><h1>{t(titles[page][0])}</h1><p>{t(titles[page][1])}</p></div>{page==='casting'&&<span className={`cast-status ${runtime?.running?'live':''}`} role="status">{pending==='start'?t('正在启动…'):runtime?.running?t('正在串流'):t('未开始串流')}</span>}</header>
+  <header className="cast-page-heading"><div><h1>{t(titles[page][0])}</h1><p>{t(titles[page][1])}</p></div>{page==='casting'&&<span className={`cast-status ${runtime?.running?'live':''}`} title={t('当前浏览器实际接收并解码的串流信息')} role="status">{pending==='start'?t('正在启动…'):runtime?.running?streamInfo?<>{streamInfo.width&&streamInfo.height?`${streamInfo.width} × ${streamInfo.height}`:'—'} · {streamInfo.codec??'—'} · {streamInfo.fps===null?'—':streamInfo.fps.toFixed(1)} fps</>:t('正在读取串流信息…'):t('未开始串流')}</span>}</header>
   {errorMessage&&<div className="cast-error" role="alert"><strong>{t('操作未完成')}</strong><p>{errorMessage}</p></div>}
   {page==='casting'&&<>
-   <div className="cast-monitor"><CastVideo key={epoch} active={!!runtime?.running&&!runtime.preview} onError={setError}/>{!runtime?.running&&<div className="cast-monitor-empty"><IconDeviceVisionPro size={44} stroke={1.5}/><h2>{t('分享你看到的画面')}</h2><p>{t('启动后，手机和电脑可以通过网页实时观看。')}</p></div>}</div>
+   <div className="cast-monitor"><CastVideo key={epoch} active={!!runtime?.running&&!runtime.preview} onError={setError} onStreamInfo={setStreamInfo}/>{!runtime?.running&&<div className="cast-monitor-empty"><IconDeviceVisionPro size={44} stroke={1.5}/><h2>{t('分享你看到的画面')}</h2><p>{t('启动后，手机和电脑可以通过网页实时观看。')}</p></div>}</div>
    <div className="cast-stream-bar"><div><strong>{t(config.source==='screen'?'屏幕采集':'SteamVR')}</strong><span>{config.width} × {config.height}<i/> {config.fps} fps</span></div><button className={runtime?.running?'':'primary'} disabled={busy||!runtime} onClick={()=>void action('start',async()=>{if(runtime?.running)await api('cast.stop');else{if(dirty)await apply();await api('cast.start');}setEpoch(v=>v+1);})}>{runtime?.running?<IconPlayerStop size={21}/>:<IconPlayerPlay size={21}/>}<span>{pending==='start'?t('正在启动…'):runtime?.running?t('停止串流'):t('开始串流')}</span></button></div>
    {runtime?.running&&<section className="cast-share"><div><IconWifi size={24}/><div><h2>{t('在其他设备上观看')}</h2><p>{t('连接同一网络，打开观看地址。')}</p></div></div><div className="cast-share-link"><code>{(!['localhost','127.0.0.1','[::1]'].includes(location.hostname)?new URL('/cast/watch',location.origin).href:runtime.watchAddresses?.[0])??new URL('/cast/watch',location.origin).href}</code><button onClick={()=>void action('copy',copy)} aria-label={t('复制观看地址')}>{copied?<IconCheck size={20}/>:<IconCopy size={20}/>}<span>{copied?t('已复制'):t('复制')}</span></button><a className="cast-icon-link" href="/cast/watch" aria-label={t('打开观看网页')}><IconExternalLink size={21}/></a></div></section>}
 

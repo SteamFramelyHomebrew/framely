@@ -3,6 +3,8 @@
   "locale": "en-US",
   "name": "English",
   "messages": {
+    "正在读取串流信息…": "Reading stream information…",
+    "当前浏览器实际接收并解码的串流信息": "Actual stream received and decoded by this browser",
     "L2 / R2 按键触发行程": "L2 / R2 button activation threshold",
     "默认 80%。达到此行程才触发按键，模拟轴保持完整行程；保存后立即生效。": "Default: 80%. Buttons activate at this trigger travel. Analog axes retain their full range; saving applies immediately.",
     "更新应用并保留现有存档和设置。": "Update the app while keeping your saves and settings.",
