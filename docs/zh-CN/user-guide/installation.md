@@ -72,7 +72,7 @@ sudo /var/lib/framely/current/bin/framely status
 
 ## 更新与回滚
 
-已配置更新服务时，在“关于 → Framely 更新”选择“正式版”或“测试版”，再检查、下载并确认安装。正式版只检查正式 Release，测试版只检查 Preview、Beta、RC 等预发布版本；渠道选择保存在设备上。切换渠道会清除原候选版本和已下载包，需要重新检查和下载。也可以用桌面安装器，或在 Frame 执行：
+已配置更新服务时，在“关于 → Framely 更新”选择“正式版”或“测试版”，再检查、下载并确认安装。正式版只检查正式 Release；测试版同时检查正式版和 Preview、Beta、RC 等预发布版本，并选择最新版本。渠道选择保存在设备上。切换渠道会清除原候选版本和已下载包，需要重新检查和下载。也可以用桌面安装器，或在 Frame 执行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- update --version v0.4.2-preview.3

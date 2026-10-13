@@ -8,6 +8,7 @@ import {TerminalManager} from './terminal';
 import {FrameFilePicker} from './file-picker';
 import {ManagerSwitcher,managerTab,sectionFor,type ManagerSection} from './manager-switcher';
 import {ApkManager} from './apk-manager';
+import {ApkPermission} from './apk-permission';
 import {Switch,SwitchRow} from './switch';
 import {PluginFrame,pluginLanguagePreference,setPluginLanguagePreference} from './plugin-frame';
 import {Launcher,LauncherSettings,type LauncherConfig} from './launcher';
@@ -37,6 +38,7 @@ const managerMode=location.pathname==='/manager';
 const empty:Status={version:'0.4.0',database:{plugins:{},sources:[],safeMode:false},notifications:[],running:[]};
 
 function App(){
+ if(location.pathname==='/apk/permission')return <ApkPermission/>;
  if(location.pathname==='/cast/watch')return <CastViewer/>;
  if(location.pathname.startsWith('/cast/window/'))return <CastPlayer/>;
  const mobile=useMobileManager();useMobileViewport(managerMode&&mobile);

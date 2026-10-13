@@ -93,8 +93,8 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 
 See [release maintenance](docs/releases.md) for CEF builds, integration tests, and publishing commands. Plugins support `steamos` and `root`; hash verification is not a security review, so check the source and runtime user.
 
-## License
+## License and acknowledgments
 
-Original Framely code, including the core, installer, SDK, template, and repository examples, uses **AGPL-3.0-only**; see [LICENSE](LICENSE). Third-party dependencies and vendored files retain their respective licenses.
+Framely is licensed under **AGPL-3.0-only**; see [LICENSE](LICENSE). Third-party projects retain their own licenses.
 
-AGPL allows commercial use. Distribution requires complete corresponding source under the license; modified software that interacts with users over a network must also offer source to those users. Release source corresponds to the repository's `v<VERSION>` or `installer-v<VERSION>` tags. Redistributors must provide modifications and build scripts matching their binaries.
+Thanks to Lepton for the Android runtime, [OVRPort](https://github.com/ovrport/app) for Quest APK conversion, and [FramePort's FrameBridge](https://github.com/spoopyghosty0/frameport) for OpenXR graphics and controller support. The optional q2f package includes the OVRPort and FrameBridge licenses and corresponding source.

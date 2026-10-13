@@ -91,7 +91,7 @@ Do not invoke Lepton's global cleanup commands as an application-specific uninst
 
 ## Supported formats
 
-The initial implementation supports individual APKs. Split APK bundles, XAPK/APKM, OBB import, Google Play installation and automatic Steam shortcut creation are outside this version. Unsupported bundles are rejected rather than treated as ordinary APKs.
+The initial implementation supports individual APKs. Optional Quest conversion downloads and verifies a separate `framely-q2f-*` runtime when selected in the APK install review. It preserves the original APK and reviews the converted, newly signed APK before installation. The runtime and per-package signing keys live in the configured APK storage location and move with it. An existing original APK may reject the new signature; Framely will not silently uninstall it or erase saves. Updating q2f does not automatically reconvert installed games. Games can continue downloading their own OBB data into persistent container storage. Split APK bundles, XAPK/APKM, manual OBB import, Google Play installation and automatic Steam shortcut creation are outside this version. Unsupported bundles are rejected rather than treated as ordinary APKs.
 
 ### Flat window orientation
 

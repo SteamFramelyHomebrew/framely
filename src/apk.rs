@@ -24,6 +24,8 @@ mod cleanup;
 mod graphics;
 mod lifecycle;
 mod native;
+pub(crate) mod permissions;
+mod q2f;
 mod steam_bridge;
 mod steam_shortcuts;
 pub(crate) mod steam_ui;
@@ -83,6 +85,8 @@ struct Record {
     orientation: Option<String>,
     #[serde(default)]
     framebuffer_compatibility: bool,
+    #[serde(default)]
+    q2f_version: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 struct Database {
@@ -193,6 +197,7 @@ struct App {
     orientation: Option<String>,
     #[serde(default)]
     framebuffer_compatibility: bool,
+    q2f_version: Option<String>,
 }
 fn gamepad_trigger_threshold_default() -> u8 {
     80
@@ -842,6 +847,7 @@ fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App
                         show_window: rec.and_then(|r| r.show_window),
                         orientation: rec.and_then(|r| r.orientation.clone()),
                         framebuffer_compatibility: rec.is_some_and(|r| r.framebuffer_compatibility),
+                        q2f_version: rec.and_then(|r| r.q2f_version.clone()),
                     });
                 }
             }
@@ -896,6 +902,7 @@ fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App
                 show_window: r.show_window,
                 orientation: r.orientation.clone(),
                 framebuffer_compatibility: r.framebuffer_compatibility,
+                q2f_version: r.q2f_version.clone(),
             });
         }
     }
@@ -941,6 +948,7 @@ fn apps(home: &Path, db: &Database, cs: &[Container], measure: bool) -> (Vec<App
                     show_window: None,
                     orientation: None,
                     framebuffer_compatibility: false,
+                    q2f_version: None,
                 });
             }
         }
@@ -2080,6 +2088,7 @@ fn record_app(db: &mut Database, a: &App) {
             show_window: a.show_window,
             orientation: a.orientation.clone(),
             framebuffer_compatibility: a.framebuffer_compatibility,
+            q2f_version: a.q2f_version.clone(),
             ..Default::default()
         });
 }
@@ -2774,6 +2783,17 @@ pub fn reviews_drop(home: &Path, ticket: &str) -> Result<Value> {
     }
     Ok(json!(true))
 }
+pub fn q2f_convert(
+    home: &Path,
+    ticket: &str,
+    cancel: &Cancellation,
+    progress: impl Fn(Value) -> Result<()>,
+) -> Result<Value> {
+    q2f::convert(home, ticket, cancel, progress)
+}
+pub fn q2f_status(home: &Path) -> Result<Value> {
+    q2f::status(home)
+}
 pub fn operate(
     home: &Path,
     kind: &str,
@@ -3011,6 +3031,15 @@ fn operate_internal(
                     .transpose()?;
                 let ticket = p["ticket"].as_str().context("Missing reviewed APK")?;
                 let (review, metadata) = review(home, ticket)?;
+                let q2f_version = match fs::read_to_string(review.join("q2f-version")) {
+                    Ok(value) => {
+                        let id = value.trim();
+                        ensure!(safe(id) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b".+-".contains(&b)), "Invalid q2f review version");
+                        Some(id.to_owned())
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(error.into()),
+                };
                 let requested = p["context"].as_str().unwrap_or("");
                 let cs = containers(home, &db);
                 let context = if requested.is_empty() {
@@ -3114,7 +3143,7 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
  // Installation boots a headless container solely for the package manager.
  // Finish that runtime before Steam takes ownership of the first app launch.
  stop(&c,&log)?;
- let rec=db.records.get_mut(&app_id).unwrap();rec.metadata=metadata.clone();rec.removed=false;rec.pending=None;rec.show_window=settings.show_window;save(home,&db)?;fs::remove_dir_all(review)?;
+ let rec=db.records.get_mut(&app_id).unwrap();rec.metadata=metadata.clone();rec.removed=false;rec.pending=None;rec.show_window=settings.show_window;rec.q2f_version=q2f_version;save(home,&db)?;fs::remove_dir_all(review)?;
  // Mirror the operation log under the stable application id for newly installed apps.
  if id!=app_id {let _=fs::copy(&log,r.join("logs").join(format!("{}-{}.log",hash(&app_id),now())));}
  Ok(json!({"app":app_id,"backup":backup_id,"launchable":!metadata.activities.is_empty()}))})
@@ -5212,12 +5241,17 @@ setup_props
         assert!(load(&f.home).unwrap().records.is_empty());
         for (version, show) in [(43, false), (44, true)] {
             let ticket = f.review(version);
+            if version == 43 {
+                fs::write(root(&f.home).join("reviews").join(&ticket).join("q2f-version"), "test-q2f-1").unwrap();
+            }
             f.operation(
                 "install",
                 json!({"ticket":ticket,"context":"test","app":id,"approve":true,"showWindow":show}),
             )
             .unwrap();
             assert_eq!(load(&f.home).unwrap().records[id].show_window, Some(show));
+            assert_eq!(load(&f.home).unwrap().records[id].q2f_version.as_deref(),
+                if version == 43 { Some("test-q2f-1") } else { None });
             assert!(
                 !running("test"),
                 "installation must finish its headless runtime"

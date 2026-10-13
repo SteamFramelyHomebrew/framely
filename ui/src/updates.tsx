@@ -78,7 +78,7 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
   <p className="sub">{t('安装更新会保留插件和数据，Framely 界面会暂时关闭并重新启动。')}</p>
   {!source&&<p className="banner">{t('此版本尚未配置更新服务，请通过发行安装包更新。')}</p>}
   <Select label={t('更新渠道')} value={channel} disabled={busy||installing||!source} onChange={value=>void switchChannel(value)} options={[{value:'stable',label:t('正式版')},{value:'testing',label:t('测试版')}]}/>
-  <p className="sub">{channel==='stable'?t('仅检查正式版。'):t('仅检查测试版（Preview、Beta、RC 等）。')}</p>
+  <p className="sub">{channel==='stable'?t('仅检查正式版。'):t('检查正式版和测试版（Preview、Beta、RC 等），选择最新版本。')}</p>
   <div className="row">
    <button className="primary" disabled={busy||installing||!source} onClick={()=>{reset();void run('system.check.start',{},v=>{setRelease(v.release?{...v.release,targetVersion:v.version}:null);setReady(false);setChecked(true);setShowRelease(!!v.release&&!sameSystemVersion(v.release.version,status.build??status.version));});}}>{busy?t('处理中…'):t('检查更新')}</button>
    <button disabled={busy||installing||!status.previousRelease} onClick={()=>setConfirm('rollback')}>{t('回滚上一版本')}</button>

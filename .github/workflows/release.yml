@@ -10,7 +10,33 @@ concurrency:
   group: framely-release-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  framebridge:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned FrameBridge adapter from source
+        run: |
+          mkdir -p target/q2f-framebridge/source target/q2f-framebridge/artifacts/{arm64-v8a,armeabi-v7a}
+          curl -fsSL --retry 3 -o target/q2f-framebridge/source.tar.gz https://github.com/spoopyghosty0/frameport/archive/80ef9ca6a77eed1ca6b2cc6f746d9897e4178b4e.tar.gz
+          echo 'ea90ea8dd2f0fe49d54d2df5cc61c1876c9562e55fb40fce2651b1d5594dab7c  target/q2f-framebridge/source.tar.gz' | sha256sum -c
+          tar -xzf target/q2f-framebridge/source.tar.gz -C target/q2f-framebridge/source --strip-components=1
+          FRAMEPORT_ARTIFACTS_OUT="$PWD/target/q2f-framebridge/artifacts" python3 target/q2f-framebridge/source/native/build.py --only adapter
+          for abi in arm64-v8a armeabi-v7a; do
+            test -s "target/q2f-framebridge/artifacts/$abi/libopenxr_loader_generic.so"
+            readelf -W --dyn-syms "target/q2f-framebridge/artifacts/$abi/libopenxr_loader_generic.so" | grep xrGetInstanceProcAddr
+          done
+          mkdir -p target/framebridge-upload/artifacts/{arm64-v8a,armeabi-v7a}
+          cp target/q2f-framebridge/source.tar.gz target/framebridge-upload/
+          for abi in arm64-v8a armeabi-v7a; do
+            cp "target/q2f-framebridge/artifacts/$abi/libopenxr_loader_generic.so" "target/framebridge-upload/artifacts/$abi/"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: framely-framebridge
+          path: target/framebridge-upload/
+          if-no-files-found: error
   frame:
+    needs: [framebridge]
     runs-on: ubuntu-24.04-arm
     env:
       CARGO_HOME: ${{ github.workspace }}/target/framely-cargo
@@ -54,6 +80,38 @@ jobs:
           key: cef-linux-arm64-154.0.32-682c378
       - name: Fetch pinned CEF
         run: test -d target/cef || bash tools/fetch-cef.sh
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          architecture: aarch64
+      - uses: actions/download-artifact@v4
+        with:
+          name: framely-framebridge
+          path: target/q2f-framebridge
+      - name: Prepare pinned q2f inputs
+        run: |
+          mkdir -p target/q2f-input
+          curl -fsSL --retry 3 -o target/q2f-input/cli-jar.zip https://github.com/ovrport/app/releases/download/1.2.3/cli-jar.zip
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile('target/q2f-input/cli-jar.zip') as source:
+              name = 'overportcli-1.2.3-all.jar'
+              with source.open(name) as data, open('target/q2f-input/' + name, 'xb') as output:
+                  import shutil
+                  shutil.copyfileobj(data, output)
+          PY
+          curl -fsSL --retry 3 -o target/q2f-input/libraries.zip https://files.crx.moe/ovrport/tracker/releases/download/3.4.3-23204ea/libraries.zip
+          curl -fsSL --retry 3 -o target/q2f-input/LICENSE https://raw.githubusercontent.com/ovrport/app/c790854/LICENSE
+          curl -fsSL --retry 3 -o target/q2f-input/source.tar.gz https://github.com/ovrport/app/archive/c790854.tar.gz
+          sha256sum -c <<'EOF'
+          307d58a69a5c9722f912d1b6566b0dd1e0ebe1440c6d1e56cab6cb883d74fef2  target/q2f-input/overportcli-1.2.3-all.jar
+          6cec6c176e1aeee8d9ec4f9b4e3982f71da7b44a36a293249620073a06f00e5e  target/q2f-input/libraries.zip
+          2db2c0f597a8be01d9742180019627b4c23fd0213f04f5034fbad53f0d296eb3  target/q2f-input/source.tar.gz
+          EOF
+          jlink --strip-debug --no-man-pages --no-header-files --compress=2 \
+            --add-modules java.base,java.datatransfer,java.xml,java.prefs,java.desktop,java.logging,java.net.http,jdk.crypto.ec,jdk.unsupported \
+            --output target/q2f-input/java
       - name: Validate
         run: |
           npm ci
@@ -66,11 +124,19 @@ jobs:
         env:
           RELEASE_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
+          Q2F_JAVA_HOME: target/q2f-input/java
+          Q2F_CLI_JAR: target/q2f-input/overportcli-1.2.3-all.jar
+          Q2F_LIBRARIES_ZIP: target/q2f-input/libraries.zip
+          Q2F_LICENSE: target/q2f-input/LICENSE
+          Q2F_SOURCE_ARCHIVE: target/q2f-input/source.tar.gz
+          Q2F_FRAMEBRIDGE_SOURCE: target/q2f-framebridge/source.tar.gz
+          Q2F_FRAMEBRIDGE_ARM64: target/q2f-framebridge/artifacts/arm64-v8a/libopenxr_loader_generic.so
+          Q2F_FRAMEBRIDGE_ARM32: target/q2f-framebridge/artifacts/armeabi-v7a/libopenxr_loader_generic.so
         run: |
           bash tools/package-release.sh target/cef
           mkdir -p release-assets
           archive=$(find release -maxdepth 1 -name 'framely-*-linux-arm64.tar.gz' ! -name '*-offline-linux-arm64.tar.gz' ! -name 'framely-cef-*' -print -quit)
-          cp release/*.tar.gz release/framely-cef.json release-assets/
+          cp release/*.tar.gz release/framely-cef.json release/framely-q2f.json release-assets/
           cp tools/bootstrap.py release-assets/bootstrap.py
           cp install.sh release-assets/install.sh
           "$CARGO_TARGET_DIR/release/framely" release-manifest --archive "$archive" --url "https://github.com/$RELEASE_REPO/releases/download/$RELEASE_TAG/$(basename "$archive")" --output release-assets/framely-release.json --changelog "Framely $RELEASE_TAG"
@@ -99,8 +165,8 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           cd release-assets
-          sha256sum -- *.tar.gz bootstrap.py install.sh framely-release.json framely-cef.json > SHA256SUMS
-          printf 'Framely %s\n\nFirst install: choose the complete *-offline-linux-arm64.tar.gz package. Updates: choose the smaller Framely package without CEF. A separate framely-cef-* archive is available for runtime downloads.\n\nInstall on Frame over SSH using the repository install.sh. SHA256SUMS verifies archives; each archive also includes internal checksums.\n' "$RELEASE_TAG" > release-notes.txt
+          sha256sum -- *.tar.gz bootstrap.py install.sh framely-release.json framely-cef.json framely-q2f.json > SHA256SUMS
+          printf 'Framely %s\n\nFirst install: choose the complete *-offline-linux-arm64.tar.gz package. Updates: choose the smaller Framely package without CEF. Separate framely-cef-* and framely-q2f-* archives provide the browser and optional Quest converter.\n\nInstall on Frame over SSH using the repository install.sh. SHA256SUMS verifies archives; each archive also includes internal checksums.\n' "$RELEASE_TAG" > release-notes.txt
           prerelease=false
           latest=true
           if [[ "$RELEASE_TAG" == *-* ]]; then
@@ -108,5 +174,5 @@ jobs:
             latest=false
           fi
           gh release create "$RELEASE_TAG" --verify-tag --title "Framely $RELEASE_TAG" --notes-file release-notes.txt --draft --latest=false --prerelease="$prerelease"
-          gh release upload "$RELEASE_TAG" -- *.tar.gz SHA256SUMS bootstrap.py install.sh framely-release.json framely-cef.json
+          gh release upload "$RELEASE_TAG" -- *.tar.gz SHA256SUMS bootstrap.py install.sh framely-release.json framely-cef.json framely-q2f.json
           gh release edit "$RELEASE_TAG" --draft=false --latest="$latest" --prerelease="$prerelease"

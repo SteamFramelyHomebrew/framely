@@ -42,7 +42,7 @@ framely call system.source.save '{"source":{"url":"https://example.org/framely-r
 
 每次构建生成不含 CEF 的本体包 `framely-<版本及构建号>-linux-arm64.tar.gz`、完整离线包 `framely-<版本及构建号>-offline-linux-arm64.tar.gz`、独立运行库 `framely-cef-<运行库标识>-linux-arm64.tar.gz`。更新清单 `framely-release.json` 固定指向不含 CEF 的本体包；首次安装固定选择完整离线包。`framely-cef.json` 提供独立 CEF 的 HTTPS 下载地址、大小及 SHA256。
 
-CEF 按内容哈希保存在 `/home/.framely/cef/<运行库标识>`，更新时复用；旧安装中相同的运行库自动迁移。所需运行库缺失或 CEF 版本更换时单独下载并校验，各发行的运行库保留用于回滚。完整包可离线提供 CEF。参见[发行包与运行库恢复](user-guide/installation.md#发行包与-cef)。
+CEF 按内容哈希保存在 `/home/.framely/cef/<运行库标识>`，更新时复用；旧安装中相同的运行库自动迁移。所需运行库缺失或 CEF 版本更换时单独下载并校验，各发行的运行库保留用于回滚。完整包可离线提供 CEF。参见[发行包与运行库恢复](user-guide/installation.md#发行包与-cef)。可选的 Quest 转换工具另打 `framely-q2f-*` 包，发行包声明经过验证的确切版本；只有用户选择 Quest 转换时才校验缓存并按需下载，Framely 本体更新不自动重转已安装 APK。
 
 ## GitHub Actions 发布
 
@@ -71,7 +71,7 @@ git push origin installer-v0.4.1-preview.10
 
 只有标签触发会发布。各工作流在自己的构建全部成功后创建草稿 Release，上传本产品产物及外部 `SHA256SUMS`，最后公开草稿。Framely Release 额外包含 `bootstrap.py`、入口脚本和更新清单；安装器 Release 只包含五个平台的安装器包和校验文件。失败的草稿不作为最新稳定版提供下载。手动触发用于验证，仅保留 Actions artifacts。
 
-Framely 本体 Release 附件用途：`framely-*-linux-arm64.tar.gz` 为不含 CEF 的更新包，`framely-*-offline-linux-arm64.tar.gz` 为首次安装用的完整离线包，`framely-cef-*` 为独立运行库，`framely-cef.json` 提供运行库下载信息；`framely-release.json` 为内置更新功能的版本清单；`install.sh` 是命令行入口，调用 `bootstrap.py` 完成下载、校验和维护；`SHA256SUMS` 为附件校验清单。桌面安装器只需自动下载运行包和校验清单，用户无需手动下载脚本。安装器的五个平台包发布在独立的安装器 Release 中。
+Framely 本体 Release 附件用途：`framely-*-linux-arm64.tar.gz` 为不含 CEF 的更新包，`framely-*-offline-linux-arm64.tar.gz` 为首次安装用的完整离线包，`framely-cef-*` 为独立运行库，`framely-cef.json` 提供运行库下载信息；`framely-q2f-*` 为可选 Quest 转换工具包，`framely-q2f.json` 提供下载信息；`framely-release.json` 为内置更新功能的版本清单；`install.sh` 是命令行入口，调用 `bootstrap.py` 完成下载、校验和维护；`SHA256SUMS` 为附件校验清单。桌面安装器只需自动下载运行包和校验清单，用户无需手动下载脚本。安装器的五个平台包发布在独立的安装器 Release 中。
 
 外部 `SHA256SUMS` 包含压缩包哈希，校验传输内容；包内同名文件校验解压后的载荷。哈希不能独立证明作者身份，在线安装依赖指定 GitHub 仓库与 HTTPS；本地安装依赖用户提供的可信包与校验文件。下载遵循 HTTPS 重定向，不允许降级。
 
