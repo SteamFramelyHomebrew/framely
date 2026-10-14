@@ -275,9 +275,8 @@ impl Jobs {
                     let download_request = request.clone();
                     let download_jobs = jobs.clone();
                     let download_key = key.clone();
-                    let bytes = crate::http::interruptible(
+                    let bytes = crate::http::interruptible_download(
                         &cancel,
-                        std::time::Duration::from_secs(180),
                         move |token| {
                             package::stage_request_proxy(
                                 &download_request,

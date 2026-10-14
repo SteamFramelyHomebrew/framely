@@ -223,7 +223,7 @@ pub fn stage_request_proxy(
     progress(0, None)?;
     let url = v["url"].as_str().context("Missing package/URL")?;
     validate_url(url, v["allowHttp"].as_bool().unwrap_or(false))?;
-    let response = crate::http::get_with_proxy(
+    let response = crate::http::get_download_with_proxy(
         url,
         v["allowHttp"].as_bool().unwrap_or(false),
         std::time::Duration::from_secs(60),
@@ -421,7 +421,7 @@ pub fn from_request_proxy(
     progress(0, None)?;
     let url = v["url"].as_str().context("Missing package/URL")?;
     validate_url(url, v["allowHttp"].as_bool().unwrap_or(false))?;
-    let response = crate::http::get_with_proxy(
+    let response = crate::http::get_download_with_proxy(
         url,
         v["allowHttp"].as_bool().unwrap_or(false),
         std::time::Duration::from_secs(60),

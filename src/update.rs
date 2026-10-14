@@ -350,7 +350,7 @@ impl Updater {
             };
             let result = (|| -> Result<Value> {
                 report(json!({"phase":"downloading","received":0,"total":release.size,"version":release.version}))?;
-                let response = crate::http::get_with_proxy(&release.url, false, Duration::from_secs(120), &[], &proxy)?;
+                let response = crate::http::get_download_with_proxy(&release.url, false, Duration::from_secs(120), &[], &proxy)?;
                 if let Some(length) = response.header("Content-Length") {
                     ensure!(length.parse::<u64>()? == release.size, "下载长度与更新清单不一致");
                 }

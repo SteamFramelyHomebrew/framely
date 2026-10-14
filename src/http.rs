@@ -46,6 +46,20 @@ pub(crate) fn interruptible<T: Send + 'static>(
     timeout: Duration,
     action: impl FnOnce(crate::jobs::Cancellation) -> Result<T> + Send + 'static,
 ) -> Result<T> {
+    interruptible_inner(cancel, Some(timeout), action)
+}
+/// Downloads have an idle socket timeout, not a wall-clock deadline.
+pub(crate) fn interruptible_download<T: Send + 'static>(
+    cancel: &crate::jobs::Cancellation,
+    action: impl FnOnce(crate::jobs::Cancellation) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    interruptible_inner(cancel, None, action)
+}
+fn interruptible_inner<T: Send + 'static>(
+    cancel: &crate::jobs::Cancellation,
+    timeout: Option<Duration>,
+    action: impl FnOnce(crate::jobs::Cancellation) -> Result<T> + Send + 'static,
+) -> Result<T> {
     use std::sync::{atomic::Ordering, mpsc};
     cancel.check()?;
     let mut workers = NETWORK_WORKERS.load(Ordering::Acquire);
@@ -78,12 +92,17 @@ pub(crate) fn interruptible<T: Send + 'static>(
             let _permit = permit;
             let _ = tx.send(action(worker_token));
         })?;
-    let deadline = std::time::Instant::now() + timeout;
+    let deadline = timeout.map(|timeout| std::time::Instant::now() + timeout);
     loop {
         cancel.check()?;
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        ensure!(!remaining.is_zero(), "网络请求超时");
-        match rx.recv_timeout(remaining.min(Duration::from_millis(50))) {
+        let wait = if let Some(deadline) = deadline {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            ensure!(!remaining.is_zero(), "网络请求超时");
+            remaining.min(Duration::from_millis(50))
+        } else {
+            Duration::from_millis(50)
+        };
+        match rx.recv_timeout(wait) {
             Ok(result) => return result,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(_) => bail!("网络请求任务异常"),
@@ -109,7 +128,39 @@ pub fn get_with_proxy_cancel(
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-        get_blocking(&initial, allow_http, timeout, &refs, &proxy, &token)
+        get_blocking(&initial, allow_http, timeout, &refs, &proxy, &token, false)
+    })
+}
+/// Bound connection/individual socket waits while allowing a progressing body
+/// to take arbitrarily long. Metadata requests retain their total deadlines.
+pub fn get_download_with_proxy(
+    initial: &str,
+    allow_http: bool,
+    idle_timeout: Duration,
+    headers: &[(&str, &str)],
+    proxy: &crate::model::ProxySettings,
+) -> Result<ureq::Response> {
+    let initial = initial.to_owned();
+    let proxy = proxy.clone();
+    let headers: Vec<_> = headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    // Only obtaining headers has a total deadline; the returned body does not.
+    interruptible(&Default::default(), idle_timeout, move |token| {
+        let refs: Vec<_> = headers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        get_blocking(
+            &initial,
+            allow_http,
+            idle_timeout,
+            &refs,
+            &proxy,
+            &token,
+            true,
+        )
     })
 }
 fn get_blocking(
@@ -119,14 +170,22 @@ fn get_blocking(
     headers: &[(&str, &str)],
     proxy: &crate::model::ProxySettings,
     cancel: &crate::jobs::Cancellation,
+    download: bool,
 ) -> Result<ureq::Response> {
     cancel.check()?;
     proxy.validate()?;
     crate::model::validate_url(initial, allow_http)?;
-    let mut builder = ureq::AgentBuilder::new()
-        .timeout(timeout)
+    let builder = ureq::AgentBuilder::new()
         .redirects(0)
         .try_proxy_from_env(false);
+    let mut builder = if download {
+        builder
+            .timeout_connect(timeout)
+            .timeout_read(timeout)
+            .timeout_write(timeout)
+    } else {
+        builder.timeout(timeout)
+    };
     if proxy.http_enabled {
         builder = builder.proxy(ureq::Proxy::new(&proxy.http)?);
     }
@@ -210,6 +269,107 @@ fn routed_url(url: &url::Url, proxy: &crate::model::ProxySettings) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn download_progress_outlives_idle_timeout() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+        };
+        for chunked in [false, true] {
+            let server = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/slow", server.local_addr().unwrap());
+            let server_thread = std::thread::spawn(move || {
+                let (mut stream, _) = server.accept().unwrap();
+                let headers = if chunked {
+                    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\n"
+                };
+                stream.write_all(headers.as_bytes()).unwrap();
+                for _ in 0..12 {
+                    std::thread::sleep(Duration::from_millis(100));
+                    stream
+                        .write_all(if chunked { b"1\r\nx\r\n" } else { b"x" })
+                        .unwrap();
+                    stream.flush().unwrap();
+                }
+                if chunked {
+                    stream.write_all(b"0\r\n\r\n").unwrap();
+                }
+            });
+            let start = std::time::Instant::now();
+            let result = interruptible_download(&Default::default(), move |_| {
+                let response = get_download_with_proxy(
+                    &url,
+                    true,
+                    Duration::from_millis(500),
+                    &[],
+                    &Default::default(),
+                )?;
+                let mut body = Vec::new();
+                response.into_reader().read_to_end(&mut body)?;
+                Ok(body)
+            });
+            server_thread.join().unwrap();
+            assert_eq!(result.unwrap(), b"xxxxxxxxxxxx");
+            assert!(start.elapsed() > Duration::from_millis(500));
+        }
+    }
+    #[test]
+    fn download_stalled_body_still_times_out() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+            sync::mpsc,
+        };
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/stalled", server.local_addr().unwrap());
+        let (release_tx, release_rx) = mpsc::channel();
+        let server_thread = std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nh")
+                .unwrap();
+            release_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        });
+        let response = get_download_with_proxy(
+            &url,
+            true,
+            Duration::from_millis(250),
+            &[],
+            &Default::default(),
+        )
+        .unwrap();
+        let start = std::time::Instant::now();
+        let result = response.into_reader().read_to_end(&mut Vec::new());
+        release_tx.send(()).unwrap();
+        server_thread.join().unwrap();
+        assert!(result.is_err());
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+    #[test]
+    fn download_without_total_deadline_remains_cancellable() {
+        use std::sync::mpsc;
+        let token = crate::jobs::Cancellation::default();
+        let worker_token = token.clone();
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            interruptible_download(&worker_token, move |cancel| {
+                seen_tx.send(()).unwrap();
+                loop {
+                    cancel.check()?;
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                #[allow(unreachable_code)]
+                Ok(())
+            })
+        });
+        seen_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let start = std::time::Instant::now();
+        token.stop();
+        assert!(worker.join().unwrap().is_err());
+        assert!(start.elapsed() < Duration::from_millis(500));
+    }
     #[test]
     fn redirect_download_retains_integrity_and_bounds() {
         use tiny_http::{Header, Response, Server};

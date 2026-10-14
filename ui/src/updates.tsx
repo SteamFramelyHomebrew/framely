@@ -92,7 +92,7 @@ export function SystemUpdates({status,refresh}:{status:any;refresh:()=>Promise<v
   </div>
   {checked&&!release&&<p className="banner" role="status">{t('所选渠道暂无可用发行版本。')}</p>}
   {job&&<p className="banner" role="status">{job.kind==='system.check'?t('正在读取更新清单…'):job.phase==='verifying'?t('下载完成，正在校验发行包…'):t('正在下载发行包…')}</p>}
-  {progress?.phase==='downloading'&&<div className="download-progress"><progress aria-label={t('下载进度')} max={progress.total??1} value={progress.received??0}/><p>{((progress.received??0)/1024/1024).toFixed(1)} / {((progress.total??0)/1024/1024).toFixed(1)} MiB</p></div>}
+  {progress?.phase==='downloading'&&<div className="download-progress"><progress aria-label={t('下载进度')} max={progress.total??1} value={Math.min(progress.received??0,(progress.total??1)*.99)}/><p>{((progress.received??0)/1024/1024).toFixed(1)} / {((progress.total??0)/1024/1024).toFixed(1)} MiB</p></div>}
   {progress?.phase==='verifying'&&<div className="download-progress"><progress aria-label={t('校验进度')} max={progress.total??1} value={progress.verified??0}/><p>{t('已校验 {0} / {1} MiB',{'0':((progress.verified??0)/1024/1024).toFixed(1),'1':((progress.total??0)/1024/1024).toFixed(1)})}</p></div>}
   {progress?.phase==='failed'&&<p className="error">{t('上次更新失败：')}{progress.error}<small>{t('诊断日志：/var/lib/framely/logs/update.log')}</small></p>}
   {progress?.phase==='done'&&<p className="banner">{t('上次更新操作已完成。')}</p>}
