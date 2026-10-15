@@ -30,6 +30,7 @@ pub struct Casting {
     recording: Option<super::recording::Recording>,
     recording_error: Option<String>,
     recording_path: Option<PathBuf>,
+    pub region: super::region::Region,
 }
 fn port() -> Result<u16> {
     Ok(std::net::TcpListener::bind("127.0.0.1:0")?
@@ -58,6 +59,7 @@ impl Casting {
             recording: None,
             recording_error: None,
             recording_path: None,
+            region: Default::default(),
         }
     }
     pub fn status(&mut self) -> Value {
@@ -68,6 +70,19 @@ impl Casting {
             "watchPath":if self.streaming && self.started.is_some(){Some("/cast/watch")}else{None},
             "elapsedSeconds":if self.streaming {self.started.map(|t|t.elapsed().as_secs())} else {None},
             "codec":self.active_settings.as_ref().map(|s|s.codec.name()),"dominantEye":dominant_eye().ok(),"recording":self.recording_status()})
+    }
+    pub fn refresh_region(&mut self, configured: &Settings) -> Result<()> {
+        let mut effective=self.active_settings.clone().unwrap_or_else(||configured.clone());
+        effective.recording_region_visible=configured.recording_region_visible;
+        let active=if self.started.is_some() && super::region::supported(&effective) && (effective.recording_region_visible || self.region.editing) {
+            Some(self.status()["view"].clone())
+        } else {None};
+        let result=self.region.refresh(&effective,&self.binaries,active);
+        if let Err(error)=&result {self.region.fail(error);}
+        result
+    }
+    pub fn region_status(&self) -> Value {
+        self.region.snapshot((self.streaming && self.started.is_some()) || self.recording.is_some())
     }
     fn poll_workers(&mut self) {
         let exited = self
@@ -95,6 +110,7 @@ impl Casting {
         Ok(())
     }
     pub fn record(&mut self, settings: &Settings, panel_socket: Option<&Path>, output: &Path) -> Result<Value> {
+        ensure!(!self.region.editing, "请先关闭画幅调整窗口");
         self.status();
         ensure!(self.preview_restore.is_none(), "取景预览期间不能录制");
         ensure!(self.recording.is_none(), "录制已在运行");
@@ -161,6 +177,7 @@ impl Casting {
         self.dlna_started = false;
         self.stop_vp8();
         self.active_settings = None;
+        self.region.invalidate();
         self.started = None;
         self.streaming = false;
         self.stream_key.clear();
@@ -373,6 +390,7 @@ impl Casting {
         Ok(json!(true))
     }
     pub fn start_preview(&mut self, settings: &Settings, socket: &Path) -> Result<Value> {
+        ensure!(!self.region.editing, "请先关闭画幅调整窗口");
         ensure!(self.recording.is_none(), "请先停止录制再调整取景");
         ensure!(self.preview_restore.is_none(), "取景预览已在运行");
         let restore = self.active_settings.clone();
@@ -414,6 +432,7 @@ impl Casting {
         Ok(())
     }
     pub fn start(&mut self, settings: &Settings, panel_socket: Option<&Path>) -> Result<Value> {
+        ensure!(!self.region.editing, "请先关闭画幅调整窗口");
         self.status();
         ensure!(!self.streaming, "串流已在运行");
         if self.started.is_some() {
@@ -426,6 +445,7 @@ impl Casting {
         self.start_capture(settings, panel_socket, true)
     }
     fn start_capture(&mut self, settings: &Settings, panel_socket: Option<&Path>, streaming: bool) -> Result<Value> {
+        self.region.invalidate();
         settings.validate()?;
         ensure!(self.started.is_none(), "串流已在运行");
         fs::create_dir_all(&self.directory)?;

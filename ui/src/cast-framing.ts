@@ -1,7 +1,7 @@
 export type FrameRect={x:number;y:number;width:number;height:number};
 export type ReferenceView={tanHalfHorizontal:number;centerTanX:number;centerTanY:number;aspect:number};
 export const clamp=(v:number,min:number,max:number)=>Math.max(min,Math.min(max,v));
-export const frameRatios=[{label:'16:9',value:16/9},{label:'16:10',value:16/10},{label:'4:3',value:4/3},{label:'1:1',value:1},{label:'9:16',value:9/16}];
+export const frameRatios=[{label:'16:9',value:16/9},{label:'16:10',value:16/10},{label:'4:3',value:4/3},{label:'3:4',value:3/4},{label:'1:1',value:1},{label:'9:16',value:9/16}];
 export function framePresets(aspect:number){
  return [1280,1920,2560,3840].map(edge=>aspect>=1?{width:edge,height:Math.round(edge/aspect/2)*2}:{width:Math.round(edge*aspect/2)*2,height:edge});
 }
@@ -13,7 +13,7 @@ export function fitFrame(rect:FrameRect,aspect:number,referenceAspect=1,minWidth
 }
 export function frameFromSettings(settings:{horizontalFov:number|null;centerX:number;centerY:number},aspect:number,view:ReferenceView):FrameRect{
  const maxWidth=Math.min(1,aspect/view.aspect);
- const width=settings.horizontalFov===null?maxWidth:Math.tan(settings.horizontalFov*Math.PI/360)/view.tanHalfHorizontal;
+ const width=clamp(settings.horizontalFov===null?maxWidth:Math.tan(settings.horizontalFov*Math.PI/360)/view.tanHalfHorizontal,Math.min(maxWidth,Math.tan(5*Math.PI/180)/view.tanHalfHorizontal),maxWidth);
  const height=width*view.aspect/aspect;
  const x=.5+(Math.tan(settings.centerX*Math.PI/180)-view.centerTanX)/(2*view.tanHalfHorizontal)-width/2;
  const y=.5+(Math.tan(settings.centerY*Math.PI/180)-view.centerTanY)*view.aspect/(2*view.tanHalfHorizontal)-height/2;

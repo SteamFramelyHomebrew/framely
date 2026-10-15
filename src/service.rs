@@ -1133,6 +1133,13 @@ impl Service {
                 self.save()?;
                 Ok(json!(true))
             }
+            "cast.region.visible.save" => {
+                let enabled=p["enabled"].as_bool().context("Missing region visibility")?;
+                let previous=self.db.casting.recording_region_visible;
+                self.db.casting.recording_region_visible=enabled;
+                if let Err(error)=self.save() {self.db.casting.recording_region_visible=previous;return Err(error);}
+                Ok(json!(true))
+            }
             "cast.panel.start" => {
                 let executable = self.root.join("current/bin/framely-panel-grab");
                 ensure!(executable.is_file(), "缺少内置屏幕采集助手");

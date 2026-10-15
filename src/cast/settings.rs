@@ -56,6 +56,7 @@ pub struct Settings {
     pub airplay: bool,
     pub dlna: bool,
     pub receiver_name: String,
+    pub recording_region_visible: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -76,6 +77,7 @@ impl Default for Settings {
             airplay: false,
             dlna: false,
             receiver_name: "Framely".into(),
+            recording_region_visible: false,
         }
     }
 }
@@ -85,6 +87,7 @@ impl Settings {
         capture.airplay = other.airplay;
         capture.dlna = other.dlna;
         capture.receiver_name.clone_from(&other.receiver_name);
+        capture.recording_region_visible = other.recording_region_visible;
         capture == *other
     }
     pub fn validate(&self) -> Result<()> {

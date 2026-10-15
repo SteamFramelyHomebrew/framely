@@ -6,16 +6,25 @@ use anyhow::{ensure, Context, Result};
 #[derive(Clone, Copy)]
 pub struct PanelGeometry {
     eye_to_head: [[f64; 3]; 3],
+    intrinsics: [f64; 4],
+    render_scale: f64,
 }
 
 impl PanelGeometry {
+    /// ComputeDistortion's render UVs use the factory camera, expanded by
+    /// grow_for_undistort, not the parallel GetProjectionRaw bounding frustum.
+    pub fn render_uv(&self, tx: f64, ty: f64) -> [f64; 2] {
+        let [x,y]=self.tangents(tx,ty);
+        let [fx,fy,cx,cy]=self.intrinsics;
+        [0.5+(fx*x+cx)/(2.*self.render_scale),0.5+(fy*y-cy)/(2.*self.render_scale)]
+    }
     pub fn load(eye: usize) -> Result<Self> {
         let path = "/persist/device_config.json";
         ensure!(std::fs::metadata(path)?.len() <= 1024 * 1024, "oversized panel calibration");
         Self::parse(&std::fs::read_to_string(path)?, eye)
     }
 
-    fn parse(json: &str, eye: usize) -> Result<Self> {
+    pub(crate) fn parse(json: &str, eye: usize) -> Result<Self> {
         let config: serde_json::Value = serde_json::from_str(json)?;
         // Factory JSON retains the internal model name on retail devices.
         ensure!(matches!(config["model_number"].as_str(), Some("Steam Frame" | "Deckard MP")), "not Steam Frame calibration");
@@ -39,7 +48,14 @@ impl PanelGeometry {
             - rotation[0][1] * (rotation[1][0] * rotation[2][2] - rotation[1][2] * rotation[2][0])
             + rotation[0][2] * (rotation[1][0] * rotation[2][1] - rotation[1][1] * rotation[2][0]);
         ensure!((determinant - 1.).abs() < 0.01 && rotation[2][2] > 0.5, "invalid panel basis");
-        Ok(Self { eye_to_head: rotation })
+        let calibration=&config["tracking_to_eye_transform"][eye];
+        let k=&calibration["intrinsics"];
+        let intrinsics=[k[0][0].as_f64(),k[1][1].as_f64(),k[0][2].as_f64(),k[1][2].as_f64()];
+        ensure!(intrinsics.iter().all(|v|v.is_some_and(f64::is_finite)),"missing or invalid panel intrinsics");
+        let intrinsics=intrinsics.map(Option::unwrap);
+        let render_scale=1.+calibration["grow_for_undistort"].as_f64().context("missing overscan calibration")?;
+        ensure!(intrinsics[0]>0. && intrinsics[1]>0. && render_scale.is_finite() && (1.0..=4.0).contains(&render_scale),"invalid panel projection");
+        Ok(Self { eye_to_head: rotation,intrinsics,render_scale })
     }
 
     pub fn tangents(&self, tx: f64, ty: f64) -> [f64; 2] {
@@ -61,13 +77,14 @@ mod tests {
     use super::*;
 
     fn config(matrix: serde_json::Value) -> String {
-        serde_json::json!({"model_number":"Steam Frame", "tracking_to_eye_transform":[{"eye_to_head":matrix}]}).to_string()
+        serde_json::json!({"model_number":"Steam Frame", "tracking_to_eye_transform":[{"eye_to_head":matrix,"intrinsics":[[1,0,0],[0,1,0],[0,0,-1]],"grow_for_undistort":0}]}).to_string()
     }
 
     #[test]
     fn panel_geometry_removes_scanout_rotation() {
         let p = PanelGeometry::parse(&config(serde_json::json!([[-1,0,0],[0,-1,0],[0,0,1]])), 0).unwrap();
         assert_eq!(p.tangents(0.2, -0.3), [0.2, -0.3]);
+        assert_eq!(p.render_uv(0.2,-0.3),[0.6,0.35]);
     }
 
     #[test]
@@ -78,6 +95,18 @@ mod tests {
         let t = p.tangents(0.5, 0.);
         assert!((t[0] - 0.5*c).abs() < 1e-12);
         assert!((t[1] - 0.5*s).abs() < 1e-12);
+    }
+    #[test]
+    fn panel_geometry_projects_with_intrinsics_and_overscan() {
+        let mut json:serde_json::Value=serde_json::from_str(&config(serde_json::json!([[-1,0,0],[0,-1,0],[0,0,1]]))).unwrap();
+        json["tracking_to_eye_transform"][0]["intrinsics"]=serde_json::json!([[1.2,0,0.04],[0,1.1,-0.02],[0,0,-1]]);
+        json["tracking_to_eye_transform"][0]["grow_for_undistort"]=serde_json::json!(0.6);
+        let geometry=PanelGeometry::parse(&json.to_string(),0).unwrap();
+        let uv=geometry.render_uv(0.2,-0.3);
+        assert!((uv[0]-(0.5+(1.2*0.2+0.04)/3.2)).abs()<1e-12);
+        assert!((uv[1]-(0.5+(-1.1*0.3+0.02)/3.2)).abs()<1e-12);
+        json["tracking_to_eye_transform"][0]["grow_for_undistort"]=serde_json::json!(-1.);
+        assert!(PanelGeometry::parse(&json.to_string(),0).is_err());
     }
 
     #[test]

@@ -201,6 +201,14 @@ impl OpenVr {
         ok.then_some([out.red, out.green, out.blue])
     }
 
+    pub fn eye_to_head(&self, eye: usize) -> Option<[[f64; 4]; 3]> {
+        if !self.full_layout { return None; }
+        let t = unsafe {
+            let f: unsafe extern "C" fn(i32) -> HmdMatrix34 = self.slot(SLOT_EYE_TO_HEAD);
+            f(eye as i32)
+        };
+        Some(t.m.map(|row|row.map(f64::from)))
+    }
     /// How far the eye's view is rolled relative to the head, in radians.
     /// Canted displays show up here.
     pub fn eye_roll(&self, eye: usize) -> f64 {

@@ -14,11 +14,12 @@ use std::{io::{self, Write}, os::fd::AsRawFd, path::Path, time::{Duration, Insta
 #[derive(Parser)]
 struct Args {
     #[arg(long, default_value_t = 1920)] width: u32,
-    #[arg(long, default_value_t = 1080)] height: u32,
+    #[arg(long, default_value_t = 1440)] height: u32,
     #[arg(long, default_value_t = 30)] fps: u32,
     #[arg(long, default_value_t = 8)] bitrate: u32,
     #[arg(long, default_value_t = 0)] eye: usize,
     #[arg(long)] raw: bool,
+    #[arg(long)] describe_view: bool,
     #[arg(long, value_enum, default_value_t = encoder::Codec::H264)] codec: encoder::Codec,
     #[arg(long)] fov: Option<f64>,
     #[arg(long, default_value_t = 0.)] center_x: f64,
@@ -32,14 +33,18 @@ fn run(a: Args) -> Result<()> {
         "Invalid output dimensions, rate or eye");
     anyhow::ensure!(a.fov.is_none_or(|v| v.is_finite() && (10.0..=150.0).contains(&v))
         && [a.center_x, a.center_y].into_iter().all(|v| v.is_finite() && (-60.0..=60.0).contains(&v)), "Invalid field of view");
-    let kms = kms::Kms::open(Path::new("/dev/dri/card0"))?;
-    let height = if a.raw { ((a.width as f64 * kms.mode_size.1 as f64 / kms.mode_size.0 as f64).round() as u32 + 1) & !1 } else { a.height };
+    anyhow::ensure!(!a.describe_view || !a.raw, "Raw view has no single-eye region");
+    let kms = if a.describe_view {None} else {Some(kms::Kms::open(Path::new("/dev/dri/card0"))?)};
+    let height = if a.raw { let kms=kms.as_ref().unwrap(); ((a.width as f64 * kms.mode_size.1 as f64 / kms.mode_size.0 as f64).round() as u32 + 1) & !1 } else { a.height };
     anyhow::ensure!(height>=160&&height<=4096&&u64::from(a.width)*u64::from(height)<=8_847_360,"Raw output exceeds supported dimensions");
-    let map = if a.raw { lut::raw(a.width, height, kms.mode_size.0, kms.mode_size.1) }
+    let map = if a.raw { let kms=kms.as_ref().unwrap(); lut::raw(a.width, height, kms.mode_size.0, kms.mode_size.1) }
         else { lut::undistorted(&OpenVr::connect()?, a.eye, a.fov, a.width, height, a.center_x, a.center_y)? };
     if let Some((tan_h, cx, cy)) = map.view {
-        eprintln!("{}", serde_json::json!({"event":"view","tanHalfHorizontal":tan_h,"centerTanX":cx,"centerTanY":cy,"aspect":a.width as f64/height as f64}));
+        let description=serde_json::json!({"event":"view","tanHalfHorizontal":tan_h,"centerTanX":cx,"centerTanY":cy,"aspect":a.width as f64/height as f64,"captureToHead":map.capture_to_head,"eye":a.eye,"projection":"factory-panel-v1","regionFullyVisible":map.region_fully_visible,"editorReferenceTan":map.editor_reference_tan,"visibility":map.visibility});
+        if a.describe_view { anyhow::ensure!(map.capture_to_head.is_some(),"SteamVR cannot provide an accurate eye transform");println!("{description}"); return Ok(()); }
+        eprintln!("{description}");
     }
+    let kms=kms.unwrap();
     let mut enc = encoder::Encoder::open(&encoder::find_device()?, encoder::Config {
         codec: a.codec, width: a.width, height, fps: a.fps,
         bitrate: a.bitrate * 1_000_000, qp: None,

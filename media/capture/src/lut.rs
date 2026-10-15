@@ -27,6 +27,10 @@ const PANELS_ROTATED: bool = true;
 
 pub struct Lut {
     pub view: Option<(f64, f64, f64)>,
+    pub capture_to_head: Option<[[f64; 4]; 3]>,
+    pub region_fully_visible: bool,
+    pub editor_reference_tan: Option<f64>,
+    pub visibility: Option<serde_json::Value>,
     pub width: u32,
     pub height: u32,
     pub step: f32,
@@ -49,6 +53,10 @@ impl Lut {
         let height = out_h.div_ceil(STEP) + 1;
         Self {
             view: None,
+            capture_to_head: None,
+            region_fully_visible: false,
+            editor_reference_tan: None,
+            visibility: None,
             width,
             height,
             step: STEP as f32,
@@ -164,12 +172,9 @@ impl EyeModel {
             }
         }
 
-        let mut triangles = vr.hidden_area(eye);
-        if panel_geometry.is_some() {
-            for triangle in &mut triangles {
-                for point in triangle { *point = [1. - point[0], 1. - point[1]]; }
-            }
-        }
+        // HiddenAreaMesh belongs to the OpenVR render projection, not the
+        // factory distortion UV space. Never rotate it with panel scanout.
+        let triangles = vr.hidden_area(eye);
         let hidden = rasterize(&triangles);
         if log::log_enabled!(log::Level::Debug) {
             let rows: Vec<String> = (0..32)
@@ -199,25 +204,29 @@ impl EyeModel {
         })
     }
 
+    fn render_target(&self, tx:f64, ty:f64) -> [f64;2] {
+        let (s,c)=(-self.roll).sin_cos();
+        [(c*tx-s*ty-self.l)/(self.r-self.l),(s*tx+c*ty-self.t)/(self.b-self.t)]
+    }
     /// Render target UV for a view direction given as tangents, with the
     /// eye's roll undone so the video stays level with the head.
     fn target(&self, tx: f64, ty: f64) -> [f64; 2] {
-        let [rx, ry] = if let Some(geometry) = self.panel_geometry {
-            geometry.tangents(tx, ty)
-        } else {
-            let (s, c) = (-self.roll).sin_cos();
-            [tx * c - ty * s, tx * s + ty * c]
-        };
-        [(rx - self.l) / (self.r - self.l), (ry - self.t) / (self.b - self.t)]
+        if let Some(geometry)=self.panel_geometry {return geometry.render_uv(tx,ty);}
+        self.render_target(tx,ty)
     }
 
     /// Whether a render target spot is on the panel and actually drawn.
-    fn shown(&self, uv: [f64; 2]) -> bool {
+    fn shown(&self, tx:f64, ty:f64) -> bool {
+        let uv=self.target(tx,ty);
         if !(0.0..1.0).contains(&uv[0]) || !(0.0..1.0).contains(&uv[1]) {
             return false;
         }
         let i = (uv[1] * MASK_SIZE as f64) as usize * MASK_SIZE + (uv[0] * MASK_SIZE as f64) as usize;
-        self.covered[i] && !self.hidden[i]
+        if !self.covered[i] {return false;}
+        let render=self.render_target(tx,ty);
+        if !(0.0..1.0).contains(&render[0]) || !(0.0..1.0).contains(&render[1]) {return false;}
+        let i=(render[1]*MASK_SIZE as f64) as usize*MASK_SIZE+(render[0]*MASK_SIZE as f64) as usize;
+        !self.hidden[i]
     }
 
     /// Panel position (eye local) that shows this render target spot in channel `c`.
@@ -233,8 +242,7 @@ impl EyeModel {
     /// horizontal half-angle tangent plus a center offset (also tangents).
     /// The center may drift a few degrees off straight ahead when that buys
     /// a noticeably wider view, since the lens isn't symmetric.
-    fn widest(&self, aspect: f64) -> (f64, f64, f64) {
-        let fits = |tan_h: f64, cx: f64, cy: f64| {
+    fn region_fits(&self, tan_h: f64, cx: f64, cy: f64, aspect: f64) -> bool {
             let tan_v = tan_h * aspect;
             (0..=EDGE_SAMPLES).all(|k| {
                 let f = k as f64 / EDGE_SAMPLES as f64 * 2.0 - 1.0;
@@ -245,9 +253,27 @@ impl EyeModel {
                     (cx + tan_h, cy + f * tan_v),
                 ]
                 .iter()
-                .all(|&(x, y)| self.shown(self.target(x, y)))
+                .all(|&(x, y)| self.shown(x, y))
             })
-        };
+    }
+
+    fn visibility_grid(&self, extent:f64) -> serde_json::Value {
+        const N:usize=256;
+        let mut cells=String::with_capacity(N*N/4);
+        let mut nibble=0u8;
+        for i in 0..N*N {
+            let x=i%N;let y=i/N;
+            let visible=[(0.,0.),(1.,0.),(0.,1.),(1.,1.),(0.5,0.5)].iter().all(|&(dx,dy)| {
+                self.shown(((x as f64+dx)/N as f64*2.-1.)*extent,((y as f64+dy)/N as f64*2.-1.)*extent)
+            });
+            if visible {nibble|=1<<(i%4);}
+            if i%4==3 {cells.push(char::from_digit(nibble as u32,16).unwrap());nibble=0;}
+        }
+        serde_json::json!({"size":N,"extent":extent,"cells":cells})
+    }
+
+    fn widest(&self, aspect: f64) -> (f64, f64, f64) {
+        let fits = |tan_h, cx, cy| self.region_fits(tan_h, cx, cy, aspect);
         let limit = (-self.l).max(self.r).max((-self.t).max(self.b) / aspect);
         let search = |cx: f64, cy: f64| {
             let (mut lo, mut hi) = (0.0, limit);
@@ -380,6 +406,23 @@ pub fn undistorted(vr: &OpenVr, eye: usize, fov_deg: Option<f64>, out_w: u32, ou
     let mut lut = Lut::new(out_w, out_h);
     let eye_offset = model.eye as f64 * 0.5;
     lut.view = Some((tan_h, cx, cy));
+    // The editor canvas is the eye's full render bounds, never a multiple of
+    // the current crop: reopening a smaller crop must not lower its zoom limit.
+    lut.editor_reference_tan = Some((-model.l).max(model.r).max((-model.t).max(model.b)));
+    lut.visibility = Some(model.visibility_grid(lut.editor_reference_tan.unwrap()));
+    lut.region_fully_visible = model.region_fits(tan_h, cx, cy, aspect);
+    // The verified factory mapping consumes head-relative output rays.
+    // Without calibration, keep capture working but do not claim an accurate
+    // spatial guide: the generic OpenVR projection is not equivalent.
+    let eye = vr.eye_to_head(eye);
+    // With factory projection, output rays are already head-relative. The
+    // compositor applies panel orientation itself; applying it again to the
+    // guide would double the correction.
+    lut.capture_to_head = if model.panel_geometry.is_some() {
+        eye.map(|eye|std::array::from_fn(|i|std::array::from_fn(|j| {
+            if j == 3 {eye[i][3]} else {if i==j {1.} else {0.}}
+        })))
+    } else {None};
     let mut guess = [[0.5f64, 0.5]; 3];
     // Widest color fringe, measured in output pixels.
     let mut max_split = 0.0f64;
@@ -493,4 +536,25 @@ fn nearest(forward: &[[[f64; 2]; 3]], n: usize, c: usize, target: [f64; 2]) -> O
         .map(|(k, p)| (k, dist(p[c], target)))
         .min_by(|a, b| a.1.total_cmp(&b.1))?;
     Some([(best % n) as f64 / (n - 1) as f64, (best / n) as f64 / (n - 1) as f64])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn recording_region_checks_hidden_mesh_in_render_not_distortion_space() {
+        let geometry=PanelGeometry::parse(&serde_json::json!({"model_number":"Steam Frame","tracking_to_eye_transform":[{"eye_to_head":[[-1,0,0],[0,-1,0],[0,0,1]],"intrinsics":[[1,0,0],[0,1,0],[0,0,-1]],"grow_for_undistort":0}]}).to_string(),0).unwrap();
+        let mut model=EyeModel {eye:0,l:-2.,r:1.,t:-2.,b:1.,roll:0.,panel_geometry:Some(geometry),forward:vec![],hidden:vec![false;MASK_SIZE*MASK_SIZE],covered:vec![true;MASK_SIZE*MASK_SIZE]};
+        let index=|uv:[f64;2]|(uv[1]*MASK_SIZE as f64) as usize*MASK_SIZE+(uv[0]*MASK_SIZE as f64) as usize;
+        let render=index(model.render_target(0.,0.));
+        let distortion=index(model.target(0.,0.));
+        assert_ne!(render,distortion);
+        model.hidden[render]=true;
+        assert!(!model.shown(0.,0.));
+        model.hidden[render]=false;
+        model.hidden[distortion]=true;
+        assert!(model.shown(0.,0.));
+        model.covered[distortion]=false;
+        assert!(!model.shown(0.,0.));
+    }
 }

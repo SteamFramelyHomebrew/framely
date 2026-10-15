@@ -1,40 +1,40 @@
 import React,{useEffect,useRef} from 'react';
 import {IconMinus,IconPlus,IconRestore} from '@tabler/icons-react';
 import {CastVideo} from './cast-viewer';
-import {clamp,fitFrame,frameFromSettings,settingsFromFrame,type FrameRect,type ReferenceView} from './cast-framing';
+import {fitFrame,frameFromSettings,settingsFromFrame,type FrameRect,type ReferenceView} from './cast-framing';
 import type {CastSettings} from './casting';
 import {CastRange,updateRangeFill} from './cast-range';
 import {t} from './i18n';
+import {FrameGesture,fitMinimumFrame,minimumFrameWidth,resizeFrameCentered,type MinimumFrame} from './cast-framing-gesture';
+import type {FrameLimiter} from './cast-region';
 
-export function FramingEditor({settings,view,onChange,onError}:{settings:CastSettings;view:ReferenceView|null;onChange:(patch:Partial<CastSettings>)=>void;onError:(error:string)=>void}){
+export function FramingEditor({settings,view,onChange,onError,spatial=false,minimumSize={width:0,height:0},limit}:{settings:CastSettings;view:ReferenceView|null;onChange:(patch:Partial<CastSettings>)=>void;onError:(error:string)=>void;spatial?:boolean;minimumSize?:MinimumFrame;limit?:FrameLimiter}){
  const stage=useRef<HTMLDivElement>(null),box=useRef<HTMLDivElement>(null),zoom=useRef<HTMLInputElement>(null),readout=useRef<HTMLOutputElement>(null);
- const current=useRef<FrameRect>({x:0,y:0,width:1,height:1}),gesture=useRef<{x:number;y:number;rect:FrameRect;corner:string|null}|null>(null);
+ const current=useRef<FrameRect>({x:0,y:0,width:1,height:1}),gesture=useRef(new FrameGesture()),pointer=useRef<number|null>(null),release=useRef<(id?:number)=>void>(()=>{});
  const aspect=settings.width/settings.height;
- const maxWidth=view?Math.min(1,aspect/view.aspect):1,minWidth=view?Math.min(maxWidth,Math.tan(5*Math.PI/180)/view.tanHalfHorizontal):.1;
+ const ratio=aspect/(view?.aspect??1),maxWidth=Math.min(1,ratio),minWidth=minimumFrameWidth(ratio,minimumSize,view?Math.tan(5*Math.PI/180)/view.tanHalfHorizontal:.1);
  function draw(rect:FrameRect){
+  try{if(limit)rect=limit(rect,ratio,minWidth,current.current);}catch(e){if(box.current)box.current.style.visibility='hidden';onError((e as Error).message);return null;}
   current.current=rect;
-  if(box.current){box.current.style.left=`${rect.x*100}%`;box.current.style.top=`${rect.y*100}%`;box.current.style.width=`${rect.width*100}%`;box.current.style.height=`${rect.height*100}%`;}
+  if(box.current){box.current.style.visibility='visible';box.current.style.left=`${rect.x*100}%`;box.current.style.top=`${rect.y*100}%`;box.current.style.width=`${rect.width*100}%`;box.current.style.height=`${rect.height*100}%`;}
   if(view){const fov=settingsFromFrame(rect,view).horizontalFov;if(zoom.current){zoom.current.value=String(maxWidth>minWidth?(rect.width-minWidth)/(maxWidth-minWidth)*100:100);updateRangeFill(zoom.current);}if(readout.current)readout.current.textContent=`${Math.round(fov)}°`;}
+  return rect;
  }
- function commit(){if(view)onChange(settingsFromFrame(current.current,view));}
- useEffect(()=>{if(view)draw(frameFromSettings(settings,aspect,view));},[view?.tanHalfHorizontal,view?.centerTanX,view?.centerTanY,aspect,settings.horizontalFov,settings.centerX,settings.centerY]);
- function scale(width:number){if(!view)return;const r=current.current;const next=fitFrame({...r,width,x:r.x+(r.width-width)/2,y:r.y+(r.height-width*view.aspect/aspect)/2},aspect,view.aspect,Math.tan(5*Math.PI/180)/view.tanHalfHorizontal);draw(next);}
- function down(e:React.PointerEvent<HTMLDivElement>){if(!view||e.button!==0)return;e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);gesture.current={x:e.clientX,y:e.clientY,rect:{...current.current},corner:(e.target as HTMLElement).closest<HTMLElement>('[data-corner]')?.dataset.corner??null};}
- function move(e:React.PointerEvent<HTMLDivElement>){const g=gesture.current,bounds=stage.current?.getBoundingClientRect();if(!g||!bounds||!view)return;const dx=(e.clientX-g.x)/bounds.width,dy=(e.clientY-g.y)/bounds.height;
-  if(!g.corner){draw(fitFrame({...g.rect,x:g.rect.x+dx,y:g.rect.y+dy},aspect,view.aspect));return;}
-  const left=g.corner.includes('w'),top=g.corner.includes('n'),ratio=aspect/view.aspect;
-  const delta=Math.abs(dx)>Math.abs(dy*ratio)?dx*(left?-1:1):dy*ratio*(top?-1:1);
-  const anchorX=left?g.rect.x+g.rect.width:g.rect.x,anchorY=top?g.rect.y+g.rect.height:g.rect.y;
-  const maximum=Math.min(left?anchorX:1-anchorX,(top?anchorY:1-anchorY)*ratio);
-  const width=clamp(g.rect.width+delta,Math.min(maximum,Math.tan(5*Math.PI/180)/view.tanHalfHorizontal),maximum),height=width/ratio;
-  draw({x:left?anchorX-width:anchorX,y:top?anchorY-height:anchorY,width,height});
+ function commit(){if(view&&box.current?.style.visibility!=='hidden')onChange(settingsFromFrame(current.current,view));}
+ useEffect(()=>{if(view){const old=frameFromSettings(settings,aspect,view),next=draw(fitMinimumFrame(old,ratio,minWidth));if(next&&(Math.abs(next.width-old.width)>1e-9||Math.abs(next.x-old.x)>1e-9||Math.abs(next.y-old.y)>1e-9))commit();}},[view?.tanHalfHorizontal,view?.centerTanX,view?.centerTanY,aspect,settings.horizontalFov,settings.centerX,settings.centerY,minWidth]);
+ function scale(width:number){if(view)draw(resizeFrameCentered(current.current,width,ratio,minWidth));}
+ function finish(id?:number){if(!gesture.current.finish(id))return;const captured=pointer.current;pointer.current=null;try{if(captured!==null&&box.current?.hasPointerCapture(captured))box.current.releasePointerCapture(captured);}catch{}commit();}
+ release.current=finish;
+ useEffect(()=>{const up=(e:PointerEvent)=>release.current(e.pointerId),cancel=()=>release.current();document.addEventListener('pointerup',up,true);document.addEventListener('pointercancel',up,true);window.addEventListener('blur',cancel);window.addEventListener('framely.pointerRelease',cancel);return()=>{document.removeEventListener('pointerup',up,true);document.removeEventListener('pointercancel',up,true);window.removeEventListener('blur',cancel);window.removeEventListener('framely.pointerRelease',cancel);gesture.current.finish();};},[]);
+ function down(e:React.PointerEvent<HTMLDivElement>){if(!view||e.button!==0)return;e.preventDefault();finish();gesture.current.begin(e.pointerId,e.clientX,e.clientY,current.current,(e.target as HTMLElement).closest<HTMLElement>('[data-corner]')?.dataset.corner??null);pointer.current=e.pointerId;try{e.currentTarget.setPointerCapture(e.pointerId);}catch{}}
+ function move(e:React.PointerEvent<HTMLDivElement>){if(!gesture.current.active(e.pointerId))return;if(!(e.buttons&1)){finish(e.pointerId);return;}const bounds=stage.current?.getBoundingClientRect();if(!bounds||!view)return;const next=gesture.current.move(e.pointerId,e.clientX,e.clientY,e.buttons,bounds,ratio,minWidth);if(next)draw(next);
  }
- function end(e:React.PointerEvent<HTMLDivElement>){if(!gesture.current)return;gesture.current=null;if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);commit();}
+ function end(e:React.PointerEvent<HTMLDivElement>){finish(e.pointerId);}
  function keyboard(e:React.KeyboardEvent<HTMLDivElement>){if(!view)return;const delta=e.shiftKey?.05:.01,r=current.current;const changes:Record<string,Partial<FrameRect>>={ArrowLeft:{x:r.x-delta},ArrowRight:{x:r.x+delta},ArrowUp:{y:r.y-delta},ArrowDown:{y:r.y+delta}};if(changes[e.key]){e.preventDefault();draw(fitFrame({...r,...changes[e.key]},aspect,view.aspect));commit();}}
  return <div className="cast-framing-editor">
   <div className="cast-framing-stage" ref={stage}>
-   <CastVideo active controls={false} aspectRatio={1} onError={onError}/>
-   {view&&<div ref={box} className="cast-crop-box" tabIndex={0} role="group" aria-label={t('取景框，使用方向键移动')} onKeyDown={keyboard} onPointerDown={down} onPointerMove={move} onPointerUp={end} onPointerCancel={end}>
+   {!spatial&&<CastVideo active controls={false} aspectRatio={1} onError={onError}/>}
+   {view&&<div ref={box} className="cast-crop-box" tabIndex={0} role="group" aria-label={t('取景框，使用方向键移动')} onKeyDown={keyboard} onPointerDown={down} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}>
     <div className="cast-crop-grid" aria-hidden="true"/>
     {['nw','ne','sw','se'].map(corner=><span key={corner} data-corner={corner} className={`cast-crop-handle ${corner}`} aria-hidden="true"/>)}
    </div>}

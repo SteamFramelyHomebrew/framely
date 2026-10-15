@@ -37,6 +37,7 @@ struct Agent {
     files: Arc<crate::manager_files::Files>,
     catalog_cache: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
     casting: Mutex<crate::cast::runtime::Casting>,
+    recording_overlay_cache: Mutex<Value>,
     watch_access: Mutex<crate::cast::watch_access::Access>,
     receivers: Mutex<crate::cast::receiver::Receivers>,
 }
@@ -411,6 +412,10 @@ impl Agent {
                 if let Some(id) = views["stopRecording"].as_str() {
                     self.casting.lock().unwrap().stop_recording_id(id);
                 }
+                if let Some(id)=views["framingClosed"].as_str() {
+                    let mut cast=self.casting.lock().unwrap();
+                    if cast.region.editor_id==id {cast.region.editing=false;}
+                }
                 if views["views"].is_object() {
                     self.core("host.ui.visibility",views["views"].clone())?;
                     if let Some(ids)=views["closedCasts"].as_array(){ensure!(ids.len()<=32,"Too many closed casts");for id in ids{if let Some(id)=id.as_str(){let _=self.receivers.lock().unwrap().control(id,"stop",json!({}));}}}
@@ -440,7 +445,7 @@ impl Agent {
                 .unwrap_or(json!({}));
             return send_json(
                 r,
-                json!({"feedback":database["feedback"],"commands":commands,"notificationBadge":badge,"gazeCalibration":self.core("launcher.gaze.calibration.get",json!({})).unwrap_or(Value::Null),"launcher":database["launcher"],"recording":self.casting.lock().unwrap().recording_status()}),
+                {let (recording,region)=if let Ok(cast)=self.casting.try_lock() {let status=cast.recording_status();*self.recording_overlay_cache.lock().unwrap()=status.clone();(status,cast.region_status())}else{(self.recording_overlay_cache.lock().unwrap().clone(),json!({"visible":false}))};json!({"feedback":database["feedback"],"commands":commands,"notificationBadge":badge,"gazeCalibration":self.core("launcher.gaze.calibration.get",json!({})).unwrap_or(Value::Null),"launcher":database["launcher"],"recording":recording,"recordingRegion":region})},
             );
         }
         if let Some(rel) = path.strip_prefix("/plugin-assets/") {
@@ -941,6 +946,7 @@ impl Agent {
         }
         if path == "/"
             || path == "/cast/watch"
+            || path == "/cast/framing"
             || path.starts_with("/cast/window/")
             || path == "/apk/permission"
             || path == "/manager"
@@ -1021,6 +1027,7 @@ impl Agent {
         match method {
             "cast.status" => {
                 let mut value = self.casting.lock().unwrap().status();
+                value["recordingRegion"]=self.casting.lock().unwrap().region_status();
                 let access = self.watch_access.lock().unwrap();
                 let watch_path = access.path();
                 value["watchAccessEnabled"] = json!(access.token.is_some());
@@ -1044,11 +1051,81 @@ impl Agent {
                 let settings: crate::cast::settings::Settings = serde_json::from_value(p.clone())?;
                 settings.validate()?;
                 let cast = self.casting.lock().unwrap();
+                ensure!(!cast.region.editing, "请先关闭画幅调整窗口");
                 cast.validate_recording_settings(&settings)?;
                 let result = self.core(method,p)?;
                 drop(cast);
                 self.receivers.lock().unwrap().configure(&settings)?;
                 Ok(result)
+            },
+            "cast.region.visible.save" => {
+                let enabled=p["enabled"].as_bool().context("Missing region visibility")?;
+                let mut settings:crate::cast::settings::Settings=serde_json::from_value(self.core("status",json!({}))?["database"]["casting"].clone())?;
+                ensure!(!enabled || crate::cast::region::supported(&settings),"录制区域显示仅支持屏幕采集的单眼画面");
+                let previous=settings.clone();
+                settings.recording_region_visible=enabled;
+                let mut cast=self.casting.lock().unwrap();
+                // Resolve geometry before persisting an enabled switch.
+                cast.refresh_region(&settings)?;
+                if let Err(error)=self.core("cast.region.visible.save",json!({"enabled":enabled})) {let _=cast.refresh_region(&previous);return Err(error);}
+                Ok(json!({"enabled":enabled}))
+            },
+            "cast.framing.open" => {
+                let settings:crate::cast::settings::Settings=serde_json::from_value(self.core("status",json!({}))?["database"]["casting"].clone())?;
+                ensure!(crate::cast::region::supported(&settings),"画幅调整仅支持屏幕采集的单眼画面");
+                let mut cast=self.casting.lock().unwrap();
+                ensure!(cast.recording_status()["active"]!=true,"请先停止录制再调整取景");
+                ensure!(!cast.region.editing && cast.status()["preview"]!=true,"请先关闭画幅调整窗口");
+                cast.region.editing=true;
+                cast.region.resume_stream=cast.status()["running"]==true;
+                cast.region.editor_id=hex::encode(rand::random::<[u8;16]>());
+                if let Err(error)=cast.refresh_region(&settings) {cast.region.editing=false;return Err(error);}
+                let geometry=match cast.region.editor() {
+                    Ok(geometry)=>geometry,
+                    Err(error)=>{cast.region.editing=false;return Err(error);}
+                };
+                self.commands.lock().unwrap().push_back(json!({"kind":"cast.framing.open","geometry":geometry}));
+                Ok(geometry)
+            },
+            "cast.framing.get" => {
+                let cast=self.casting.lock().unwrap();ensure!(cast.region.editing,"画幅调整窗口已关闭");cast.region.editor()
+            },
+            "cast.framing.cancel" => {
+                let mut cast=self.casting.lock().unwrap();
+                ensure!(p["id"]==cast.region.editor_id,"画幅调整窗口已关闭");
+                cast.region.editing=false;
+                self.commands.lock().unwrap().push_back(json!({"kind":"cast.framing.close","id":cast.region.editor_id}));Ok(json!(true))
+            },
+            "cast.framing.apply" => {
+                let mut settings:crate::cast::settings::Settings=serde_json::from_value(self.core("status",json!({}))?["database"]["casting"].clone())?;
+                let mut cast=self.casting.lock().unwrap();ensure!(cast.region.editing,"画幅调整窗口已关闭");
+                ensure!(p["id"]==cast.region.editor_id,"画幅调整窗口已关闭");
+                ensure!(cast.recording_status()["active"]!=true,"请先停止录制再调整取景");
+                settings.width=p["width"].as_u64().and_then(|v|u32::try_from(v).ok()).context("Invalid width")?;
+                settings.height=p["height"].as_u64().and_then(|v|u32::try_from(v).ok()).context("Invalid height")?;
+                settings.horizontal_fov=Some(p["horizontalFov"].as_f64().context("Invalid FOV")?);
+                settings.center_x=p["centerX"].as_f64().context("Invalid center")?;
+                settings.center_y=p["centerY"].as_f64().context("Invalid center")?;
+                settings.validate()?;
+                let mut candidate=crate::cast::region::Region::default();
+                candidate.editing=true;
+                candidate.refresh(&settings,&cast.binaries,None)?;
+                ensure!(p["expectedEye"]==candidate.editor()?["view"]["eye"],"录制眼已改变，请重新打开画幅调整");
+                crate::cast::region::Region::require_visible(&candidate.editor()?["view"])?;
+                self.core("cast.settings.save",serde_json::to_value(&settings)?)?;
+                let running=cast.region.resume_stream;
+                cast.region.editing=false;
+                let result=(|| -> Result<()> {
+                    if running {cast.stop();
+                        let panel=self.core("cast.panel.start",json!({}))?;
+                        let socket=PathBuf::from(panel["socket"].as_str().context("Missing panel socket")?);
+                        cast.start(&settings,Some(&socket))?;
+                    }
+                    cast.refresh_region(&settings)
+                })();
+                if let Err(error)=result {cast.region.editing=true;return Err(error);}
+                self.commands.lock().unwrap().push_back(json!({"kind":"cast.framing.close","id":cast.region.editor_id}));
+                Ok(json!(true))
             },
             "cast.devices" => self.receivers.lock().unwrap().devices(),
             "cast.send" => {
@@ -1544,7 +1621,7 @@ impl Agent {
                     view.len() <= 160
                         && (matches!(
                             view,
-                            "menu" | "launcher" | "framely.manager" | "notifications"
+                            "menu" | "launcher" | "framely.manager" | "notifications" | "framely.framing"
                         ) || view.starts_with("framely.window.") || view.starts_with("framely.cast.")),
                     "Invalid haptic view"
                 );
@@ -1845,6 +1922,9 @@ fn fetch_catalogs_progress(
 fn send_json(r: Request, v: Value) -> Result<()> {
     r.respond(
         Response::from_string(serde_json::to_string(&v)?)
+            // The native poller reads a length-delimited JSON body, not HTTP
+            // chunks. Geometry metadata can exceed tiny_http's 32 KiB default.
+            .with_chunked_threshold(usize::MAX)
             .with_header(header("Content-Type", "application/json"))
             .with_header(header("Cache-Control", "no-store")),
     )?;
@@ -2005,6 +2085,7 @@ pub fn serve(
             ..Default::default()
         }),
         casting: Mutex::new(crate::cast::runtime::Casting::new(runtime.join("cast"), crate::cast::runtime::binary_directory(&assets))),
+        recording_overlay_cache: Mutex::new(json!({"active":false})),
         receivers: Mutex::new(crate::cast::receiver::Receivers::new(runtime.join("receive"), crate::cast::runtime::binary_directory(&assets))),
         socket,
         state,
@@ -2026,7 +2107,7 @@ pub fn serve(
     let cast_agent=agent.clone();
     std::thread::spawn(move || { let mut configured=std::time::Instant::now()-Duration::from_secs(10);loop {
         if configured.elapsed()>Duration::from_secs(2) {
-            if let Ok(status)=cast_agent.core("status",json!({})) {if status["agreement"]["accepted"]==true {if let Ok(settings)=serde_json::from_value(status["database"]["casting"].clone()){let _=cast_agent.receivers.lock().unwrap().configure(&settings);}}}
+            if let Ok(status)=cast_agent.core("status",json!({})) {if status["agreement"]["accepted"]==true {if let Ok(settings)=serde_json::from_value(status["database"]["casting"].clone()){let _=cast_agent.casting.lock().unwrap().refresh_region(&settings);let _=cast_agent.receivers.lock().unwrap().configure(&settings);}}}
             configured=std::time::Instant::now();
         }
         cast_agent.maintain_cast();std::thread::sleep(Duration::from_millis(100));
@@ -2539,6 +2620,7 @@ mod tests {
         Arc::new(Agent {
             watch_access: Mutex::default(),
             casting: Mutex::new(crate::cast::runtime::Casting::new(root.join("cast"), root.join("media"))),
+        recording_overlay_cache: Mutex::new(json!({"active":false})),
             receivers: Mutex::new(crate::cast::receiver::Receivers::new(root.join("receive"), root.join("media"))),
             socket: root.join("control.sock"),
             state: root.join("state"),
@@ -3362,6 +3444,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let server = Server::http("127.0.0.1:0").unwrap();
         let agent = agent(&server, root.path());
+        // The native host parses the raw HTTP body as JSON. Exercise a
+        // framing command larger than tiny_http's default chunk threshold.
+        let framing=json!({"kind":"cast.framing.open","geometry":{"visibility":"f".repeat(48000)}});
+        agent.commands.lock().unwrap().push_back(framing.clone());
         let listener = std::os::unix::net::UnixListener::bind(&agent.socket).unwrap();
         let socket_worker = std::thread::spawn(move || {
             let mut core = crate::service::Service::load(&root.path().join("state"), 1000).unwrap();
@@ -3397,12 +3483,14 @@ mod tests {
             .set("Cookie", &format!("framely={}", agent.web_key))
             .send_json(json!({"menu":true}))
             .is_err());
-        let poll: Value = ureq::post(&url)
+        let response = ureq::post(&url)
             .set("X-Framely-Native", &agent.native_key)
             .send_json(json!({"menu":true}))
-            .unwrap()
-            .into_json()
             .unwrap();
+        assert!(response.header("Transfer-Encoding").is_none());
+        assert!(response.header("Content-Length").unwrap().parse::<usize>().unwrap()>48000);
+        let poll:Value=response.into_json().unwrap();
+        assert_eq!(poll["commands"],json!([framing]));
         assert_eq!(poll["feedback"], json!({"haptics":true,"sounds":false}));
         assert!(poll.get("gazeCalibration").is_some());
         assert!(poll["launcher"].is_object());

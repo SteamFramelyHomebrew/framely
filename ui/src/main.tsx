@@ -1,4 +1,5 @@
 import {CastQuick} from './cast-quick';
+import {SpatialFraming} from './cast-spatial-framing';
 import {CastPlayer} from './cast-player';
 import {Casting,type CastSettings,type CastPage} from './casting';
 import {CastViewer} from './cast-viewer';
@@ -38,6 +39,7 @@ const managerMode=location.pathname==='/manager';
 const empty:Status={version:'0.4.0',database:{plugins:{},sources:[],safeMode:false},notifications:[],running:[]};
 
 function App(){
+ if(location.pathname==='/cast/framing')return <SpatialFraming/>;
  if(location.pathname==='/apk/permission')return <ApkPermission/>;
  if(location.pathname==='/cast/watch')return <CastViewer/>;
  if(location.pathname.startsWith('/cast/window/'))return <CastPlayer/>;

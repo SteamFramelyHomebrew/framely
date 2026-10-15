@@ -11,7 +11,7 @@ import {framePresets,frameRatios,type ReferenceView} from './cast-framing';
 import './casting.css';
 import {RecordingButton,type RecordingStatus} from './cast-recording';
 
-export type CastSettings={source:'screen'|'steamVR';codec:'h264'|'h265';output:'eye'|'raw';eye:'steamVR'|'left'|'right';width:number;height:number;fps:number;bitrateMbps:number;horizontalFov:number|null;centerX:number;centerY:number;systemAudio:boolean;microphone:boolean;airplay:boolean;dlna:boolean;receiverName:string};
+export type CastSettings={source:'screen'|'steamVR';codec:'h264'|'h265';output:'eye'|'raw';eye:'steamVR'|'left'|'right';width:number;height:number;fps:number;bitrateMbps:number;horizontalFov:number|null;centerX:number;centerY:number;systemAudio:boolean;microphone:boolean;airplay:boolean;dlna:boolean;receiverName:string;recordingRegionVisible?:boolean};
 type CastSession={id:string;protocol:string;accepted:boolean;width?:number;height?:number};
 type Device={id:string;name:string};
 type Runtime={running:boolean;recording?:RecordingStatus;error:string|null;dominantEye:number|null;watchPath:string|null;watchAccessEnabled?:boolean;elapsedSeconds:number|null;preview?:boolean;view?:ReferenceView|null;receiverError?:string|null;sessions?:CastSession[];watchAddresses?:string[]};
@@ -24,7 +24,7 @@ export function Casting({config,refresh,network,page='casting'}:{config:CastSett
  const [streamInfo,setStreamInfo]=useState<CastStreamInfo|null>(null);
  const [draft,setDraft]=useState(config),[runtime,setRuntime]=useState<Runtime|null>(null),[pending,setPending]=useState(''),[error,setError]=useState(''),[saved,setSaved]=useState(false),[epoch,setEpoch]=useState(0),[devices,setDevices]=useState<Device[]>([]),[sending,setSending]=useState<string>(''),[copied,setCopied]=useState(false),[editing,setEditing]=useState(false),[searched,setSearched]=useState(false);
  const beforeFraming=useRef<Pick<CastSettings,'horizontalFov'|'centerX'|'centerY'>|null>(null),editorActive=useRef(false),deviceScan=useRef(0),alive=useRef(true);
- const captureSettings=({airplay,dlna,receiverName,...capture}:CastSettings)=>capture;
+ const captureSettings=({airplay,dlna,receiverName,recordingRegionVisible,...capture}:CastSettings)=>capture;
  const captureDirty=JSON.stringify(captureSettings(draft))!==JSON.stringify(captureSettings(config)),dirty=JSON.stringify(draft)!==JSON.stringify(config),busy=!!pending,screen=draft.source==='screen',eye=screen&&draft.output==='eye';
  const aspect=screen&&draft.output==='raw'?2:draft.width/draft.height;
  const ratio=frameRatios.find(r=>Math.abs(r.value-aspect)<.004)?.label;
