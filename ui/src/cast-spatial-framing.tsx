@@ -17,7 +17,8 @@ export async function loadSpatialFraming(request:typeof api=api){
  return geometry;
 }
 export function SpatialFraming(){
- const [geometry,setGeometry]=useState<Geometry|null>(null),[draft,setDraft]=useState<CastSettings|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const [geometry,setGeometry]=useState<Geometry|null>(null),[draft,setDraft]=useState<CastSettings|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[closed,setClosed]=useState(false);
+ const finishing=useRef(false),finished=useRef(false);
  const root=useRef<HTMLElement>(null),menu=useRef<HTMLElement>(null),[minimum,setMinimum]=useState({width:0,height:0,referenceTan:0});
  useEffect(()=>{const measure=()=>{const area=root.current?.getBoundingClientRect(),panel=menu.current?.getBoundingClientRect();if(area?.width&&area.height&&panel)setMinimum({width:(panel.width+32)/area.width,height:(panel.height+32)/area.height,referenceTan:geometry?.referenceTan??1});};measure();const observer=typeof ResizeObserver==='undefined'?null:new ResizeObserver(measure);if(menu.current)observer?.observe(menu.current);if(root.current)observer?.observe(root.current);window.addEventListener('resize',measure);return()=>{observer?.disconnect();window.removeEventListener('resize',measure);};},[geometry?.referenceTan]);
  const reference:ReferenceView={tanHalfHorizontal:geometry?.referenceTan??1,centerTanX:0,centerTanY:0,aspect:1};
@@ -27,15 +28,25 @@ export function SpatialFraming(){
   void loadSpatialFraming().then(g=>{if(!alive)return;setGeometry(g);setDraft({...g.settings,horizontalFov:2*Math.atan(g.view.tanHalfHorizontal)*180/Math.PI,centerX:Math.atan(g.view.centerTanX)*180/Math.PI,centerY:Math.atan(g.view.centerTanY)*180/Math.PI});}).catch(e=>{if(alive)setError(String(e.message??e));});
   return()=>{alive=false;document.documentElement.classList.remove('cast-framing-view');};
  },[]);
- function change(patch:Partial<CastSettings>){if(!draft||minimum.referenceTan!==geometry?.referenceTan)return false;try{setDraft(normalizeRegion({...draft,...patch},reference,minimum,limit,draft));return true;}catch(e){setError(t((e as Error).message));return false;}}
+ function change(patch:Partial<CastSettings>){if(!draft||finishing.current||finished.current||minimum.referenceTan!==geometry?.referenceTan)return false;try{setDraft(normalizeRegion({...draft,...patch},reference,minimum,limit,draft));return true;}catch(e){setError(t((e as Error).message));return false;}}
  function resetSize(){if(!draft||!limits)return;try{const ratio=draft.width/draft.height,minWidth=minimumFrameWidth(ratio,minimum,Math.tan(5*Math.PI/180)/reference.tanHalfHorizontal);if(change(settingsFromFrame(limits.reset(ratio,minWidth),reference)))setError('');}catch(e){setError(t((e as Error).message));}}
- async function finish(apply:boolean){if(!geometry||busy)return;setBusy(true);setError('');try{
+ function closeEditor(){finished.current=true;setClosed(true);setGeometry(null);setDraft(null);}
+ async function finish(apply:boolean){if(!geometry||finishing.current||finished.current)return;finishing.current=true;setBusy(true);setError('');try{
   await api(apply?'cast.framing.apply':'cast.framing.cancel',apply&&draft?{id:geometry.id,expectedEye:geometry.view.eye,...normalizeRegion(draft,reference,minimum,limit,draft)}:{id:geometry.id});
- }catch(e){setError(String((e as Error).message??e));}finally{setBusy(false);}}
+  // The native host closes asynchronously. Never leave the completed editor
+  // interactive while it is waiting for that close command or status update.
+  closeEditor();
+ }catch(e){setError(String((e as Error).message??e));
+  // Saving can succeed even if restarting the stream fails afterwards. The
+  // backend has already closed that editor, so do not revive its stale id.
+  try{const latest=await api<Geometry>('cast.framing.get');if(latest.id!==geometry.id)closeEditor();}
+  catch(stateError){if((stateError as Error).message===t('画幅调整窗口已关闭'))closeEditor();}
+ }finally{finishing.current=false;setBusy(false);}}
  useEffect(()=>{const close=()=>void finish(false);window.addEventListener('framely.back',close);return()=>window.removeEventListener('framely.back',close);},[geometry,busy]);
  const aspect=draft?draft.width/draft.height:4/3;
  const ready=!!geometry&&minimum.referenceTan===geometry.referenceTan;
- return <main ref={root} className="cast-native-framing" aria-label={t('画幅调整')}>
+ if(closed)return null;
+ return <main ref={root} className="cast-native-framing" aria-label={t('画幅调整')} inert={busy}>
   {draft&&geometry&&ready&&<FramingEditor spatial limit={limit} minimumSize={minimum} settings={draft} view={reference} onChange={change} onError={message=>setError(t(message))}/>}
   <section ref={menu} className="cast-native-framing-controls" style={{'--framing-menu-scale':framingMenuScale(reference.tanHalfHorizontal)} as React.CSSProperties}>
    <h1>{t('画幅调整')}</h1><p>{t('框内即录制区域，拖动移动，拖动四角等比例缩放。')}</p>

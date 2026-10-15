@@ -13,7 +13,6 @@ use std::{
 pub struct Region {
     pub editing: bool,
     pub editor_id: String,
-    pub resume_stream: bool,
     enabled: bool,
     settings: Option<Settings>,
     description: Option<Value>,
@@ -55,6 +54,18 @@ pub fn validate_description(value: &Value) -> Result<()> {
     Ok(())
 }
 impl Region {
+    /// Last editor identity remains available after closing so the native host
+    /// can reconcile it on every poll, even if a one-shot close command is lost.
+    pub fn editor_state(&self) -> Value {
+        json!({"id":self.editor_id,"open":self.editing})
+    }
+    pub fn acknowledge_editor_closed(&mut self, id: &str) {
+        // A delayed acknowledgement for the previous window must not close a
+        // newer editor that has already been opened.
+        if self.editor_id == id {
+            self.editing = false;
+        }
+    }
     pub fn require_visible(view: &Value) -> Result<()> {
         ensure!(view["regionFullyVisible"] == true, "取景范围超出头显可见区域，请缩小或调整位置");
         Ok(())
@@ -184,6 +195,21 @@ impl Region {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recording_region_editor_close_state_survives_poll_and_rejects_stale_ack() {
+        let mut region=Region::default();
+        region.editor_id="first".into();region.editing=true;
+        assert_eq!(region.editor_state(),json!({"id":"first","open":true}));
+        region.acknowledge_editor_closed("first");
+        assert_eq!(region.editor_state(),json!({"id":"first","open":false}));
+        // Reading a state response must not consume the required close state.
+        assert_eq!(region.editor_state(),json!({"id":"first","open":false}));
+        region.editor_id="second".into();region.editing=true;
+        region.acknowledge_editor_closed("first");
+        assert_eq!(region.editor_state(),json!({"id":"second","open":true}));
+        region.acknowledge_editor_closed("second");
+        assert!(!region.editing);
+    }
     #[test]
     fn recording_region_drains_large_metadata_before_waiting() {
         use std::os::unix::fs::PermissionsExt;

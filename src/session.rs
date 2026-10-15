@@ -409,12 +409,14 @@ impl Agent {
                 r.as_reader().take(32769).read_to_end(&mut bytes)?;
                 ensure!(bytes.len() <= 32768, "Visibility report too large");
                 let views: Value = serde_json::from_slice(&bytes)?;
-                if let Some(id) = views["stopRecording"].as_str() {
+                // Empty acknowledgements are sent on ordinary native polls.
+                // Do not wait for the casting lock while describe/start is
+                // running: the native HTTP timeout is intentionally short.
+                if let Some(id) = views["stopRecording"].as_str().filter(|id|!id.is_empty()) {
                     self.casting.lock().unwrap().stop_recording_id(id);
                 }
-                if let Some(id)=views["framingClosed"].as_str() {
-                    let mut cast=self.casting.lock().unwrap();
-                    if cast.region.editor_id==id {cast.region.editing=false;}
+                if let Some(id)=views["framingClosed"].as_str().filter(|id|!id.is_empty()) {
+                    self.casting.lock().unwrap().region.acknowledge_editor_closed(id);
                 }
                 if views["views"].is_object() {
                     self.core("host.ui.visibility",views["views"].clone())?;
@@ -445,7 +447,7 @@ impl Agent {
                 .unwrap_or(json!({}));
             return send_json(
                 r,
-                {let (recording,region)=if let Ok(cast)=self.casting.try_lock() {let status=cast.recording_status();*self.recording_overlay_cache.lock().unwrap()=status.clone();(status,cast.region_status())}else{(self.recording_overlay_cache.lock().unwrap().clone(),json!({"visible":false}))};json!({"feedback":database["feedback"],"commands":commands,"notificationBadge":badge,"gazeCalibration":self.core("launcher.gaze.calibration.get",json!({})).unwrap_or(Value::Null),"launcher":database["launcher"],"recording":recording,"recordingRegion":region})},
+                {let (recording,region,framing)=if let Ok(cast)=self.casting.try_lock() {let status=cast.recording_status();*self.recording_overlay_cache.lock().unwrap()=status.clone();(status,cast.region_status(),cast.region.editor_state())}else{(self.recording_overlay_cache.lock().unwrap().clone(),json!({"visible":false}),Value::Null)};json!({"feedback":database["feedback"],"commands":commands,"notificationBadge":badge,"gazeCalibration":self.core("launcher.gaze.calibration.get",json!({})).unwrap_or(Value::Null),"launcher":database["launcher"],"recording":recording,"recordingRegion":region,"framingEditor":framing})},
             );
         }
         if let Some(rel) = path.strip_prefix("/plugin-assets/") {
@@ -1077,7 +1079,6 @@ impl Agent {
                 ensure!(cast.recording_status()["active"]!=true,"请先停止录制再调整取景");
                 ensure!(!cast.region.editing && cast.status()["preview"]!=true,"请先关闭画幅调整窗口");
                 cast.region.editing=true;
-                cast.region.resume_stream=cast.status()["running"]==true;
                 cast.region.editor_id=hex::encode(rand::random::<[u8;16]>());
                 if let Err(error)=cast.refresh_region(&settings) {cast.region.editing=false;return Err(error);}
                 let geometry=match cast.region.editor() {
@@ -1112,19 +1113,27 @@ impl Agent {
                 candidate.refresh(&settings,&cast.binaries,None)?;
                 ensure!(p["expectedEye"]==candidate.editor()?["view"]["eye"],"录制眼已改变，请重新打开画幅调整");
                 crate::cast::region::Region::require_visible(&candidate.editor()?["view"])?;
+                // Opening the editor does not pause streaming. Check the live
+                // state now rather than replaying a stale state from opening.
+                let running=cast.status()["running"]==true;
                 self.core("cast.settings.save",serde_json::to_value(&settings)?)?;
-                let running=cast.region.resume_stream;
                 cast.region.editing=false;
-                let result=(|| -> Result<()> {
-                    if running {cast.stop();
+                // Close before starting workers, which can take several polls.
+                // The persistent framingEditor state also retries lost closes.
+                self.commands.lock().unwrap().push_back(json!({"kind":"cast.framing.close","id":cast.region.editor_id}));
+                if running {
+                    cast.stop();
+                    let restart=(|| -> Result<()> {
                         let panel=self.core("cast.panel.start",json!({}))?;
                         let socket=PathBuf::from(panel["socket"].as_str().context("Missing panel socket")?);
                         cast.start(&settings,Some(&socket))?;
-                    }
-                    cast.refresh_region(&settings)
-                })();
-                if let Err(error)=result {cast.region.editing=true;return Err(error);}
-                self.commands.lock().unwrap().push_back(json!({"kind":"cast.framing.close","id":cast.region.editor_id}));
+                        Ok(())
+                    })();
+                    restart.context("取景已保存，但重新启动串流失败")?;
+                }
+                // Saved settings and a closed editor are committed even if the
+                // optional passive guide cannot refresh; never revive a stale UI.
+                cast.refresh_region(&settings).context("取景已保存，但录制区域显示刷新失败")?;
                 Ok(json!(true))
             },
             "cast.devices" => self.receivers.lock().unwrap().devices(),
@@ -2656,6 +2665,55 @@ mod tests {
         })
     }
     #[test]
+    fn framing_apply_restarts_live_stream_and_closes_even_when_restart_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        for running in [false,true] {
+            let root=tempfile::tempdir().unwrap();
+            let server=Server::http("127.0.0.1:0").unwrap();
+            let agent=agent(&server,root.path());
+            let mut core=crate::tests::accepted_service(&agent.state,1000).unwrap();
+            let mut settings=crate::cast::settings::Settings::default();
+            settings.eye=crate::cast::settings::Eye::Left;
+            core.handle("cast.settings.save",serde_json::to_value(&settings).unwrap()).unwrap();
+            fs::create_dir(root.path().join("media")).unwrap();
+            let view=json!({"projection":"factory-panel-v1","eye":0,"regionFullyVisible":true,"editorReferenceTan":1.7,"visibility":{"size":8,"extent":1.7,"cells":"f".repeat(16)},"tanHalfHorizontal":0.5,"aspect":4./3.,"centerTanX":0.,"centerTanY":0.,"captureToHead":[[1,0,0,0],[0,1,0,0],[0,0,1,0]]});
+            let capture=root.path().join("media/framely-capture");
+            fs::write(&capture,format!("#!/bin/sh\nprintf '%s' '{}'\n",view)).unwrap();
+            fs::set_permissions(&capture,fs::Permissions::from_mode(0o700)).unwrap();
+            {
+                let mut cast=agent.casting.lock().unwrap();
+                if running {cast.test_whep_server(1);}
+                cast.region.editor_id="apply-test".into();cast.region.editing=true;
+            }
+            let listener=UnixListener::bind(&agent.socket).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let stop=Arc::new(AtomicBool::new(false));let core_stop=stop.clone();
+            let panel_calls=Arc::new(std::sync::atomic::AtomicUsize::new(0));let calls=panel_calls.clone();
+            let worker=std::thread::spawn(move || {
+                while !core_stop.load(Ordering::Relaxed) {
+                    if let Ok((mut stream,_))=listener.accept() {
+                        let request=ipc::read(&mut stream).unwrap();
+                        let method=request["method"].as_str().unwrap();
+                        let result=if method=="cast.panel.start" {
+                            calls.fetch_add(1,Ordering::Relaxed);
+                            Err(anyhow::anyhow!("test restart failure"))
+                        } else {core.handle(method,request["params"].clone())};
+                        ipc::write(&mut stream,&ipc::response(result)).unwrap();
+                    } else {std::thread::sleep(Duration::from_millis(5));}
+                }
+                Ok::<_,anyhow::Error>(())
+            });
+            let result=agent.api(json!({"method":"cast.framing.apply","params":{"id":"apply-test","expectedEye":0,"width":1280,"height":960,"horizontalFov":60.,"centerX":0.,"centerY":0.}}));
+            assert_eq!(result.is_err(),running);
+            if let Err(error)=result {assert!(format!("{error:#}").contains("取景已保存，但重新启动串流失败"));}
+            assert_eq!(panel_calls.load(Ordering::Relaxed),usize::from(running));
+            assert_eq!(agent.core("status",json!({})).unwrap()["database"]["casting"]["width"],1280);
+            assert_eq!(agent.casting.lock().unwrap().region.editor_state(),json!({"id":"apply-test","open":false}));
+            assert_eq!(agent.commands.lock().unwrap().back().unwrap(),&json!({"kind":"cast.framing.close","id":"apply-test"}));
+            stop.store(true,Ordering::Relaxed);worker.join().unwrap().unwrap();
+        }
+    }
+    #[test]
     fn calibration_preview_allows_unvalidated_error_but_rejects_invalid_geometry() {
         let root = tempfile::tempdir().unwrap();
         let server = Server::http("127.0.0.1:0").unwrap();
@@ -3448,10 +3506,18 @@ mod tests {
         // framing command larger than tiny_http's default chunk threshold.
         let framing=json!({"kind":"cast.framing.open","geometry":{"visibility":"f".repeat(48000)}});
         agent.commands.lock().unwrap().push_back(framing.clone());
+        agent.casting.lock().unwrap().region.editor_id="closed-test".into();
         let listener = std::os::unix::net::UnixListener::bind(&agent.socket).unwrap();
         let socket_worker = std::thread::spawn(move || {
             let mut core = crate::service::Service::load(&root.path().join("state"), 1000).unwrap();
             for expected in [
+                "host.ui.visibility",
+                "host.notification.badge",
+                "status",
+                "launcher.gaze.calibration.get",
+                "host.notification.badge",
+                "status",
+                "launcher.gaze.calibration.get",
                 "host.ui.visibility",
                 "host.notification.badge",
                 "status",
@@ -3494,6 +3560,19 @@ mod tests {
         assert_eq!(poll["feedback"], json!({"haptics":true,"sounds":false}));
         assert!(poll.get("gazeCalibration").is_some());
         assert!(poll["launcher"].is_object());
+        assert_eq!(poll["framingEditor"],json!({"id":"closed-test","open":false}));
+        let retry:Value=ureq::get(&url).set("X-Framely-Native",&agent.native_key).call().unwrap().into_json().unwrap();
+        assert_eq!(retry["commands"],json!([]));
+        assert_eq!(retry["framingEditor"],poll["framingEditor"]);
+        // The real native host includes empty acknowledgement fields on every
+        // poll. An applying editor may own this lock for several seconds.
+        let cast=agent.casting.lock().unwrap();
+        let busy:Value=ureq::post(&url).timeout(Duration::from_secs(1))
+            .set("X-Framely-Native",&agent.native_key)
+            .send_json(json!({"views":{"menu":true},"stopRecording":"","framingClosed":""}))
+            .unwrap().into_json().unwrap();
+        assert!(busy["framingEditor"].is_null());
+        drop(cast);
         assert!(agent
             .api(json!({"method":"host.ui.visibility","params":{"menu":false}}))
             .is_err());
