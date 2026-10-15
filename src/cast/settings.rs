@@ -65,7 +65,7 @@ impl Default for Settings {
             output: Output::Eye,
             eye: Eye::SteamVR,
             width: 1920,
-            height: 1080,
+            height: 1440,
             fps: 30,
             bitrate_mbps: 8,
             horizontal_fov: None,
@@ -80,6 +80,13 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    pub fn same_capture(&self, other: &Self) -> bool {
+        let mut capture = self.clone();
+        capture.airplay = other.airplay;
+        capture.dlna = other.dlna;
+        capture.receiver_name.clone_from(&other.receiver_name);
+        capture == *other
+    }
     pub fn validate(&self) -> Result<()> {
         ensure!(
             (160..=4096).contains(&self.width)

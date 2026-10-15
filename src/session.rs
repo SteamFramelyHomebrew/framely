@@ -1043,7 +1043,10 @@ impl Agent {
             "cast.settings.save" => {
                 let settings: crate::cast::settings::Settings = serde_json::from_value(p.clone())?;
                 settings.validate()?;
+                let cast = self.casting.lock().unwrap();
+                cast.validate_recording_settings(&settings)?;
                 let result = self.core(method,p)?;
+                drop(cast);
                 self.receivers.lock().unwrap().configure(&settings)?;
                 Ok(result)
             },
@@ -1100,22 +1103,16 @@ impl Agent {
                 } else { None };
                 self.casting.lock().unwrap().start(&settings, panel.as_deref())
             }
-            "cast.stop" => Ok(self.casting.lock().unwrap().stop()),
+            "cast.stop" => self.casting.lock().unwrap().stop_streaming(),
             "cast.record.start" => {
                 let mut cast = self.casting.lock().unwrap();
-                let auto_started = cast.status()["running"] != true;
-                if auto_started {
-                    let status = self.core("status", json!({}))?;
-                    let settings: crate::cast::settings::Settings = serde_json::from_value(status["database"]["casting"].clone())?;
-                    let panel = if settings.source == crate::cast::settings::Source::Screen {
-                        let response = self.core("cast.panel.start", json!({}))?;
-                        Some(PathBuf::from(response["socket"].as_str().context("Missing panel socket")?))
-                    } else {None};
-                    cast.start(&settings, panel.as_deref())?;
-                }
-                let result = cast.start_recording(&crate::steam::home()?.join("Videos/framely"));
-                if result.is_err() && auto_started {cast.stop();}
-                result
+                let status = self.core("status", json!({}))?;
+                let settings: crate::cast::settings::Settings = serde_json::from_value(status["database"]["casting"].clone())?;
+                let panel = if settings.source == crate::cast::settings::Source::Screen {
+                    let response = self.core("cast.panel.start", json!({}))?;
+                    Some(PathBuf::from(response["socket"].as_str().context("Missing panel socket")?))
+                } else {None};
+                cast.record(&settings, panel.as_deref(), &crate::steam::home()?.join("Videos/framely"))
             },
             "cast.record.stop" => self.casting.lock().unwrap().stop_recording(),
             "launcher.search.index" => {

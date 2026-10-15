@@ -1,4 +1,4 @@
-//! Mux the existing stream without another capture or video encoder.
+//! MP4 recording shares the capture encoder, with AAC audio for compatibility.
 use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
@@ -30,19 +30,25 @@ fn has_media(progress: &str) -> bool {
     positive("out_time_us=") && positive("total_size=")
 }
 impl Recording {
-    pub fn start(rtsp_port: u16, directory: &Path, output: &Path) -> Result<Self> {
-        Self::start_command(Command::new("ffmpeg"), rtsp_port, directory, output)
+    pub fn start(
+        rtsp_port: u16,
+        directory: &Path,
+        output: &Path,
+        codec: super::settings::Codec,
+    ) -> Result<Self> {
+        Self::start_command(Command::new("ffmpeg"), rtsp_port, directory, output, codec)
     }
     fn start_command(
         mut cmd: Command,
         rtsp_port: u16,
         directory: &Path,
         output: &Path,
+        codec: super::settings::Codec,
     ) -> Result<Self> {
         fs::create_dir_all(output).context("无法创建录制目录")?;
         let id = hex::encode(rand::random::<[u8; 16]>());
         let path = output.join(format!(
-            "Framely-{}-{}.mkv",
+            "Framely-{}-{}.mp4",
             crate::service::now_ms(),
             &id[..8]
         ));
@@ -75,8 +81,12 @@ impl Recording {
                 "0:v:0",
                 "-map",
                 "0:a?",
-                "-c",
+                "-c:v",
                 "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
                 "-avoid_negative_ts",
                 "make_zero",
                 "-stats_period",
@@ -84,7 +94,21 @@ impl Recording {
                 "-progress",
             ])
             .arg(&progress)
-            .args(["-flush_packets", "1", "-f", "matroska"])
+            // Fragmented MP4 remains usable without a final global index, and
+            // avoids buffering an entire recording until it is stopped.
+            .args([
+                "-flush_packets",
+                "1",
+                "-movflags",
+                "+frag_keyframe+empty_moov+default_base_moof",
+                "-f",
+                "mp4",
+            ])
+            .args(if codec == super::settings::Codec::H265 {
+                vec!["-tag:v", "hvc1"]
+            } else {
+                vec![]
+            })
             .arg(&path)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -227,7 +251,7 @@ printf 'trailer\n' >> "$previous"
     command
         .arg(script)
         .env("FAIL_LATER", if fail { "1" } else { "0" });
-    Recording::start_command(command, 1, directory, output).unwrap()
+    Recording::start_command(command, 1, directory, output, super::settings::Codec::H264).unwrap()
 }
 
 #[cfg(test)]
@@ -249,6 +273,7 @@ mod tests {
         let output = dir.path().join("videos");
         let mut first = test_recording(dir.path(), &output, false);
         let path = first.finish().unwrap();
+        assert_eq!(path.extension().unwrap(), "mp4");
         assert_eq!(fs::read_to_string(&path).unwrap(), "header\ntrailer\n");
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
@@ -277,7 +302,8 @@ mod tests {
             Command::new("/framely-no-such-ffmpeg"),
             1,
             dir.path(),
-            &output
+            &output,
+            super::super::settings::Codec::H264
         )
         .is_err());
         assert_eq!(fs::read_dir(output).unwrap().count(), 0);
@@ -304,8 +330,10 @@ mod tests {
         let output = dir.path().join("videos");
         let rtsp = port();
         let api = port();
+        let whep = port();
+        let hls = port();
         let config = dir.path().join("mediamtx.yml");
-        fs::write(&config,format!("logLevel: warn\nrtspAddress: 127.0.0.1:{rtsp}\nrtspTransports: [tcp]\napi: yes\napiAddress: 127.0.0.1:{api}\nrtmp: no\nhls: no\nwebrtc: no\nsrt: no\nmoq: no\npaths:\n  headset:\n    source: publisher\n")).unwrap();
+        fs::write(&config,format!("logLevel: warn\nrtspAddress: 127.0.0.1:{rtsp}\nrtspTransports: [tcp]\napi: yes\napiAddress: 127.0.0.1:{api}\nrtmp: no\nhls: no\nhlsAddress: 127.0.0.1:{hls}\nwebrtc: no\nwebrtcAddress: 127.0.0.1:{whep}\nwebrtcLocalUDPAddress: :0\nwebrtcLocalTCPAddress: :0\nsrt: no\nmoq: no\npaths:\n  headset:\n    source: publisher\n")).unwrap();
         let binary = std::env::var("FRAMELY_MEDIA_MTX").unwrap();
         let _server = Worker(
             Command::new(binary)
@@ -392,9 +420,45 @@ mod tests {
                 assert!(Instant::now() < end, "publisher not ready");
                 std::thread::sleep(Duration::from_millis(50));
             }
-            let mut recording = Recording::start(rtsp, dir.path(), &output).unwrap();
+            let mut recording = Recording::start(
+                rtsp,
+                dir.path(),
+                &output,
+                if codec == "hevc" {
+                    super::super::settings::Codec::H265
+                } else {
+                    super::super::settings::Codec::H264
+                },
+            )
+            .unwrap();
+            // Toggling viewing services must leave the RTSP publisher/recorder
+            // intact. Record-only initially has no WebRTC or HLS listeners.
+            assert!(std::net::TcpStream::connect(("127.0.0.1", whep)).is_err());
+            for enabled in [true, false] {
+                ureq::patch(&format!("http://127.0.0.1:{api}/v3/config/global/patch"))
+                    .timeout(Duration::from_secs(3))
+                    .send_json(json!({"webrtc":enabled,"hls":enabled}))
+                    .unwrap();
+                let end = Instant::now() + Duration::from_secs(3);
+                while [whep, hls].iter().any(|port| {
+                    std::net::TcpStream::connect(("127.0.0.1", *port)).is_ok() != enabled
+                }) {
+                    assert!(Instant::now() < end, "viewing listeners did not switch");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                let path: Value =
+                    ureq::get(&format!("http://127.0.0.1:{api}/v3/paths/get/headset"))
+                        .timeout(Duration::from_secs(2))
+                        .call()
+                        .unwrap()
+                        .into_json()
+                        .unwrap();
+                assert_eq!(path["ready"], true, "viewing toggle interrupted capture");
+                assert!(!recording.exited().unwrap());
+            }
             std::thread::sleep(Duration::from_millis(800));
             let path = recording.finish().unwrap();
+            assert_eq!(path.extension().unwrap(), "mp4");
             let probe = Command::new("ffprobe")
                 .args([
                     "-v",
@@ -415,13 +479,28 @@ mod tests {
             let data: Value = serde_json::from_slice(&probe.stdout).unwrap();
             let streams = data["streams"].as_array().unwrap();
             assert!(
+                data["format"]["format_name"]
+                    .as_str()
+                    .unwrap()
+                    .contains("mp4"),
+                "{data}"
+            );
+            if codec == "hevc" {
+                assert!(
+                    streams
+                        .iter()
+                        .any(|s| s["codec_name"] == "hevc" && s["codec_tag_string"] == "hvc1"),
+                    "{data}"
+                );
+            }
+            assert!(
                 streams
                     .iter()
                     .any(|s| s["codec_name"] == codec && s["width"] == 160 && s["height"] == 96),
                 "{data}"
             );
             assert_eq!(
-                streams.iter().any(|s| s["codec_name"] == "opus"),
+                streams.iter().any(|s| s["codec_name"] == "aac"),
                 audio,
                 "{data}"
             );

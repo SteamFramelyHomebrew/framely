@@ -15,6 +15,7 @@ pub struct Casting {
     pub binaries: PathBuf,
     workers: Vec<Child>,
     started: Option<Instant>,
+    streaming: bool,
     pub whep_port: u16,
     rtsp_port: u16,
     api_port: u16,
@@ -42,6 +43,7 @@ impl Casting {
             binaries,
             workers: Vec::new(),
             started: None,
+            streaming: false,
             whep_port: 0,
             rtsp_port: 0,
             api_port: 0,
@@ -62,9 +64,9 @@ impl Casting {
         self.poll_recording();
         self.poll_workers();
         let view = fs::File::open(self.directory.join("stream.log")).ok().and_then(|file| { let mut log = String::new(); file.take(65536).read_to_string(&mut log).ok()?; Some(log) }).and_then(|log| log.lines().filter_map(|line|serde_json::from_str::<Value>(line).ok()).find(|v|v["event"]=="view"));
-        json!({"running":self.started.is_some(),"error":self.error,"preview":self.preview_restore.is_some(),"view":view,
-            "watchPath":if self.started.is_some(){Some("/cast/watch")}else{None},
-            "elapsedSeconds":self.started.map(|t|t.elapsed().as_secs()),
+        json!({"running":self.streaming && self.started.is_some(),"error":self.error,"preview":self.preview_restore.is_some(),"view":view,
+            "watchPath":if self.streaming && self.started.is_some(){Some("/cast/watch")}else{None},
+            "elapsedSeconds":if self.streaming {self.started.map(|t|t.elapsed().as_secs())} else {None},
             "codec":self.active_settings.as_ref().map(|s|s.codec.name()),"dominantEye":dominant_eye().ok(),"recording":self.recording_status()})
     }
     fn poll_workers(&mut self) {
@@ -88,18 +90,39 @@ impl Casting {
             let _ = self.stop_recording();
         }
     }
-    pub fn start_recording(&mut self, output: &Path) -> Result<Value> {
+    pub fn validate_recording_settings(&self, settings: &Settings) -> Result<()> {
+        ensure!(self.recording.is_none() || self.active_settings.as_ref().is_some_and(|s|s.same_capture(settings)), "请先停止录制再调整取景");
+        Ok(())
+    }
+    pub fn record(&mut self, settings: &Settings, panel_socket: Option<&Path>, output: &Path) -> Result<Value> {
+        self.status();
+        ensure!(self.preview_restore.is_none(), "取景预览期间不能录制");
+        ensure!(self.recording.is_none(), "录制已在运行");
+        let capture_started = self.started.is_none();
+        if capture_started {
+            self.start_capture(settings, panel_socket, false)?;
+        }
+        let result = self.start_recording(output);
+        if result.is_err() && capture_started { self.stop_workers(); }
+        result
+    }
+    fn start_recording(&mut self, output: &Path) -> Result<Value> {
         self.status();
         ensure!(self.started.is_some(), "请先开始串流");
         ensure!(self.preview_restore.is_none(), "取景预览期间不能录制");
         ensure!(self.recording.is_none(), "录制已在运行");
         self.recording_error = None;
-        match super::recording::Recording::start(self.rtsp_port, &self.directory, output) {
+        match super::recording::Recording::start(self.rtsp_port, &self.directory, output, self.codec()) {
             Ok(recording) => {self.recording = Some(recording); Ok(self.recording_status())},
             Err(error) => {self.recording_error = Some(format!("{error:#}")); Err(error)}
         }
     }
     pub fn stop_recording(&mut self) -> Result<Value> {
+        let result = self.finish_recording();
+        if !self.streaming {self.stop_workers();}
+        result
+    }
+    fn finish_recording(&mut self) -> Result<Value> {
         if let Some(mut recording) = self.recording.take() {
             match recording.finish() {
                 Ok(path) => self.recording_path = Some(path),
@@ -112,7 +135,7 @@ impl Casting {
         if self.recording.as_ref().is_some_and(|r|r.id == id) {let _ = self.stop_recording();}
     }
     fn stop_workers(&mut self) {
-        let _ = self.stop_recording();
+        let _ = self.finish_recording();
         for child in &mut self.workers {
             if child.try_wait().ok().flatten().is_some() {
                 continue;
@@ -139,6 +162,7 @@ impl Casting {
         self.stop_vp8();
         self.active_settings = None;
         self.started = None;
+        self.streaming = false;
         self.stream_key.clear();
     }
     /// Negotiate with browsers that omit H.264 (including the bundled CEF).
@@ -148,6 +172,7 @@ impl Casting {
     #[cfg(test)]
     pub(crate) fn test_whep_server(&mut self, port: u16) {
         self.started = Some(Instant::now());
+        self.streaming = true;
         self.active_settings = Some(Settings::default());
         self.whep_port = port;
     }
@@ -330,6 +355,23 @@ impl Casting {
         self.error = None;
         json!(true)
     }
+    fn configure_streaming(&mut self, enabled: bool) -> Result<()> {
+        ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(3)).build()
+            .patch(&format!("http://127.0.0.1:{}/v3/config/global/patch", self.api_port))
+            .send_json(json!({"webrtc":enabled,"hls":enabled}))
+            .context("无法切换串流服务")?;
+        self.streaming = enabled;
+        if !enabled {self.stream_key.clear();self.stop_vp8();}
+        else {self.stream_key = crate::session::cast_random_key();}
+        Ok(())
+    }
+    pub fn stop_streaming(&mut self) -> Result<Value> {
+        self.status();
+        if self.recording.is_some() {
+            if self.streaming {self.configure_streaming(false)?;}
+        } else {self.stop();}
+        Ok(json!(true))
+    }
     pub fn start_preview(&mut self, settings: &Settings, socket: &Path) -> Result<Value> {
         ensure!(self.recording.is_none(), "请先停止录制再调整取景");
         ensure!(self.preview_restore.is_none(), "取景预览已在运行");
@@ -372,12 +414,25 @@ impl Casting {
         Ok(())
     }
     pub fn start(&mut self, settings: &Settings, panel_socket: Option<&Path>) -> Result<Value> {
+        self.status();
+        ensure!(!self.streaming, "串流已在运行");
+        if self.started.is_some() {
+            // Recording already owns the encoder. Enabling viewing must not
+            // restart it or change the recording's resolution/bitrate.
+            ensure!(self.active_settings.as_ref().is_some_and(|s|s.same_capture(settings)), "请先停止录制再调整取景");
+            self.configure_streaming(true)?;
+            return Ok(self.status());
+        }
+        self.start_capture(settings, panel_socket, true)
+    }
+    fn start_capture(&mut self, settings: &Settings, panel_socket: Option<&Path>, streaming: bool) -> Result<Value> {
         settings.validate()?;
         ensure!(self.started.is_none(), "串流已在运行");
         fs::create_dir_all(&self.directory)?;
         fs::set_permissions(&self.directory, fs::Permissions::from_mode(0o700))?;
         // A new session does not accumulate unbounded log history.
         fs::write(self.directory.join("stream.log"), [])?;
+        self.streaming = streaming;
         let result = self.start_inner(settings, panel_socket);
         if let Err(e) = &result {
             use std::io::{Read, Seek, SeekFrom};
@@ -407,8 +462,8 @@ impl Casting {
         self.api_port = port()?;
         self.whep_port = port()?;
         self.hls_port = port()?;
-        self.stream_key = crate::session::cast_random_key();
-        let configuration = format!("logLevel: warn\nrtspAddress: 127.0.0.1:{rtsp}\nrtspTransports: [tcp]\nrtmp: no\nmoq: no\nsrt: no\napi: yes\napiAddress: 127.0.0.1:{}\nmetrics: no\nplayback: no\nwebrtc: yes\nwebrtcAddress: 127.0.0.1:{}\nwebrtcLocalUDPAddress: :0\nwebrtcLocalTCPAddress: :0\nhls: yes\nhlsAddress: 127.0.0.1:{}\nhlsVariant: mpegts\nhlsSegmentCount: 3\nhlsSegmentDuration: 1s\npaths:\n  headset:\n    source: publisher\n  dlna:\n    source: publisher\n  headset_vp8:\n    source: publisher\n", self.api_port, self.whep_port, self.hls_port);
+        self.stream_key = if self.streaming {crate::session::cast_random_key()} else {String::new()};
+        let configuration = format!("logLevel: warn\nrtspAddress: 127.0.0.1:{rtsp}\nrtspTransports: [tcp]\nrtmp: no\nmoq: no\nsrt: no\napi: yes\napiAddress: 127.0.0.1:{}\nmetrics: no\nplayback: no\nwebrtc: {}\nwebrtcAddress: 127.0.0.1:{}\nwebrtcLocalUDPAddress: :0\nwebrtcLocalTCPAddress: :0\nhls: {}\nhlsAddress: 127.0.0.1:{}\nhlsVariant: mpegts\nhlsSegmentCount: 3\nhlsSegmentDuration: 1s\npaths:\n  headset:\n    source: publisher\n  dlna:\n    source: publisher\n  headset_vp8:\n    source: publisher\n", self.api_port, self.streaming, self.whep_port, self.streaming, self.hls_port);
         let config_path = self.directory.join("mediamtx.yml");
         fs::write(&config_path, configuration)?;
         self.spawn(Command::new(mediamtx).arg(config_path))?;
@@ -723,11 +778,66 @@ mod tests {
         );
     }
     #[test]
+    fn cast_recording_only_stays_private_and_releases_capture_on_stop() {
+        let dir=tempfile::tempdir().unwrap();let output=dir.path().join("videos");
+        let mut cast=Casting::new(dir.path().into(),dir.path().into());
+        cast.started=Some(Instant::now());cast.active_settings=Some(Settings::default());
+        cast.recording=Some(super::super::recording::test_recording(dir.path(),&output,false));
+        let status=cast.status();
+        assert_eq!(status["running"],false);assert_eq!(status["recording"]["active"],true);
+        assert!(status["watchPath"].is_null());assert!(cast.stream_key.is_empty());
+        cast.stop_streaming().unwrap();assert!(cast.recording.is_some());
+        let id=cast.recording.as_ref().unwrap().id.clone();cast.stop_recording_id(&id);
+        assert!(cast.started.is_none());assert!(cast.active_settings.is_none());
+        assert_eq!(cast.recording_path.as_ref().unwrap().extension().unwrap(),"mp4");
+    }
+    #[test]
+    fn cast_recording_stream_toggle_keeps_encoder_and_recording() {
+        use tiny_http::{Response,Server};
+        let server=Server::http("127.0.0.1:0").unwrap();
+        let port=server.server_addr().to_ip().unwrap().port();
+        let worker=std::thread::spawn(move || {
+            for enabled in [true,false,true] {
+                let mut req=server.recv().unwrap();assert_eq!(req.method(),&tiny_http::Method::Patch);
+                assert_eq!(req.url(),"/v3/config/global/patch");
+                let value:Value=serde_json::from_reader(req.as_reader()).unwrap();
+                assert_eq!(value,json!({"webrtc":enabled,"hls":enabled}));
+                req.respond(Response::from_string("{}")).unwrap();
+            }
+        });
+        let dir=tempfile::tempdir().unwrap();let output=dir.path().join("videos");
+        let mut cast=Casting::new(dir.path().into(),dir.path().into());
+        let settings=Settings::default();cast.api_port=port;
+        cast.started=Some(Instant::now());cast.active_settings=Some(settings.clone());
+        cast.recording=Some(super::super::recording::test_recording(dir.path(),&output,false));
+        let started=cast.started;let id=cast.recording.as_ref().unwrap().id.clone();
+        assert_eq!(cast.start(&settings,None).unwrap()["running"],true);
+        cast.stop_streaming().unwrap();assert_eq!(cast.status()["running"],false);
+        assert_eq!(cast.recording.as_ref().unwrap().id,id);assert_eq!(cast.started,started);
+        assert_eq!(cast.start(&settings,None).unwrap()["running"],true);
+        cast.stop_recording().unwrap();assert!(cast.streaming);assert_eq!(cast.started,started);
+        worker.join().unwrap();cast.stop();
+    }
+    #[test]
+    fn cast_recording_capture_settings_are_shared_and_locked() {
+        let dir=tempfile::tempdir().unwrap();let output=dir.path().join("videos");
+        let mut cast=Casting::new(dir.path().into(),dir.path().into());
+        let mut settings=Settings::default();assert_eq!(settings.width*3,settings.height*4);
+        cast.started=Some(Instant::now());cast.active_settings=Some(settings.clone());
+        cast.recording=Some(super::super::recording::test_recording(dir.path(),&output,false));
+        settings.height=1080;assert!(cast.validate_recording_settings(&settings).is_err());
+        assert!(cast.start(&settings,None).is_err());
+        settings.height=1440;settings.bitrate_mbps+=1;assert!(cast.validate_recording_settings(&settings).is_err());
+        settings.bitrate_mbps-=1;settings.airplay=true;settings.receiver_name="Another name".into();
+        assert!(cast.validate_recording_settings(&settings).is_ok());
+    }
+    #[test]
     fn cast_recording_stale_indicator_does_not_stop_new_recording_and_stream_stop_finishes() {
         let dir=tempfile::tempdir().unwrap();let output=dir.path().join("videos");
         let mut cast=Casting::new(dir.path().into(),dir.path().into());
         assert!(cast.start_recording(&output).is_err());
         cast.started=Some(Instant::now());
+        cast.streaming=true;
         cast.recording=Some(super::super::recording::test_recording(dir.path(),&output,false));
         assert!(cast.start_recording(&output).is_err());
         assert!(cast.start_preview(&Settings::default(),dir.path()).is_err());
@@ -741,7 +851,7 @@ mod tests {
     #[test]
     fn cast_recording_process_failure_keeps_stream_and_reports_error() {
         let dir=tempfile::tempdir().unwrap();let output=dir.path().join("videos");
-        let mut cast=Casting::new(dir.path().into(),dir.path().into());cast.started=Some(Instant::now());
+        let mut cast=Casting::new(dir.path().into(),dir.path().into());cast.started=Some(Instant::now());cast.streaming=true;
         cast.recording=Some(super::super::recording::test_recording(dir.path(),&output,true));
         let end=Instant::now()+Duration::from_secs(3);
         while cast.recording.is_some()&&Instant::now()<end {cast.maintain();std::thread::sleep(Duration::from_millis(25));}
