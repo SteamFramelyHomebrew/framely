@@ -36,7 +36,7 @@ export function FramingEditor({settings,view,onChange,onError,spatial=false,mini
    {!spatial&&<CastVideo active controls={false} aspectRatio={1} onError={onError}/>}
    {view&&<div ref={box} className="cast-crop-box" tabIndex={0} role="group" aria-label={t('取景框，使用方向键移动')} onKeyDown={keyboard} onPointerDown={down} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}>
     <div className="cast-crop-grid" aria-hidden="true"/>
-    {['nw','ne','sw','se'].map(corner=><span key={corner} data-corner={corner} className={`cast-crop-handle ${corner}`} aria-hidden="true"/>)}
+    {['nw','ne','sw','se'].map(corner=><span key={corner} data-corner={corner} data-framely-interactive="" className={`cast-crop-handle ${corner}`} aria-hidden="true"/>)}
    </div>}
   </div>
   <div className="cast-zoom-controls">
