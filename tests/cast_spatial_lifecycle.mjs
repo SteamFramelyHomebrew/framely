@@ -33,7 +33,7 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function walk(node,visit){if(!node||typeof node!=='object')return;visit(node);for(const child of [node.props?.children].flat(Infinity))walk(child,visit);}
 function draw(){const tree=render(SpatialFraming);walk(tree,node=>{if(node.props?.ref){const panel=node.type==='section';node.props.ref.current={getBoundingClientRect:()=>({width:panel?340:1600,height:panel?300:1600})};}});flush();return tree;}
 function button(tree,label){let found;walk(tree,node=>{if(node.type==='button'&&node.props.children===label)found=node;});assert.ok(found,label);return found;}
-async function mount(finish){reset();setHandler((method,params)=>method==='status'?{database:{language:'zh-CN'}}:method==='language.list'?{packs:[]}:method==='cast.framing.get'?geometry:finish(method,params));for(let i=0;i<4;i++){draw();await tick();}return draw();}
+async function mount(finish){reset();setHandler((method,params)=>method==='status'?{database:{language:'zh-CN'}}:method==='language.list'?{packs:[]}:method==='cast.framing.get'?geometry:method==='cast.framing.reference'?true:finish(method,params));for(let i=0;i<4;i++){draw();await tick();}return draw();}
 
 let resolveApply;
 let tree=await mount(method=>{assert.equal(method,'cast.framing.apply');return new Promise(resolve=>{resolveApply=resolve;});});
@@ -56,4 +56,18 @@ tree=await mount(()=>{throw Error('Saved, but restart failed');});
 setHandler(method=>{if(method==='cast.framing.apply')throw Error('Saved, but restart failed');if(method==='cast.framing.get')throw Error('画幅调整窗口已关闭');throw Error(method);});
 button(tree,'应用取景').props.onClick();await tick();assert.equal(draw(),null,'post-save restart failure cannot revive a closed editor');
 
-console.log('PASS: apply/cancel close immediately, pending controls are inert, save failures preserve editing, post-save errors cannot revive stale ids');
+const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function frame(tree){let found;walk(tree,node=>{if(node.props?.spatial&&node.props?.settings&&node.props?.onChange)found=node;});assert.ok(found,'framing editor');return found;}
+tree=await mount(()=>true);await delay(120);
+let references=calls.filter(call=>call.method==='cast.framing.reference');
+assert.equal(references.length,1);assert.deepEqual(references[0].params,{id:geometry.id,centerX:0,centerY:0});
+frame(tree).props.onChange({centerX:5,centerY:-3});tree=draw();
+frame(tree).props.onChange({centerX:6,centerY:-4});tree=draw();await delay(120);
+references=calls.filter(call=>call.method==='cast.framing.reference');
+assert.equal(references.length,2,'rapid committed centers are debounced');
+assert.ok(Math.abs(references[1].params.centerX-6)<1e-8&&Math.abs(references[1].params.centerY+4)<1e-8,'live draft is sent in degrees');
+assert.ok(references[0].signal.aborted,'previous reference request is canceled after a new center');
+frame(tree).props.onChange({centerX:7});tree=draw();
+button(tree,'取消').props.onClick();await tick();assert.equal(draw(),null);await delay(120);
+assert.equal(calls.filter(call=>call.method==='cast.framing.reference').length,2,'closing cancels the pending depth-probe update');
+console.log('PASS: terminal editor lifecycle, error recovery, debounced live-center depth updates and closing cancellation');

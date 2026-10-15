@@ -1091,6 +1091,16 @@ impl Agent {
             "cast.framing.get" => {
                 let cast=self.casting.lock().unwrap();ensure!(cast.region.editing,"画幅调整窗口已关闭");cast.region.editor()
             },
+            "cast.framing.reference" => {
+                let cast=self.casting.lock().unwrap();
+                ensure!(cast.region.editing && p["id"]==cast.region.editor_id,"画幅调整窗口已关闭");
+                let cx=p["centerX"].as_f64().context("Invalid reference center")?;
+                let cy=p["centerY"].as_f64().context("Invalid reference center")?;
+                ensure!([cx,cy].into_iter().all(|v|v.is_finite()&&(-60.0..=60.0).contains(&v)),"Invalid reference center");
+                // Presentation-only depth probe; never persist a draft crop.
+                self.commands.lock().unwrap().push_back(json!({"kind":"cast.framing.reference","id":cast.region.editor_id,"centerTanX":cx.to_radians().tan(),"centerTanY":cy.to_radians().tan()}));
+                Ok(json!(true))
+            },
             "cast.framing.cancel" => {
                 let mut cast=self.casting.lock().unwrap();
                 ensure!(p["id"]==cast.region.editor_id,"画幅调整窗口已关闭");
@@ -2703,6 +2713,13 @@ mod tests {
                 }
                 Ok::<_,anyhow::Error>(())
             });
+            assert!(agent.api(json!({"method":"cast.framing.reference","params":{"id":"old-test","centerX":0.,"centerY":0.}})).is_err());
+            assert!(agent.api(json!({"method":"cast.framing.reference","params":{"id":"apply-test","centerX":61.,"centerY":0.}})).is_err());
+            agent.api(json!({"method":"cast.framing.reference","params":{"id":"apply-test","centerX":4.5,"centerY":-3.}})).unwrap();
+            let reference=agent.commands.lock().unwrap().back().unwrap().clone();
+            assert_eq!(reference["kind"],"cast.framing.reference");
+            assert!((reference["centerTanX"].as_f64().unwrap()-4.5_f64.to_radians().tan()).abs()<1e-12);
+            assert_eq!(agent.core("status",json!({})).unwrap()["database"]["casting"]["centerX"],0.);
             let result=agent.api(json!({"method":"cast.framing.apply","params":{"id":"apply-test","expectedEye":0,"width":1280,"height":960,"horizontalFov":60.,"centerX":0.,"centerY":0.}}));
             assert_eq!(result.is_err(),running);
             if let Err(error)=result {assert!(format!("{error:#}").contains("取景已保存，但重新启动串流失败"));}

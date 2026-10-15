@@ -11,11 +11,10 @@ inline void recording_region_foreground(vr::IVROverlay* overlays,vr::VROverlayHa
  overlays->SetOverlayFlag(handle,vr::VROverlayFlags_SortWithNonSceneOverlays,true);
  overlays->SetOverlaySortOrder(handle,1000);
 }
-inline bool recording_region_plane(const RegionJson& view,double tan,double cx,double cy,double aspect,RecordingRegionPlane& plane){
+inline bool recording_region_plane(const RegionJson& view,double tan,double cx,double cy,double aspect,RecordingRegionPlane& plane,double distance=2.){
  try{
-  if(!std::isfinite(tan)||tan<=0||!std::isfinite(cx)||!std::isfinite(cy)||!std::isfinite(aspect)||aspect<=0)return false;
+  if(!std::isfinite(tan)||tan<=0||!std::isfinite(cx)||!std::isfinite(cy)||!std::isfinite(aspect)||aspect<=0||!std::isfinite(distance)||distance<=0)return false;
   const auto& basis=view.at("captureToHead");
-  constexpr double distance=2.;
   for(int i=0;i<3;i++){
    double translation=basis.at(i).at(3).get<double>();
    for(int j=0;j<3;j++){
@@ -46,16 +45,16 @@ inline std::vector<unsigned char> recording_region_pixels(int w,int h,const std:
  return pixels;
 }
 class RecordingRegionOverlay {
- vr::IVROverlay* overlays=nullptr;vr::VROverlayHandle_t handle=0;std::string last;
+ vr::IVROverlay* overlays=nullptr;vr::VROverlayHandle_t handle=0;std::string last,last_pixels;
 public:
- void destroy(){if(handle&&overlays)overlays->DestroyOverlay(handle);handle=0;last.clear();}
- void tick(vr::IVROverlay* api,const RegionJson& state){
+ void destroy(){if(handle&&overlays)overlays->DestroyOverlay(handle);handle=0;last.clear();last_pixels.clear();}
+ void tick(vr::IVROverlay* api,const RegionJson& state,double distance=2.,const RegionJson* live_view=nullptr){
   overlays=api;
   if(!state.value("visible",false)){destroy();return;}
-  auto color=recording_region_color();auto serialized=state.dump()+std::string(color.begin(),color.end());if(serialized==last)return;
+  auto color=recording_region_color();auto serialized=state.dump()+std::string(color.begin(),color.end())+std::to_string(distance)+(live_view?live_view->dump():"");if(serialized==last)return;
   try{
-   const auto& view=state.at("view");double aspect=view.at("aspect");
-   RecordingRegionPlane plane;if(!recording_region_plane(view,view.at("tanHalfHorizontal"),view.at("centerTanX"),view.at("centerTanY"),aspect,plane)){destroy();return;}
+   const auto& view=live_view?*live_view:state.at("view");double aspect=view.at("aspect");
+   RecordingRegionPlane plane;if(!recording_region_plane(view,view.at("tanHalfHorizontal"),view.at("centerTanX"),view.at("centerTanY"),aspect,plane,distance)){destroy();return;}
    if(!handle){
     if(overlays->CreateOverlay("framely.recording.region","Framely recording region",&handle))return;
     overlays->SetOverlayInputMethod(handle,vr::VROverlayInputMethod_None);
@@ -71,11 +70,15 @@ public:
    // Bound raw-overlay traffic independently of recording resolution.
    // Square texels are explicitly stretched to the exact capture aspect.
    width=height=512;plane.width*=512.f/508.f;
-   auto pixels=recording_region_pixels(width,height,color);
    auto error=overlays->SetOverlayWidthInMeters(handle,plane.width);
    if(!error)error=overlays->SetOverlayTexelAspect(handle,aspect);
    if(!error)error=overlays->SetOverlayTransformTrackedDeviceRelative(handle,vr::k_unTrackedDeviceIndex_Hmd,&plane.transform);
-   if(!error)error=overlays->SetOverlayRaw(handle,pixels.data(),width,height,4);
+   const auto pixel_key=std::string(color.begin(),color.end());
+   if(!error&&(last_pixels.empty()||pixel_key!=last_pixels)){
+    auto pixels=recording_region_pixels(width,height,color);
+    error=overlays->SetOverlayRaw(handle,pixels.data(),width,height,4);
+    if(!error)last_pixels=pixel_key;
+   }
    if(error){destroy();return;}overlays->ShowOverlay(handle);last=serialized;
   }catch(...){destroy();}
  }

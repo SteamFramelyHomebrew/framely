@@ -45,6 +45,19 @@ export function SpatialFraming(){
  useEffect(()=>{const close=()=>void finish(false);window.addEventListener('framely.back',close);return()=>window.removeEventListener('framely.back',close);},[geometry,busy]);
  const aspect=draft?draft.width/draft.height:4/3;
  const ready=!!geometry&&minimum.referenceTan===geometry.referenceTan;
+ useEffect(()=>{
+  if(!ready||!geometry||!draft||busy||closed||finishing.current||finished.current)return;
+  const controller=new AbortController(),params={id:geometry.id,centerX:draft.centerX,centerY:draft.centerY};
+  // Draft centers commit after a drag ends. Update only the native depth probe,
+  // not capture settings, and coalesce rapid keyboard/ratio/reset adjustments.
+  const timer=setTimeout(()=>{
+   if(finishing.current||finished.current)return;
+   void api('cast.framing.reference',params,controller.signal).catch(()=>{});
+  },100);
+  // This is presentation-only, so aborted/stale updates must not overwrite a
+  // real save error or revive an editor whose native window is closing.
+  return()=>{clearTimeout(timer);controller.abort();};
+ },[ready,geometry?.id,draft?.centerX,draft?.centerY,busy,closed]);
  if(closed)return null;
  return <main ref={root} className="cast-native-framing" aria-label={t('画幅调整')} inert={busy}>
   {draft&&geometry&&ready&&<FramingEditor spatial limit={limit} minimumSize={minimum} settings={draft} view={reference} onChange={change} onError={message=>setError(t(message))}/>}
