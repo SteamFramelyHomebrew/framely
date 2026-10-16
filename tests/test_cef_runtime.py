@@ -106,18 +106,34 @@ class CEFRuntimeTests(unittest.TestCase):
             requirement = json.loads((core / 'CEF_RUNTIME.json').read_text())
             data = (folder / requirement['archive']).read_bytes()
             # The downloaded helper imports the shipped bootstrap module.
-            for bad in (True, False):
-                store = folder / ('bad-store' if bad else 'download-store')
-                store.mkdir()
-                response = io.BytesIO(data[:-1] if bad else data)
-                with patch('urllib.request.OpenerDirector.open', return_value=response):
-                    if bad:
-                        with self.assertRaises(ValueError):
-                            runtime.prepare(core, store)
-                        self.assertFalse((store / 'cef' / requirement['id']).exists())
-                    else:
-                        cached = runtime.prepare(core, store)
-                        self.assertEqual((cached / 'lib/cef/libcef.so').read_text(), 'browser')
+            tampered = data[:-1] + bytes([data[-1] ^ 1])
+            for case, payload, failure, message, attempts in [
+                    ('tampered', tampered, ValueError, 'SHA256 mismatch', 1),
+                    ('truncated', data[:-1], RuntimeError, 'IncompleteRead', 2),
+                    ('valid', data, None, '', 1)]:
+                with self.subTest(case=case):
+                    store = folder / (case + '-store')
+                    store.mkdir()
+                    # Each request owns a fresh HTTP-like response, including
+                    # the fallback request after a truncated primary body.
+                    def response(*_args, **_kwargs):
+                        result = io.BytesIO(payload)
+                        result.headers = {'Content-Length': str(len(payload))}
+                        return result
+                    with patch.dict('os.environ', {'FRAMELY_GITHUB_AUTO_FALLBACK': '1'}), \
+                            patch('urllib.request.OpenerDirector.open', side_effect=response) as request:
+                        if failure:
+                            with self.assertRaisesRegex(failure, message):
+                                runtime.prepare(core, store)
+                            self.assertFalse((store / 'cef' / requirement['id']).exists())
+                        else:
+                            cached = runtime.prepare(core, store)
+                            self.assertEqual((cached / 'lib/cef/libcef.so').read_text(), 'browser')
+                        self.assertEqual(request.call_count, attempts)
+                        self.assertEqual(request.call_args_list[0].args[0].full_url, requirement['url'])
+                        if attempts == 2:
+                            self.assertEqual(request.call_args_list[1].args[0].full_url,
+                                             'https://gh-proxy.com/' + requirement['url'])
 
     def test_runtime_extraction_rejects_links(self):
         with tempfile.TemporaryDirectory() as temp:

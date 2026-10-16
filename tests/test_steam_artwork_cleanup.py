@@ -31,7 +31,9 @@ const SteamClient={{Apps:{{
     def test_clears_every_injected_image_and_shortcut_icon(self):
         result = self.run_cleanup('"/owned/./base.apk"')
         self.assertTrue(result['ok'])
-        self.assertEqual(result['calls'], [['clear', 2452903544, kind] for kind in [0, 1, 3, 4]]
+        # Portrait, hero, transparent logo and landscape are artwork types
+        # 0..3. The shortcut icon is cleared separately, never as type 4.
+        self.assertEqual(result['calls'], [['clear', 2452903544, kind] for kind in [0, 1, 2, 3]]
                          + [['icon', 2452903544, '']])
 
     def test_refuses_another_shortcut_with_the_same_id(self):
