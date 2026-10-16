@@ -21,22 +21,43 @@
 .notification-inbox .notification-card{border-radius:16px;padding:22px;border-color:#ffffff18;background:#ffffff05}
 .notification-inbox .notification-card .toast-actions button{border-radius:999px}
 .notification-inbox .notification-card .toast-actions .notification-primary{background:var(--blue);color:#152331;border-color:var(--blue)}
-.cast-quick{padding:4px 0 20px}
-.cast-quick>header{display:flex;align-items:center;gap:12px;margin-bottom:24px;color:var(--blue)}
-.cast-quick>header h1{font-size:28px;color:var(--text);flex:1}
-.cast-quick>header button{width:44px;min-height:44px;padding:10px;background:transparent;border:0;border-radius:999px}
-.cast-quick-stream{display:flex;flex-direction:column;align-items:center;padding:24px 16px 28px;border-radius:16px;background:#ffffff06;border:1px solid #ffffff14}
-.cast-quick-stream>svg{color:var(--blue);margin-bottom:18px}
-.cast-quick-stream h2{font-size:24px;margin-bottom:6px}
-.cast-quick-stream p{font-size:16px;color:var(--muted);font-variant-numeric:tabular-nums;margin:0 0 22px}
-.cast-quick-stream button{min-width:180px;border-radius:999px}
+/* Quick casting is a spatial control surface, not a marketing page.
+   Preserve the app's dark tokens and fonts; 16px panel, 10px action corners.
+   Red recording color is semantic, not a second decorative accent. */
+.cast-quick{padding:0 0 12px}
+.cast-quick>header{display:flex;align-items:center;gap:10px;margin-bottom:18px;color:var(--blue)}
+.cast-quick>header h1{font-size:26px;color:var(--text);flex:1;line-height:1.3}
+.cast-quick>header button{min-height:48px;padding:8px 12px;background:transparent;border:1px solid var(--line);border-radius:10px;font-size:16px;color:var(--muted);white-space:nowrap}
+.cast-quick-stream{padding:20px;border-radius:16px;background:#ffffff06;border:1px solid #ffffff1c}
+.cast-quick-source{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.cast-quick-source>div{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.cast-quick-source>svg{color:var(--muted)}
+.cast-quick-stream h2{font-size:23px;margin:0;line-height:1.35}
+.cast-quick-state{font-size:15px;color:var(--muted)}
+.cast-quick-stream.is-live .cast-quick-state,.cast-quick-stream.is-live .cast-quick-source>svg{color:var(--blue)}
+.cast-quick-stream .cast-quick-specs{display:flex;flex-wrap:wrap;gap:8px 16px;margin:12px 0 20px;color:var(--muted);font-size:16px;font-variant-numeric:tabular-nums}
+.cast-quick-specs span{white-space:nowrap}
+.cast-quick-specs.is-loading{visibility:hidden}
+.cast-quick .cast-stream-actions{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+.cast-quick .cast-stream-actions>button{min-width:0;min-height:60px;border-radius:10px;padding:12px 8px;font-size:18px;white-space:nowrap}
 .cast-quick-stream button.primary{background:var(--blue);color:#152331;border-color:var(--blue)}
-.cast-quick-address{display:grid;gap:8px;padding:18px 0;color:var(--muted);font-size:16px}
-.cast-quick-address code{font:15px/1.5 ui-monospace,monospace;color:var(--text);overflow-wrap:anywhere;user-select:all}
-.cast-quick-receive{margin-top:28px}
-.cast-quick-receive h2{font-size:17px;font-weight:500;color:var(--muted);margin-bottom:8px}
-.cast-quick-receive label{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0;padding:14px 0}
-.cast-quick-receive .ui-switch{flex:none}
+.cast-quick-stream button.primary:hover:not(:disabled){background:#b5d7f2}
+.cast-quick .cast-quick-framing{padding:18px 0;border-top:0;border-bottom:1px solid var(--line)}
+.cast-quick .cast-quick-framing-row{display:grid;grid-template-columns:auto minmax(0,1fr);gap:20px}
+.cast-quick .cast-quick-framing-row>button{min-height:52px;border-radius:10px;font-size:17px;padding:10px 16px}
+.cast-quick .switch-row{min-height:52px;padding:0;gap:12px}
+.cast-quick .switch-row b{font-size:17px;font-weight:500}
+.cast-quick .switch-row small{font-size:14px;line-height:1.5}
+.cast-quick .ui-switch{min-width:60px;width:60px;min-height:52px;border-radius:10px}
+.cast-quick-recording-options{padding:16px 0}
+.cast-quick .cast-record-path{font-size:12px;line-height:1.5;color:var(--muted);margin:10px 0 0;overflow-wrap:anywhere}
+.cast-quick-address{display:grid;gap:6px;padding:0 0 18px;color:var(--muted);font-size:15px}
+.cast-quick-address code{font:14px/1.5 ui-monospace,monospace;color:var(--text);overflow-wrap:anywhere;user-select:all}
+.cast-quick-receive{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 20px;margin-top:0;border-top:1px solid var(--line);padding-top:16px}
+.cast-quick-receive h2{grid-column:1/-1;font-size:15px;font-weight:500;color:var(--muted);margin:0 0 6px}
+.cast-quick-receive label{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0;padding:0;font-size:18px;min-width:0}
+.cast-quick .error{font-size:16px}
+@media(max-width:420px){.cast-quick-stream{padding:16px}.cast-quick .cast-stream-actions{grid-template-columns:1fr}.cast-quick .cast-quick-framing-row{grid-template-columns:1fr;gap:12px}.cast-quick .cast-quick-framing-row>button{justify-self:start}.cast-quick-receive{grid-template-columns:1fr}.cast-quick>header button{font-size:14px}}
 .quick nav button>span{font-size:16px}
 @media(max-width:480px){.toasts .notification-card{padding:14px}.toasts .notification-heading{gap:8px}.toasts .notification-origin{flex-direction:row;gap:6px}.toasts .notification-countdown{font-size:11px}.toasts .notification-card .toast-actions button{flex:1;padding:10px 12px}.notification-inbox .notification-card{padding:18px}}
 @media(prefers-reduced-motion:no-preference){.notification-card button,.cast-quick button{transition:background .15s,transform .15s}.notification-card button:active:not(:disabled),.cast-quick button:active:not(:disabled){transform:scale(.98)}}

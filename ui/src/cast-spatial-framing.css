@@ -9,3 +9,5 @@ html.cast-framing-view,html.cast-framing-view body,html.cast-framing-view #root{
 .cast-native-framing-controls h1{font-size:23px;margin:0 0 10px}.cast-native-framing-controls p{font-size:14px;line-height:1.6;color:#c2ced6}
 .cast-native-framing-field{display:flex;align-items:center;justify-content:space-between;gap:14px;font-size:15px;margin:16px 0}.cast-native-framing-field .framely-select{width:175px}.cast-native-framing-field .framely-select>button{margin:0;background:#252c32}.cast-native-framing-field [role=listbox]{z-index:20!important;background:#252c32!important}.cast-native-framing-field [role=option]{margin:0;min-height:44px}
 .cast-native-framing-controls footer{display:flex;gap:12px;margin-top:20px}.cast-native-framing-controls footer button{flex:1}
+.cast-native-framing-controls .cast-framing-move{width:100%;min-height:44px;margin:-6px 0 0;padding:4px 0;justify-content:space-between;cursor:grab;touch-action:none;user-select:none;font-size:23px;font-weight:600;gap:10px;background:transparent;border:0}
+.cast-native-framing-controls .cast-framing-move[data-dragging]{cursor:grabbing;background:#39434b;border-color:#c1e0ef}

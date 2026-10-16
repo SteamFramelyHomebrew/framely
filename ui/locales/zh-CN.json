@@ -17,6 +17,7 @@
     "This container cannot be read; inspect warnings before reconciliation": "此容器无法读取；请先查看警告和日志，或确认清理损坏容器。",
     "APK state is unknown; reconcile before changing the application": "APK 状态未知；请先核对实际安装状态，或确认清理损坏容器。",
     "重置大小": "重置大小",
+    "拖动调整录制位置": "拖动调整录制位置",
     "录制眼已改变，请重新打开画幅调整": "录制眼已改变，请重新打开画幅调整",
     "保留比例和分辨率，恢复居中有效画幅": "保留比例和分辨率，恢复居中有效画幅",
     "菜单尺寸超过当前可录制范围": "菜单尺寸超过当前可录制范围",

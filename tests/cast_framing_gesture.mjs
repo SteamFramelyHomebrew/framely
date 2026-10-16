@@ -22,6 +22,13 @@ for(const ratio of [4/3,3/4,16/9,9/16,1]){
   assert.equal(gesture.move(2,300,300,0,{width:1000,height:1000},ratio,minimum),null);
  }
  const reference={tanHalfHorizontal:1.4,centerTanX:0,centerTanY:0,aspect:1};
+ const pan=new FrameGesture();pan.begin(3,400,400,rect,null);
+ const moved=pan.move(3,440,370,1,{width:1000,height:1000},ratio,minimum);
+ close(moved.x,rect.x+.04);close(moved.y,rect.y-.03);close(moved.width,rect.width);close(moved.height,rect.height);
+ assert.equal(pan.move(4,600,600,1,{width:1000,height:1000},ratio,minimum),null);
+ const edge=pan.move(3,5000,-5000,1,{width:1000,height:1000},ratio,minimum);
+ close(edge.x,1-rect.width);close(edge.y,0);close(edge.width,rect.width);
+ assert.equal(pan.finish(3),true);assert.equal(pan.move(3,400,400,1,{width:1000,height:1000},ratio,minimum),null);
  const saved=normalizeRegion({width:Math.round(1600*ratio),height:1600,horizontalFov:10,centerX:0,centerY:0},reference,{width:.24,height:.28});
  const displayed=frameFromSettings(saved,saved.width/saved.height,reference);assert.ok(displayed.width>=.24-1e-10&&displayed.height>=.28-1e-10);
 }

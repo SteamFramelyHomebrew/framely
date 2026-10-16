@@ -8,6 +8,7 @@ import {framePresets,frameRatios,settingsFromFrame,type ReferenceView} from './c
 import {normalizeRegion} from './cast-region';
 import {FramingLimits,framingMenuScale,type VisibilityGrid} from './cast-framing-limits';
 import {minimumFrameWidth} from './cast-framing-gesture';
+import {IconArrowsMove} from '@tabler/icons-react';
 import './casting.css';
 import './cast-spatial-framing.css';
 type Geometry={id:string;settings:CastSettings;referenceTan:number;view:ReferenceView&{visibility:VisibilityGrid;eye:0|1}};
@@ -19,6 +20,7 @@ export async function loadSpatialFraming(request:typeof api=api){
 export function SpatialFraming(){
  const [geometry,setGeometry]=useState<Geometry|null>(null),[draft,setDraft]=useState<CastSettings|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[closed,setClosed]=useState(false);
  const finishing=useRef(false),finished=useRef(false);
+ const moveHandle=useRef<HTMLButtonElement>(null);
  const root=useRef<HTMLElement>(null),menu=useRef<HTMLElement>(null),[minimum,setMinimum]=useState({width:0,height:0,referenceTan:0});
  useEffect(()=>{const measure=()=>{const area=root.current?.getBoundingClientRect(),panel=menu.current?.getBoundingClientRect();if(area?.width&&area.height&&panel)setMinimum({width:(panel.width+32)/area.width,height:(panel.height+32)/area.height,referenceTan:geometry?.referenceTan??1});};measure();const observer=typeof ResizeObserver==='undefined'?null:new ResizeObserver(measure);if(menu.current)observer?.observe(menu.current);if(root.current)observer?.observe(root.current);window.addEventListener('resize',measure);return()=>{observer?.disconnect();window.removeEventListener('resize',measure);};},[geometry?.referenceTan]);
  const reference:ReferenceView={tanHalfHorizontal:geometry?.referenceTan??1,centerTanX:0,centerTanY:0,aspect:1};
@@ -60,9 +62,9 @@ export function SpatialFraming(){
  },[ready,geometry?.id,draft?.centerX,draft?.centerY,busy,closed]);
  if(closed)return null;
  return <main ref={root} className="cast-native-framing" aria-label={t('画幅调整')} inert={busy}>
-  {draft&&geometry&&ready&&<FramingEditor spatial limit={limit} minimumSize={minimum} settings={draft} view={reference} onChange={change} onError={message=>setError(t(message))}/>}
+  {draft&&geometry&&ready&&<FramingEditor spatial moveHandle={moveHandle} limit={limit} minimumSize={minimum} settings={draft} view={reference} onChange={change} onError={message=>setError(t(message))}/>}
   <section ref={menu} className="cast-native-framing-controls" style={{'--framing-menu-scale':framingMenuScale(reference.tanHalfHorizontal)} as React.CSSProperties}>
-   <h1>{t('画幅调整')}</h1><p>{t('框内即录制区域，拖动移动，拖动四角等比例缩放。')}</p>
+   <h1><button ref={moveHandle} className="cast-framing-move" aria-label={t('拖动调整录制位置')} title={t('拖动调整录制位置')} disabled={busy||!ready||!draft}><span>{t('画幅调整')}</span><IconArrowsMove size={22}/></button></h1><p>{t('框内即录制区域，拖动移动，拖动四角等比例缩放。')}</p>
    <div className="cast-native-framing-field"><span>{t('画面比例')}</span><Select label={t('画面比例')} disabled={busy||!draft} value={String(frameRatios.find(r=>Math.abs(r.value-aspect)<.004)?.value??aspect)} onChange={value=>{const ratio=Number(value),edge=Math.max(draft!.width,draft!.height);change(ratio>=1?{width:edge,height:Math.round(edge/ratio/2)*2}:{width:Math.round(edge*ratio/2)*2,height:edge});}} options={[
     ...(!frameRatios.some(r=>Math.abs(r.value-aspect)<.004)?[{value:String(aspect),label:t('自定义')}]:[]),
     ...frameRatios.map(r=>({value:String(r.value),label:r.label}))

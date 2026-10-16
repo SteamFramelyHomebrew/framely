@@ -8,9 +8,10 @@ import {t} from './i18n';
 import {FrameGesture,fitMinimumFrame,minimumFrameWidth,resizeFrameCentered,type MinimumFrame} from './cast-framing-gesture';
 import type {FrameLimiter} from './cast-region';
 
-export function FramingEditor({settings,view,onChange,onError,spatial=false,minimumSize={width:0,height:0},limit}:{settings:CastSettings;view:ReferenceView|null;onChange:(patch:Partial<CastSettings>)=>void;onError:(error:string)=>void;spatial?:boolean;minimumSize?:MinimumFrame;limit?:FrameLimiter}){
+export function FramingEditor({settings,view,onChange,onError,spatial=false,minimumSize={width:0,height:0},limit,moveHandle}:{settings:CastSettings;view:ReferenceView|null;onChange:(patch:Partial<CastSettings>)=>void;onError:(error:string)=>void;spatial?:boolean;minimumSize?:MinimumFrame;limit?:FrameLimiter;moveHandle?:React.RefObject<HTMLElement|null>}){
  const stage=useRef<HTMLDivElement>(null),box=useRef<HTMLDivElement>(null),zoom=useRef<HTMLInputElement>(null),readout=useRef<HTMLOutputElement>(null);
  const current=useRef<FrameRect>({x:0,y:0,width:1,height:1}),gesture=useRef(new FrameGesture()),pointer=useRef<number|null>(null),release=useRef<(id?:number)=>void>(()=>{});
+ const capture=useRef<HTMLElement|null>(null),external=useRef({down:(_e:PointerEvent)=>{},move:(_e:PointerEvent)=>{}});
  const aspect=settings.width/settings.height;
  const ratio=aspect/(view?.aspect??1),maxWidth=Math.min(1,ratio),minWidth=minimumFrameWidth(ratio,minimumSize,view?Math.tan(5*Math.PI/180)/view.tanHalfHorizontal:.1);
  function draw(rect:FrameRect){
@@ -23,12 +24,20 @@ export function FramingEditor({settings,view,onChange,onError,spatial=false,mini
  function commit(){if(view&&box.current?.style.visibility!=='hidden')onChange(settingsFromFrame(current.current,view));}
  useEffect(()=>{if(view){const old=frameFromSettings(settings,aspect,view),next=draw(fitMinimumFrame(old,ratio,minWidth));if(next&&(Math.abs(next.width-old.width)>1e-9||Math.abs(next.x-old.x)>1e-9||Math.abs(next.y-old.y)>1e-9))commit();}},[view?.tanHalfHorizontal,view?.centerTanX,view?.centerTanY,aspect,settings.horizontalFov,settings.centerX,settings.centerY,minWidth]);
  function scale(width:number){if(view)draw(resizeFrameCentered(current.current,width,ratio,minWidth));}
- function finish(id?:number){if(!gesture.current.finish(id))return;const captured=pointer.current;pointer.current=null;try{if(captured!==null&&box.current?.hasPointerCapture(captured))box.current.releasePointerCapture(captured);}catch{}commit();}
+ function finish(id?:number){if(!gesture.current.finish(id))return;const captured=pointer.current,target=capture.current;pointer.current=null;capture.current=null;target?.removeAttribute('data-dragging');try{if(captured!==null&&target?.hasPointerCapture(captured))target.releasePointerCapture(captured);}catch{}commit();}
  release.current=finish;
  useEffect(()=>{const up=(e:PointerEvent)=>release.current(e.pointerId),cancel=()=>release.current();document.addEventListener('pointerup',up,true);document.addEventListener('pointercancel',up,true);window.addEventListener('blur',cancel);window.addEventListener('framely.pointerRelease',cancel);return()=>{document.removeEventListener('pointerup',up,true);document.removeEventListener('pointercancel',up,true);window.removeEventListener('blur',cancel);window.removeEventListener('framely.pointerRelease',cancel);gesture.current.finish();};},[]);
- function down(e:React.PointerEvent<HTMLDivElement>){if(!view||e.button!==0)return;e.preventDefault();finish();gesture.current.begin(e.pointerId,e.clientX,e.clientY,current.current,(e.target as HTMLElement).closest<HTMLElement>('[data-corner]')?.dataset.corner??null);pointer.current=e.pointerId;try{e.currentTarget.setPointerCapture(e.pointerId);}catch{}}
- function move(e:React.PointerEvent<HTMLDivElement>){if(!gesture.current.active(e.pointerId))return;if(!(e.buttons&1)){finish(e.pointerId);return;}const bounds=stage.current?.getBoundingClientRect();if(!bounds||!view)return;const next=gesture.current.move(e.pointerId,e.clientX,e.clientY,e.buttons,bounds,ratio,minWidth);if(next)draw(next);
+ function begin(e:Pick<PointerEvent,'button'|'pointerId'|'clientX'|'clientY'|'preventDefault'>,target:HTMLElement,corner:string|null){if(!view||e.button!==0)return;e.preventDefault();finish();gesture.current.begin(e.pointerId,e.clientX,e.clientY,current.current,corner);pointer.current=e.pointerId;capture.current=target;target.setAttribute('data-dragging','');try{target.setPointerCapture(e.pointerId);}catch{}}
+ function down(e:React.PointerEvent<HTMLDivElement>){begin(e,e.currentTarget,(e.target as HTMLElement).closest<HTMLElement>('[data-corner]')?.dataset.corner??null);}
+ function move(e:Pick<PointerEvent,'pointerId'|'clientX'|'clientY'|'buttons'>){if(!gesture.current.active(e.pointerId))return;if(!(e.buttons&1)){finish(e.pointerId);return;}const bounds=stage.current?.getBoundingClientRect();if(!bounds||!view)return;const next=gesture.current.move(e.pointerId,e.clientX,e.clientY,e.buttons,bounds,ratio,minWidth);if(next)draw(next);
  }
+ external.current={down:e=>{if(moveHandle?.current)begin(e,moveHandle.current,null);},move};
+ useEffect(()=>{
+  const target=moveHandle?.current;if(!target)return;
+  const down=(e:PointerEvent)=>external.current.down(e),move=(e:PointerEvent)=>external.current.move(e),end=(e:PointerEvent)=>release.current(e.pointerId);
+  target.addEventListener('pointerdown',down);target.addEventListener('pointermove',move);target.addEventListener('lostpointercapture',end);
+  return()=>{target.removeEventListener('pointerdown',down);target.removeEventListener('pointermove',move);target.removeEventListener('lostpointercapture',end);release.current();};
+ },[moveHandle]);
  function end(e:React.PointerEvent<HTMLDivElement>){finish(e.pointerId);}
  function keyboard(e:React.KeyboardEvent<HTMLDivElement>){if(!view)return;const delta=e.shiftKey?.05:.01,r=current.current;const changes:Record<string,Partial<FrameRect>>={ArrowLeft:{x:r.x-delta},ArrowRight:{x:r.x+delta},ArrowUp:{y:r.y-delta},ArrowDown:{y:r.y+delta}};if(changes[e.key]){e.preventDefault();draw(fitFrame({...r,...changes[e.key]},aspect,view.aspect));commit();}}
  return <div className="cast-framing-editor">

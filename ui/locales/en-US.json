@@ -17,6 +17,7 @@
     "This container cannot be read; inspect warnings before reconciliation": "This container cannot be read; inspect warnings before reconciliation",
     "APK state is unknown; reconcile before changing the application": "APK state is unknown; reconcile before changing the application",
     "重置大小": "Reset size",
+    "拖动调整录制位置": "Drag to move recording area",
     "录制眼已改变，请重新打开画幅调整": "The recording eye has changed. Reopen frame adjustment.",
     "保留比例和分辨率，恢复居中有效画幅": "Keep the aspect ratio and resolution, and restore the centered valid frame.",
     "菜单尺寸超过当前可录制范围": "The menu is larger than the available recording area.",
