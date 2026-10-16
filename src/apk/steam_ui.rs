@@ -119,8 +119,9 @@ pub(super) fn configure(
         .map(|p| load_artwork_ownership(p.parent().context("Missing artwork directory")?))
         .transpose()?
         .unwrap_or(Value::Null);
+    let shortcut_icon = icon.map(shortcut_icon_file).transpose()?;
     let parameters = json!({"game":game,"previous":previous,"name":name,
-        "icon":icon,"launch":launch,"exe":executable,"image":image,"package":package,
+        "icon":shortcut_icon,"launch":launch,"exe":executable,"image":image,"package":package,
         "ownership":ownership,"legacy":legacy});
     let expression = format!(
         r#"(async()=>{{
@@ -195,6 +196,25 @@ fn validate_artwork_ownership(value: &Value) -> Result<()> {
     Ok(())
 }
 
+fn shortcut_icon_file(source: &Path) -> Result<PathBuf> {
+    let picture = image::open(source)?.thumbnail(256, 256).to_rgba8();
+    let mut icon = image::RgbaImage::new(256, 256);
+    image::imageops::overlay(
+        &mut icon,
+        &picture,
+        ((256 - picture.width()) / 2) as i64,
+        ((256 - picture.height()) / 2) as i64,
+    );
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(icon).write_to(&mut bytes, image::ImageFormat::Png)?;
+    let path = source
+        .parent()
+        .context("Missing icon directory")?
+        .join("steam-icon.png");
+    super::steam_shortcuts::write_owned(&path, &bytes.into_inner(), 0o600)?;
+    Ok(path)
+}
+
 fn load_artwork_ownership(dir: &Path) -> Result<Value> {
     let path = dir.join(".framely-artwork.json");
     let metadata = match fs::symlink_metadata(&path) {
@@ -254,7 +274,7 @@ pub(super) fn clear_artwork(app_id: u32, executable: &Path) -> Result<()> {
         sub?.unregister();
         const exe=details.strShortcutExe?.replace(/^"|"$/g,'').replace('/./','/');
         if(exe!==p.exe) throw Error('Shortcut target does not match owned APK');
-        for(const kind of [0,1,2,3,4]) await SteamClient.Apps.ClearCustomArtworkForApp(p.id,kind);
+        for(const kind of [0,1,2,3]) await SteamClient.Apps.ClearCustomArtworkForApp(p.id,kind);
         await SteamClient.Apps.SetShortcutIcon(p.id,'');
     }})()"#
     ))?;
@@ -264,6 +284,22 @@ pub(super) fn clear_artwork(app_id: u32, executable: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shortcut_icon_has_its_own_256px_file_and_preserves_source() {
+        let t = tempfile::tempdir().unwrap();
+        let source = t.path().join("icon.png");
+        image::RgbaImage::from_pixel(128, 64, image::Rgba([230, 30, 20, 255]))
+            .save(&source)
+            .unwrap();
+        let before = fs::read(&source).unwrap();
+        let path = shortcut_icon_file(&source).unwrap();
+        assert_eq!(path.file_name().unwrap(), "steam-icon.png");
+        let picture = image::open(path).unwrap().to_rgba8();
+        assert_eq!(picture.dimensions(), (256, 256));
+        assert_eq!(picture.get_pixel(0, 0).0[3], 0);
+        assert_eq!(picture.get_pixel(128, 128).0, [230, 30, 20, 255]);
+        assert_eq!(fs::read(source).unwrap(), before);
+    }
     #[test]
     fn steam_artwork_has_matching_aspect_ratios_and_never_crops_icon() {
         use base64::Engine;

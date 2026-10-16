@@ -44,13 +44,17 @@ async function(p, selectPalette) {
     };
     const line=(c,x,y,w,h)=>{c.fillStyle=palette.accent;rounded(c,x,y,w,h,h/2);c.fill();};
     const result=[];
-    for(const [kind,w,h] of [[0,600,900],[1,3840,1240],[2,1280,360],[3,920,430],[4,256,256]]){
+    // Only these four Steam custom-artwork enums are supported. A shortcut
+    // icon goes through SetShortcutIcon, never SetCustomArtworkForApp(type=4).
+    for(const [kind,w,h] of [[0,600,900],[1,3840,1240],[2,1280,360],[3,920,430]]){
         const image=canvas(w,h),c=image.getContext('2d');
         if(kind===0){base(c,w,h);pill(c,-205+offset,30,540,116);pill(c,206,-90+offset,425,98,true,.42);pill(c,-132,684,310,100);icon(c,315,676,490,-16,.5);icon(c,155,146,290);title(c,300,551,65,490,true);line(c,265,592,70,7);}
         if(kind===3){base(c,w,h);pill(c,-100+offset,-24,405,80);pill(c,700,-30+offset,355,100,true,.35);pill(c,692,350,350,104);pill(c,570,410,286,49,true,.55);icon(c,76,117,196);title(c,323,243,62,490);line(c,326,282,62,6);}
-        if(kind===1){base(c,w,h);pill(c,-520,-140,1410,240);pill(c,1630+offset*3,-40,1300,310,true,.43);pill(c,2040,940,1420,350);pill(c,1700,1150,1090,155,true,.5);pill(c,3220,140,960,240,true,.32);}
+        // Frame currently displays the hero at ~4.17:1 using object-fit:cover.
+        // Keep the main motifs within the central 75% height, rather than
+        // designing solely against the uncropped 3840x1240 export.
+        if(kind===1){base(c,w,h);pill(c,-520,-140,1410,240);pill(c,1650+offset*2,400,620,150,true,.43);pill(c,2540,680,720,190);pill(c,2140,780,520,100,true,.5);pill(c,3300,450,700,160,true,.32);}
         if(kind===2){icon(c,16,24,312);title(c,382,232,136,866);}
-        if(kind===4)icon(c,0,0,256);
         result.push({kind,data:image.toDataURL('image/png').split(',')[1],canvas:image});
     }
     return result;

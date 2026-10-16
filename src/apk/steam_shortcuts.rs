@@ -271,6 +271,7 @@ pub(super) fn unregister(home: &Path, r: &Record) -> Result<()> {
             "icon.png",
             "icon.webp",
             "icon.jpg",
+            "steam-icon.png",
             "lepton-show-flatscreen",
             ".framely-artwork.json",
         ] {
@@ -296,7 +297,7 @@ pub(super) fn parse_name(value: &Value) -> Result<Option<String>> {
     Ok((!name.is_empty()).then(|| name.to_owned()))
 }
 fn revision(a: &App, r: &Record) -> String {
-    let mut value = json!({"metadata":a.metadata,"showWindow":a.show_window,"artworkVersion":1});
+    let mut value = json!({"metadata":a.metadata,"showWindow":a.show_window,"artworkVersion":2});
     if let Some(name) = &r.steam_name {
         value["steamName"] = json!(name);
     }

@@ -10,8 +10,8 @@ window.runInstallReviewChecks=async()=>{
   const palette=selectPalette(sample.getContext('2d').getImageData(0,0,64,64).data,64,64);
   check(palette.selected==='#ff6999'&&palette.accent==='#cc547a','Wrong 80% palette');
   const a=await renderArtwork(p,selectPalette);
-  const expected={0:[600,900],1:[3840,1240],2:[1280,360],3:[920,430],4:[256,256]};
-  check(a.length===5,'Wrong image count');
+  const expected={0:[600,900],1:[3840,1240],2:[1280,360],3:[920,430]};
+  check(a.length===4&&!a.some(v=>v.kind===4),'Only four supported custom-artwork types may be rendered');
   for(const v of a){check(v.canvas.width===expected[v.kind][0]&&v.canvas.height===expected[v.kind][1],'Wrong artwork dimensions');check(v.data.length>100,'Missing PNG');}
   const logo=a.find(v=>v.kind===2).canvas;
   check(logo.getContext('2d').getImageData(0,0,1,1).data[3]===0,'Logo lost alpha');
@@ -28,8 +28,15 @@ window.runInstallReviewChecks=async()=>{
   check(accentPixels>1000,'Main ornaments do not preserve 80% source color');
   const b=await renderArtwork(p,selectPalette);check(a.every((v,i)=>v.data===b[i].data),'Rendering is not deterministic');
   const long=await renderArtwork({...p,name:'极长的应用名称 & <script>window.bad=true</script> '.repeat(3)},selectPalette);
-  check(long.length===5&&!window.bad,'Unsafe title rendering');
-  document.getElementById('root').textContent='Steam artwork renderer passed: 5 PNGs, CJK title, alpha, centering, palette and deterministic output';
+  check(long.length===4&&!window.bad,'Unsafe title rendering');
+  const hero=a.find(v=>v.kind===1).canvas;
+  const cropped=document.createElement('canvas');cropped.width=1280;cropped.height=307;
+  const sourceHeight=307/(1280/3840);
+  cropped.getContext('2d').drawImage(hero,0,(1240-sourceHeight)/2,3840,sourceHeight,0,0,1280,307);
+  const visible=cropped.getContext('2d').getImageData(0,0,1280,307).data;let visibleAccent=0;
+  for(let i=0;i<visible.length;i+=4)if(visible[i]===204&&visible[i+1]===84&&visible[i+2]===122)visibleAccent++;
+  check(visibleAccent>6000,'Main hero motif is lost under Frame cover cropping');
+  document.getElementById('root').textContent='Steam artwork renderer passed: 4 artwork types, CJK title, alpha, centering, palette, deterministic output and real Frame hero crop';
   // Let the existing probe observe a completed frame before announcing success.
   await new Promise(r=>setTimeout(r,250));console.log('FRAMELY_BRIDGE_PASS');
  }catch(e){console.error('FRAMELY_BRIDGE_FAIL '+e);}
