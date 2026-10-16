@@ -10,7 +10,11 @@ import sys
 import tarfile
 import tempfile
 import urllib.parse
-import urllib.request
+import importlib.util
+
+_spec = importlib.util.spec_from_file_location('framely_bootstrap', pathlib.Path(__file__).with_name('bootstrap.py'))
+_network = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_network)
 
 MAX_ARCHIVE = 512 * 1024 * 1024
 MAX_EXPANDED = 1024 * 1024 * 1024
@@ -56,25 +60,12 @@ def validate(root, identity):
                 raise ValueError('Incomplete FrameBridge libraries: ' + abi)
 
 
-class HTTPSRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if urllib.parse.urlparse(newurl).scheme != 'https':
-            raise ValueError('HTTPS redirect downgrade rejected')
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
 def download(requirement, destination):
     url = requirement['url']
     if urllib.parse.urlparse(url).scheme != 'https':
         raise ValueError('q2f URL must use HTTPS')
-    request = urllib.request.Request(url, headers={'User-Agent': 'Framely-q2f'})
-    with urllib.request.build_opener(HTTPSRedirect()).open(request, timeout=90) as response, destination.open('xb') as output:
-        total = 0
-        while block := response.read(256 * 1024):
-            total += len(block)
-            if total > requirement['size'] or total > MAX_ARCHIVE:
-                raise ValueError('q2f download exceeds declared size')
-            output.write(block)
+    _network.download(url, destination, min(requirement['size'], MAX_ARCHIVE), expected_size=requirement['size'])
+    total = destination.stat().st_size
     if total != requirement['size'] or digest(destination) != requirement['sha256']:
         raise ValueError('q2f archive checksum mismatch')
 

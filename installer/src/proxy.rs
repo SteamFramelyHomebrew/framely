@@ -8,6 +8,10 @@ use url::Url;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct DownloadSettings {
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub github_fallback_attempt: bool,
+    pub github_auto_fallback: bool,
     pub system: bool,
     pub http: String,
     pub github: String,
@@ -15,6 +19,8 @@ pub struct DownloadSettings {
 impl Default for DownloadSettings {
     fn default() -> Self {
         Self {
+            github_fallback_attempt: false,
+            github_auto_fallback: true,
             system: true,
             http: String::new(),
             github: String::new(),
@@ -46,6 +52,7 @@ impl DownloadSettings {
         Ok(())
     }
     pub fn route(&self, url: &Url) -> Url {
+        if self.github_fallback_attempt && !crate::github_fallback::eligible(url.as_str(), &[]) { return url.clone(); }
         if !self.github.is_empty()
             && matches!(
                 url.host_str(),
@@ -693,6 +700,15 @@ mod download_settings_tests {
         settings.http = "http://127.0.0.1:7890".into();
         settings.validate().unwrap();
         assert!(settings.proxy_for(&target).unwrap().is_some());
+    }
+    #[test]
+    fn github_fallback_default_and_sensitive_redirect_policy() {
+        let legacy:DownloadSettings=serde_json::from_str("{}").unwrap();assert!(legacy.github_auto_fallback);
+        let disabled:DownloadSettings=serde_json::from_str("{\"githubAutoFallback\":false}").unwrap();assert!(!disabled.github_auto_fallback);
+        let fallback=DownloadSettings {github:crate::github_fallback::PREFIX.into(),github_fallback_attempt:true,..Default::default()};
+        let signed=Url::parse("https://release-assets.githubusercontent.com/a?X-Amz-Signature=secret").unwrap();
+        assert_eq!(fallback.route(&signed),signed);
+        assert!(fallback.route(&Url::parse("https://github.com/a/b/releases").unwrap()).as_str().starts_with(crate::github_fallback::PREFIX));
     }
     #[test]
     fn github_routes_only_exact_hosts_and_does_not_double_wrap_redirects() {

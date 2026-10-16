@@ -368,7 +368,8 @@ pub fn operate(
         transfer.completed = super::BOOTSTRAP.len() as u64;
         progress(transfer);
         let mut args = format!(
-            "sudo -S -p '' -k -- python3 -u {} {} --yes --progress-json --repo {} --user {}",
+            "sudo -S -p '' -k -- env FRAMELY_GITHUB_AUTO_FALLBACK={} python3 -u {} {} --yes --progress-json --repo {} --user {}",
+            if crate::proxy::current().github_auto_fallback { "1" } else { "0" },
             quote(&script),
             quote(action),
             quote(repo),

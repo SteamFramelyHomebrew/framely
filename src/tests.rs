@@ -1396,6 +1396,17 @@ fn proxy_settings_persist_and_reject_invalid_values() {
 }
 
 #[test]
+fn github_fallback_defaults_on_and_opt_out_persists() {
+    let legacy: ProxySettings = serde_json::from_value(json!({"http":"","github":""})).unwrap();
+    assert!(legacy.github_auto_fallback);
+    let root = tempfile::tempdir().unwrap();
+    let mut core = accepted_service(root.path(), 1000).unwrap();
+    core.handle("proxy.save", json!({"http":"","github":"","githubAutoFallback":false})).unwrap();
+    assert!(!accepted_service(root.path(), 1000).unwrap().db.proxy.github_auto_fallback);
+    assert!(core.handle("proxy.save", json!({"githubAutoFallback":"false"})).is_err());
+}
+
+#[test]
 fn first_launch_agreement_gates_operations_and_persists_consent() {
     let root = tempfile::tempdir().unwrap();
     let mut core = Service::load(root.path(), 1000).unwrap();

@@ -291,6 +291,8 @@ impl Updater {
             cancel.check()?;
             let result = resolve_release(&source, channel, &cancel, &mut |url, limit| {
                 crate::model::validate_url(url, false)?;
+                let headers=[("User-Agent", "Framely"),("Accept", "application/vnd.github+json")];
+                crate::http::with_github_fallback(url,&headers,&proxy,|proxy| {
                 let response = crate::http::get_with_proxy_cancel(
                     url,
                     false,
@@ -303,6 +305,7 @@ impl Updater {
                     &cancel,
                 )?;
                 crate::http::read_cancel(response, limit, &cancel)
+                })
             })?;
             if let Some((release, bytes, version)) = result {
                 let info = json!({"release":release,"version":version,"channel":channel});
@@ -348,7 +351,8 @@ impl Updater {
                 progress(value);
                 Ok(())
             };
-            let result = (|| -> Result<Value> {
+            let result = crate::http::with_github_fallback(&release.url, &[], &proxy, |proxy| (|| -> Result<Value> {
+                cancel.check()?;
                 report(json!({"phase":"downloading","received":0,"total":release.size,"version":release.version}))?;
                 let response = crate::http::get_download_with_proxy(&release.url, false, Duration::from_secs(120), &[], &proxy)?;
                 if let Some(length) = response.header("Content-Length") {
@@ -374,16 +378,16 @@ impl Updater {
                 }
                 output.sync_all()?;
                 drop(output);
-                ensure!(received == release.size, "下载未完成");
+                if received != release.size { return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "下载未完成").into()); }
                 verify_archive(&archive, &release, &cancel, report)?;
-                fs::write(stage.join("descriptor.json"), descriptor)?;
+                fs::write(stage.join("descriptor.json"), &descriptor)?;
                 cancel.commit(|| {
                     report(json!({"phase":"ready","version":release.version,"received":received,"verified":received,"total":release.size}))?;
-                    *updater.prepared.lock().unwrap() = Some((stage.clone(), release.clone(), source_url));
+                    *updater.prepared.lock().unwrap() = Some((stage.clone(), release.clone(), source_url.clone()));
                     Ok(())
                 })?;
                 Ok(json!(release))
-            })();
+            })());
             if let Err(e) = &result {
                 let _ = fs::remove_dir_all(stage);
                 let _ = write_status(&state_path, json!({"phase":"failed","error":e.to_string()}));

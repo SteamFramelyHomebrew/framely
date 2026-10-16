@@ -211,6 +211,12 @@ pub fn stage_request_proxy(
     proxy: &ProxySettings,
     mut progress: impl FnMut(u64, Option<u64>) -> Result<()>,
 ) -> Result<Arc<Staged>> {
+    if let Some(url) = v["url"].as_str() {
+        return crate::http::with_github_fallback(url, &[], proxy, |route| stage_request_once(v, route, &mut progress));
+    }
+    stage_request_once(v, proxy, &mut progress)
+}
+fn stage_request_once(v: &serde_json::Value, proxy: &ProxySettings, progress: &mut dyn FnMut(u64, Option<u64>) -> Result<()>) -> Result<Arc<Staged>> {
     if let Some(encoded) = v.get("package").and_then(|v| v.as_str()) {
         let staged = Staged::create()?;
         let mut file = fs::OpenOptions::new().write(true).open(&staged.path)?;
@@ -249,7 +255,7 @@ pub fn stage_request_proxy(
         received += n as u64;
         progress(received, total)?;
     }
-    ensure!(total.is_none_or(|n| n == received), "Truncated download");
+    if total.is_some_and(|n| n != received) { return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "Truncated download").into()); }
     file.sync_all()?;
     let staged = staged.seal()?;
     if let Some(expected) = v["sha256"].as_str() {
@@ -413,6 +419,12 @@ pub fn from_request_proxy(
     proxy: &ProxySettings,
     mut progress: impl FnMut(u64, Option<u64>) -> Result<()>,
 ) -> Result<Vec<u8>> {
+    if let Some(url) = v["url"].as_str() {
+        return crate::http::with_github_fallback(url, &[], proxy, |route| from_request_once(v, route, &mut progress));
+    }
+    from_request_once(v, proxy, &mut progress)
+}
+fn from_request_once(v: &serde_json::Value, proxy: &ProxySettings, progress: &mut dyn FnMut(u64, Option<u64>) -> Result<()>) -> Result<Vec<u8>> {
     if let Some(s) = v.get("package").and_then(|v| v.as_str()) {
         let bytes = STANDARD.decode(s)?;
         progress(bytes.len() as u64, Some(bytes.len() as u64))?;
@@ -444,10 +456,7 @@ pub fn from_request_proxy(
         bytes.extend_from_slice(&buffer[..n]);
         progress(bytes.len() as u64, total)?;
     }
-    ensure!(
-        total.is_none_or(|t| t == bytes.len() as u64),
-        "Truncated download"
-    );
+    if total.is_some_and(|n| n != bytes.len() as u64) { return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "Truncated download").into()); }
     if let Some(expected) = v["sha256"].as_str() {
         ensure!(digest(&bytes) == expected, "Download SHA256 mismatch");
     }

@@ -1642,8 +1642,8 @@ impl Service {
                 config.http = config.http.trim().to_owned();
                 config.github = config.github.trim().trim_end_matches('/').to_owned();
                 config.validate()?;
-                self.db.proxy = config;
-                self.save()?;
+                let previous = std::mem::replace(&mut self.db.proxy, config);
+                if let Err(error) = self.save() { self.db.proxy = previous; return Err(error); }
                 Ok(json!(true))
             }
             "network.save" | "network.password.setup" => {

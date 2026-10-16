@@ -369,12 +369,16 @@ pub fn fetch_cancel(
         ensure!(v.len() <= 2048 && !v.contains(['\r', '\n']), "无效更新时间");
         headers.push(("If-Modified-Since", v));
     }
-    let response = crate::http::get_with_proxy(
+    if proxy.github_auto_fallback {
+        return crate::http::with_github_fallback(url, &headers, proxy, |route| fetch_cancel(url, etag, modified, route, cancel));
+    }
+    let response = crate::http::get_with_proxy_cancel(
         url,
         false,
         std::time::Duration::from_secs(20),
         &headers,
         proxy,
+        cancel,
     )?;
     if response.status() == 304 {
         return Ok((None, None, None));

@@ -21,7 +21,13 @@ if [[ $installer_cgroup =~ /framely(-session|-ui-recovery|-backend-[^/]+|-plugin
   worker_args=("$steam_user")
   if $repair; then worker_args=(--repair "$steam_user"); fi
   install_unit="framely-install-$$-$(date +%s)"
+  worker_environment=()
+  if [[ -n ${FRAMELY_GITHUB_AUTO_FALLBACK+x} ]]; then
+    [[ $FRAMELY_GITHUB_AUTO_FALLBACK == 0 || $FRAMELY_GITHUB_AUTO_FALLBACK == 1 ]] || { echo 'Invalid automatic GitHub fallback preference.' >&2; exit 1; }
+    worker_environment+=("--setenv=FRAMELY_GITHUB_AUTO_FALLBACK=$FRAMELY_GITHUB_AUTO_FALLBACK")
+  fi
   systemd-run --quiet --collect --no-block --unit="$install_unit" \
+    "${worker_environment[@]}" \
     --property=Type=exec --property=StandardInput=null \
     --property=StandardOutput=journal --property=StandardError=journal \
     /usr/bin/bash "$base/install.sh" "${worker_args[@]}"

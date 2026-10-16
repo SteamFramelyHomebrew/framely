@@ -1,5 +1,6 @@
 //! Optional Quest APK conversion. The runtime is versioned separately from Framely.
 use super::{apk_metadata, init, review, space, Cancellation, Metadata, MUTATION};
+use crate::model::ProxySettings;
 use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
@@ -251,6 +252,7 @@ pub(super) fn convert(
     ticket: &str,
     cancel: &Cancellation,
     progress: impl Fn(Value) -> Result<()>,
+    proxy: &ProxySettings,
 ) -> Result<Value> {
     let _guard = MUTATION.lock().unwrap();
     cancel.check()?;
@@ -285,6 +287,9 @@ pub(super) fn convert(
     let log = storage.join("logs").join(format!("q2f-{ticket}.log"));
     let mut prepare = Command::new("python3");
     prepare.arg(tool_path()?).arg(&descriptor).arg(&storage);
+    prepare.env("FRAMELY_GITHUB_AUTO_FALLBACK", if proxy.github_auto_fallback {"1"} else {"0"});
+    prepare.env("FRAMELY_GITHUB_PROXY", if proxy.github_enabled {&proxy.github} else {""});
+    prepare.env("FRAMELY_HTTP_PROXY", if proxy.http_enabled {&proxy.http} else {""});
     run(prepare, &log, cancel)?;
     let runtime = PathBuf::from(
         fs::read_to_string(&log)?

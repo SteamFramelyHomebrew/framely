@@ -1,4 +1,6 @@
 pub mod discovery;
+#[path = "../../src/http/github_fallback.rs"]
+pub(crate) mod github_fallback;
 pub mod instance;
 pub mod maintenance;
 pub mod progress;

@@ -62,12 +62,12 @@ pub fn copy(
         ensure!(value.completed + n as u64 <= total, "传输超过声明长度");
         writer.write_all(&block[..n])?;
         value.completed += n as u64;
-        if last.elapsed() >= Duration::from_millis(200) {
+        if last.elapsed() >= Duration::from_millis(200) && value.completed < total {
             report(value.clone());
             last = Instant::now();
         }
     }
-    ensure!(value.completed == total, "传输未完成");
+    if value.completed != total { return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "传输未完成").into()); }
     writer.flush()?;
     report(value);
     Ok(())

@@ -751,9 +751,13 @@ impl NetworkPanel {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProxySettings {
+    #[serde(skip)]
+    pub(crate) github_fallback_attempt: bool,
+    #[serde(default = "proxy_fallback_default")]
+    pub github_auto_fallback: bool,
     #[serde(default)]
     pub http_enabled: bool,
     #[serde(default)]
@@ -762,6 +766,10 @@ pub struct ProxySettings {
     pub http: String,
     #[serde(default)]
     pub github: String,
+}
+pub fn proxy_fallback_default() -> bool { true }
+impl Default for ProxySettings {
+    fn default() -> Self { Self { http_enabled:false, github_enabled:false, http:String::new(), github:String::new(), github_auto_fallback:true, github_fallback_attempt:false } }
 }
 impl ProxySettings {
     pub fn validate(&self) -> Result<()> {

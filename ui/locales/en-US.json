@@ -3,6 +3,8 @@
   "locale": "en-US",
   "name": "English",
   "messages": {
+    "GitHub 连接失败时自动使用 gh-proxy.com": "Automatically try gh-proxy.com when GitHub cannot be reached",
+    "公开 GitHub 请求在网络失败后将经过第三方代理，最多尝试一次，仍保留下载校验。": "After a network failure, public GitHub requests go through a third-party proxy once. Download verification remains enabled.",
     "显示录制指示器": "Show recording indicator",
     "关闭后仅隐藏右上角录制提示，不会停止录制。": "Hides only the recording indicator in the upper-right corner; recording continues.",
     "安装失败，本次新建的容器已清理：{0}": "Installation failed; the newly created container was cleaned up: {0}",

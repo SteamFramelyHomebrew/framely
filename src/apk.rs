@@ -2,6 +2,7 @@
 use crate::{
     apk_metadata::{self, Metadata},
     jobs::Cancellation,
+    model::ProxySettings,
 };
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -2789,8 +2790,9 @@ pub fn q2f_convert(
     ticket: &str,
     cancel: &Cancellation,
     progress: impl Fn(Value) -> Result<()>,
+    proxy: &ProxySettings,
 ) -> Result<Value> {
-    q2f::convert(home, ticket, cancel, progress)
+    q2f::convert(home, ticket, cancel, progress, proxy)
 }
 pub fn q2f_status(home: &Path) -> Result<Value> {
     q2f::status(home)

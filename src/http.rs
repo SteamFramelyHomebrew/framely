@@ -1,5 +1,14 @@
 use anyhow::{bail, ensure, Context, Result};
 use std::time::Duration;
+pub(crate) mod github_fallback;
+
+pub(crate) fn with_github_fallback<T>(initial: &str, headers: &[(&str, &str)], proxy: &crate::model::ProxySettings, mut attempt: impl FnMut(&crate::model::ProxySettings) -> Result<T>) -> Result<T> {
+    github_fallback::run(proxy.github_auto_fallback, initial, headers, |fallback| {
+        let mut route=proxy.clone();route.github_auto_fallback=false;
+        if fallback {route.github_enabled=true;route.github=github_fallback::PREFIX.into();route.github_fallback_attempt=true;}
+        attempt(&route)
+    })
+}
 
 /// Follow at most five redirects, validating each target before requesting it.
 /// HTTPS can never be downgraded; HTTP requires explicit source opt-in.
@@ -117,6 +126,9 @@ pub fn get_with_proxy_cancel(
     proxy: &crate::model::ProxySettings,
     cancel: &crate::jobs::Cancellation,
 ) -> Result<ureq::Response> {
+    if proxy.github_auto_fallback {
+        return with_github_fallback(initial, headers, proxy, |route| get_with_proxy_cancel(initial, allow_http, timeout, headers, route, cancel));
+    }
     let initial = initial.to_owned();
     let proxy = proxy.clone();
     let headers: Vec<_> = headers
@@ -140,6 +152,9 @@ pub fn get_download_with_proxy(
     headers: &[(&str, &str)],
     proxy: &crate::model::ProxySettings,
 ) -> Result<ureq::Response> {
+    if proxy.github_auto_fallback {
+        return with_github_fallback(initial, headers, proxy, |route| get_download_with_proxy(initial, allow_http, idle_timeout, headers, route));
+    }
     let initial = initial.to_owned();
     let proxy = proxy.clone();
     let headers: Vec<_> = headers
@@ -194,7 +209,11 @@ fn get_blocking(
     for hop in 0..=5 {
         cancel.check()?;
         let routed = routed_url(&current, proxy);
-        let mut request = agent.get(&routed);
+        #[cfg(test)]
+        let transport_url = github_fallback::test_url(&routed);
+        #[cfg(not(test))]
+        let transport_url = routed.clone();
+        let mut request = agent.get(&transport_url);
         for (key, value) in headers {
             request = request.set(key, value);
         }
@@ -249,11 +268,9 @@ pub fn read_cancel(
 }
 
 fn routed_url(url: &url::Url, proxy: &crate::model::ProxySettings) -> String {
+    if proxy.github_fallback_attempt && !github_fallback::eligible(url.as_str(), &[]) { return url.to_string(); }
     let host = url.host_str().unwrap_or("");
-    let github = host == "github.com"
-        || host.ends_with(".github.com")
-        || host == "githubusercontent.com"
-        || host.ends_with(".githubusercontent.com");
+    let github = github_fallback::github_host(host);
     if github
         && proxy.github_enabled
         && !url
@@ -269,6 +286,17 @@ fn routed_url(url: &url::Url, proxy: &crate::model::ProxySettings) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn github_fallback_restarts_a_truncated_plugin_download_from_zero() {
+        let (target,server)=github_fallback::local_truncated_server();
+        let source=format!("https://github.com/framely-test/{}/asset",rand::random::<u64>());
+        let _routes=github_fallback::TestRoutes::new(vec![(source.clone(),target.clone()),(format!("{}/{}",github_fallback::PREFIX,source),target)]);
+        let mut progress=vec![];
+        let staged=crate::package::stage_request_proxy(&serde_json::json!({"url":source}),&Default::default(),|received,_|{progress.push(received);Ok(())}).unwrap();
+        assert_eq!(std::fs::read(&staged.path).unwrap(),b"new-data");
+        assert!(progress.iter().filter(|&&received| received==0).count()>=2);
+        server.join().unwrap();
+    }
     #[test]
     fn download_progress_outlives_idle_timeout() {
         use std::{
@@ -441,6 +469,8 @@ mod proxy_tests {
     #[test]
     fn proxy_routing_and_validation() {
         let proxy = ProxySettings {
+            github_auto_fallback: true,
+            github_fallback_attempt: false,
             http_enabled: false,
             github_enabled: true,
             http: String::new(),
@@ -493,6 +523,7 @@ mod proxy_tests {
             github_enabled: false,
             http: format!("http://{}", server.server_addr()),
             github: String::new(),
+            ..Default::default()
         };
         let worker = std::thread::spawn(move || {
             let request = server
@@ -550,6 +581,7 @@ mod proxy_tests {
             github_enabled: true,
             http: String::new(),
             github: format!("http://{}", server.server_addr()),
+            ..Default::default()
         };
         let worker = std::thread::spawn(move || {
             let request = server

@@ -25,6 +25,8 @@ Plugin windows use the same SteamVR move, resize, keyboard and close controls, w
 
 Settings provides language, network panel and proxy configuration. HTTP and GitHub proxies have independent switches; saving an address does not automatically enable it.
 
+**Automatically try gh-proxy.com when GitHub cannot be reached** is enabled by default and can be disabled separately. Framely first uses the existing direct/manual proxy route, then retries eligible public GitHub network failures once through this third-party service. Authentication-bearing requests, signed URLs, missing resources and failed checksum verification are not routed automatically. A truncated download restarts from zero; package verification remains required. Non-GitHub requests are unchanged.
+
 Safe mode pauses third-party plugins for troubleshooting; leave it after resolving the problem. Settings → About shows the device version and terms; Settings → Updates manages updates. Revoking consent disables all plugins; accepting again does not automatically re-enable them.
 
 In Settings → Updates, select the Stable or Testing update channel and check for updates. Choose **Download and install**, then confirm once: Framely downloads and verifies the release and automatically starts installation. Download and verification are displayed as separate stages, with byte progress for each. Download or verification failure stops installation and displays an error. Plugins and data remain; the Framely interface briefly closes and restarts.

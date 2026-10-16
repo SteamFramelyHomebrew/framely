@@ -14,6 +14,10 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
+import socket
+import ssl
+import http.client
 
 DEFAULT_REPO = 'SteamFramelyHomebrew/framely'
 MAX_ARCHIVE = 2 * 1024**3
@@ -33,29 +37,136 @@ class HTTPSRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def fetch(url):
+GITHUB_HOSTS = {'github.com', 'api.github.com', 'raw.githubusercontent.com',
+                'objects.githubusercontent.com', 'release-assets.githubusercontent.com'}
+GITHUB_FALLBACK = 'https://gh-proxy.com/'
+
+
+def device_proxy_settings():
+    try:
+        with open('/var/lib/framely/state.json', encoding='utf-8') as state:
+            return json.load(state).get('proxy', {})
+    except (OSError, ValueError):
+        return {}
+
+
+def fallback_enabled():
+    if 'FRAMELY_GITHUB_AUTO_FALLBACK' in os.environ:
+        return os.environ['FRAMELY_GITHUB_AUTO_FALLBACK'] != '0'
+    return device_proxy_settings().get('githubAutoFallback', True)
+
+
+def public_github(url):
+    parsed = urllib.parse.urlsplit(url)
+    return (parsed.scheme == 'https' and parsed.hostname in GITHUB_HOSTS
+            and parsed.port in (None, 443) and not parsed.username and not parsed.password
+            and not parsed.fragment and all(key in ('page', 'per_page') and value.isascii() and value.isdigit() for key, value in
+                urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)))
+
+
+def retryable(error):
+    if isinstance(error, (ssl.SSLCertVerificationError, ssl.CertificateError)):
+        return False
+    if isinstance(error, urllib.error.HTTPError):
+        return (error.code in (408, 429) or 500 <= error.code <= 599
+                or error.code == 403 and (error.headers.get('X-RateLimit-Remaining') == '0'
+                    or error.headers.get('Retry-After') is not None))
+    if isinstance(error, urllib.error.URLError):
+        return retryable(error.reason)
+    return isinstance(error, (socket.gaierror, TimeoutError, ConnectionError,
+                              http.client.IncompleteRead, http.client.RemoteDisconnected))
+
+
+def network_diagnostic(error):
+    # HTTPError and URLError strings may contain signed redirect URLs.
+    if isinstance(error, urllib.error.HTTPError):
+        return 'HTTP ' + str(error.code)
+    if isinstance(error, urllib.error.URLError):
+        return network_diagnostic(error.reason)
+    return type(error).__name__
+
+
+def github_attempt(url, operation, enabled=None):
+    try:
+        return operation(False)
+    except Exception as primary:
+        if not (fallback_enabled() if enabled is None else enabled) or not public_github(url) or not retryable(primary):
+            raise
+        print('GitHub connection failed; trying gh-proxy.com once', file=sys.stderr, flush=True)
+        try:
+            return operation(True)
+        except Exception as secondary:
+            raise RuntimeError('GitHub primary route failed: ' + network_diagnostic(primary)
+                + '; gh-proxy.com fallback failed: ' + network_diagnostic(secondary)) from None
+
+
+def fetch_once(url, fallback=False):
     if urllib.parse.urlparse(url).scheme != 'https':
         raise ValueError('HTTPS is required')
-    return urllib.request.build_opener(HTTPSRedirect()).open(
+    settings = device_proxy_settings()
+    manual = os.environ.get('FRAMELY_GITHUB_PROXY', settings.get('github', '') if settings.get('githubEnabled') else '').strip().rstrip('/')
+    if fallback:
+        url = GITHUB_FALLBACK + url
+    elif manual and public_github(url):
+        if urllib.parse.urlsplit(manual).scheme != 'https':
+            raise ValueError('GitHub proxy must use HTTPS')
+        url = manual + '/' + url
+    handlers = [HTTPSRedirect()]
+    if 'FRAMELY_HTTP_PROXY' in os.environ or settings.get('httpEnabled'):
+        proxy = os.environ.get('FRAMELY_HTTP_PROXY', settings.get('http', ''))
+        handlers.append(urllib.request.ProxyHandler({'http': proxy, 'https': proxy} if proxy else {}))
+    return urllib.request.build_opener(*handlers).open(
         urllib.request.Request(url, headers={'User-Agent': 'Framely-Installer', 'Accept': 'application/vnd.github+json'}), timeout=60)
 
 
-def download(url, destination, limit, progress=None):
-    with fetch(url) as response, open(destination, 'xb') as output:
-        size = 0
-        reported_at = time.monotonic()
-        if progress:
-            progress(0)
-        while block := response.read(256 * 1024):
-            size += len(block)
-            if size > limit:
-                raise ValueError('Download exceeds size limit')
-            output.write(block)
-            if progress and time.monotonic() - reported_at >= 0.2:
+def fetch(url):
+    return github_attempt(url, lambda fallback: fetch_once(url, fallback))
+
+
+def read_metadata(url, limit):
+    def attempt(fallback):
+        with fetch_once(url, fallback) as response:
+            data = response.read(limit + 1)
+            if len(data) > limit:
+                raise ValueError('Release metadata too large')
+            length = response.headers.get('Content-Length')
+            if length is not None and len(data) != int(length):
+                raise http.client.IncompleteRead(b'', max(0, int(length) - len(data)))
+            return data
+    return github_attempt(url, attempt)
+
+
+def download(url, destination, limit, progress=None, expected_size=None):
+    identity = None
+    def attempt(fallback):
+        nonlocal identity
+        with fetch_once(url, fallback) as response, open(destination, 'r+b' if identity else 'xb') as output:
+            metadata = os.fstat(output.fileno())
+            current = (metadata.st_dev, metadata.st_ino)
+            if identity is not None and identity != current:
+                raise ValueError('Download temporary file identity changed')
+            identity = current
+            if fallback:
+                output.truncate(0)
+            size = 0
+            reported_at = time.monotonic()
+            if progress:
+                progress(0)
+            while block := response.read(256 * 1024):
+                size += len(block)
+                if size > limit:
+                    raise ValueError('Download exceeds size limit')
+                output.write(block)
+                if progress and time.monotonic() - reported_at >= 0.2 and (expected_size is None or size < expected_size):
+                    progress(size)
+                    reported_at = time.monotonic()
+            length = response.headers.get('Content-Length')
+            expected = expected_size if expected_size is not None else int(length) if length is not None else None
+            if expected is not None and size != expected:
+                raise http.client.IncompleteRead(b'', max(0, expected - size))
+            if progress:
                 progress(size)
-                reported_at = time.monotonic()
-        if progress:
-            progress(size)
+    return github_attempt(url, attempt)
 
 
 def verify_archive(archive, checksums):
@@ -274,10 +385,7 @@ def main(argv=None):
                 parser.error('--archive and --checksums must be provided together')
             if not args.archive:
                 endpoint = 'latest' if not args.version else 'tags/' + urllib.parse.quote(args.version, safe='')
-                with fetch(f'https://api.github.com/repos/{args.repo}/releases/{endpoint}') as response:
-                    metadata = response.read(4 * 1024**2 + 1)
-                if len(metadata) > 4 * 1024**2:
-                    raise ValueError('Release metadata too large')
+                metadata = read_metadata(f'https://api.github.com/repos/{args.repo}/releases/{endpoint}', 4 * 1024**2)
                 release = json.loads(metadata)
                 assets = {asset['name']: asset for asset in release['assets']}
                 package = select_package(assets, args.action)

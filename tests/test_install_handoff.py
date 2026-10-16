@@ -5,11 +5,17 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).parents[1]
 
 
 class InstallHandoffTests(unittest.TestCase):
+    def test_auto_proxy_preference_survives_service_handoff(self):
+        with patch.dict(os.environ, {'FRAMELY_GITHUB_AUTO_FALLBACK':'0'}):
+            result, args, _ = self.run_handoff('0::/system.slice/framely-session.service')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--setenv=FRAMELY_GITHUB_AUTO_FALLBACK=0', args)
     def run_handoff(self, cgroup, repair=False, launch_status=0):
         source = (ROOT / 'packaging/install.sh').read_text()
         block = source.split('# A terminal opened by Framely', 1)[1].split('cd "$base"', 1)[0]

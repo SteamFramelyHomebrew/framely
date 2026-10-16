@@ -88,4 +88,6 @@ cargo run --manifest-path installer/Cargo.toml --locked --no-default-features --
 
 ### 代理设置
 
+自动 GitHub 代理默认开启，可单独关闭。公开 GitHub 请求出现符合条件的网络故障后，安装器通过 `https://gh-proxy.com` 最多重试一次，继续沿用 HTTP/系统代理及校验保护；半截下载会从零重新开始。本次开关状态会传给设备侧安装引擎，不改写 Frame 的持久设置。独立安装脚本默认开启，可用 `FRAMELY_GITHUB_AUTO_FALLBACK=0` 禁用。证书错误、普通权限或资源不存在错误、带认证或签名参数的地址以及校验失败不触发兜底。
+
 **设置**页控制安装器电脑的下载。默认启用系统代理；填写 HTTP/SOCKS 代理后优先使用指定地址，留空则遵循系统代理开关。可选的 HTTPS GitHub 代理以 `代理前缀/原始 URL` 转发 GitHub API 和资源请求。设置在本机保存，后续检查版本和下载时生效，不更改 SSH 或 Frame 的设置。保存会清除版本选择，下次检查版本使用新配置；包校验继续启用。

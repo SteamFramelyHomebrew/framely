@@ -88,4 +88,6 @@ The archive includes bounded recent service/plugin/CEF logs, GPU evidence, insta
 
 ### Proxy preferences
 
+Automatic GitHub fallback is enabled by default and can be disabled independently. After an eligible public GitHub connection failure, the installer retries once through `https://gh-proxy.com`, retaining the existing HTTP/system proxy and checksum verification. Partial downloads restart from zero. The selected fallback preference is passed to the device-side installation engine without changing persistent Frame settings. Standalone scripts also default to fallback and accept `FRAMELY_GITHUB_AUTO_FALLBACK=0` to disable it. Certificate errors, ordinary permission/not-found errors, authenticated or signed URLs and checksum failures do not trigger fallback.
+
 The **Settings** tab controls downloads on the installer computer. System proxy discovery is enabled by default. An explicit HTTP/SOCKS proxy takes precedence; leave it empty to follow the system toggle. An optional HTTPS GitHub proxy prefix routes GitHub API and asset URLs as `prefix/original-URL`. Settings persist locally and apply to subsequent version checks and downloads; SSH and Frame settings are unchanged. Saving clears the release selection so the next version check uses the new settings. Package verification remains enabled.

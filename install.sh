@@ -20,5 +20,24 @@ for ((i=0; i<${#args[@]}; i++)); do
   [[ $version =~ ^[a-zA-Z0-9][a-zA-Z0-9.+-]*$ ]] || { echo 'Invalid release version.' >&2; exit 1; }
   release_path="download/$version"
 done
-curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --output "$work/bootstrap.py" "https://github.com/$repo/releases/$release_path/bootstrap.py"
+bootstrap_url="https://github.com/$repo/releases/$release_path/bootstrap.py"
+if status=$(curl --disable --silent --show-error --fail --location --proto '=https' --proto-redir '=https' --dump-header "$work/headers" --write-out '%{http_code}' --output "$work/bootstrap.py" "$bootstrap_url"); then
+  :
+else
+  code=$?
+  retry=false
+  case "$code" in 5|6|7|18|28|35|52|55|56) retry=true;; esac
+  if [[ $code == 22 ]]; then
+    case "$status" in 408|429|5??) retry=true;; 403)
+      if grep -Eiq '^(x-ratelimit-remaining:[[:space:]]*0[[:space:]]*$|retry-after:)' "$work/headers"; then retry=true; fi;;
+    esac
+  fi
+  if [[ ${FRAMELY_GITHUB_AUTO_FALLBACK:-1} == 0 || $retry != true ]]; then
+    echo "Bootstrap primary route failed (curl $code, HTTP $status); not eligible for automatic proxy." >&2; exit 1
+  fi
+  echo 'GitHub connection failed; trying gh-proxy.com once' >&2
+  if ! curl --disable --silent --show-error --fail --location --proto '=https' --proto-redir '=https' --output "$work/bootstrap.py" "https://gh-proxy.com/$bootstrap_url"; then
+    echo "Bootstrap primary route failed (curl $code, HTTP $status); gh-proxy.com fallback also failed." >&2; exit 1
+  fi
+fi
 python3 "$work/bootstrap.py" --repo "$repo" "$@"

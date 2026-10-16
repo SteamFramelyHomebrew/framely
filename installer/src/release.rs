@@ -30,25 +30,42 @@ pub fn validate_repo(repo: &str) -> Result<()> {
     );
     Ok(())
 }
-fn agent(url: &url::Url, settings: &crate::proxy::DownloadSettings) -> Result<ureq::Agent> {
+fn agent(url: &url::Url, settings: &crate::proxy::DownloadSettings, download: bool) -> Result<ureq::Agent> {
     let mut builder = ureq::AgentBuilder::new()
         .try_proxy_from_env(false)
-        .timeout(Duration::from_secs(120))
         .redirects(0);
+    let timeout = Duration::from_secs(120);
+    builder = if download { builder.timeout_connect(timeout).timeout_read(timeout).timeout_write(timeout) } else { builder.timeout(timeout) };
     if let Some(proxy) = settings.proxy_for(url)? {
         builder = builder.proxy(proxy);
     }
     Ok(builder.build())
 }
+#[cfg(test)]
 fn get(url: &str) -> Result<ureq::Response> {
     let settings = crate::proxy::current();
+    crate::github_fallback::run(settings.github_auto_fallback, url, &[], |fallback| {
+        let mut route=settings.clone();
+        if fallback {route.github=crate::github_fallback::PREFIX.into();route.github_fallback_attempt=true;}
+        get_routed(url, &route, false)
+    })
+}
+fn get_routed(url: &str, settings: &crate::proxy::DownloadSettings, download: bool) -> Result<ureq::Response> {
     let mut url = url::Url::parse(url)?;
     for _ in 0..=5 {
         ensure!(url.scheme() == "https", "下载地址必须使用 HTTPS");
         // Re-evaluate bypass rules for every redirect target.
         let routed = settings.route(&url);
-        let response = agent(&routed, &settings)?
-            .get(routed.as_str())
+        #[cfg(test)]
+        let transport_url = crate::github_fallback::test_url(routed.as_str());
+        #[cfg(not(test))]
+        let transport_url = routed.to_string();
+        #[cfg(test)]
+        let transport_settings = if transport_url != routed.as_str() { crate::proxy::DownloadSettings {system:false,http:String::new(),..settings.clone()} } else {settings.clone()};
+        #[cfg(not(test))]
+        let transport_settings = settings.clone();
+        let response = agent(&routed, &transport_settings, download)?
+            .get(&transport_url)
             .set("User-Agent", "Framely-Installer")
             .call()?;
         if (300..400).contains(&response.status()) {
@@ -63,15 +80,22 @@ pub fn list(repo: &str) -> Result<Vec<Release>> {
     validate_repo(repo)?;
     let mut all = Vec::new();
     for page in 1..=10 {
-        let response = get(&format!(
+        let url=format!(
             "https://api.github.com/repos/{repo}/releases?per_page=100&page={page}"
-        ))?;
+        );
+        let settings=crate::proxy::current();
+        let bytes=crate::github_fallback::run(settings.github_auto_fallback,&url,&[],|fallback| {
+        let mut route=settings.clone();
+        if fallback {route.github=crate::github_fallback::PREFIX.into();route.github_fallback_attempt=true;}
+        let response=get_routed(&url,&route,false)?;
         let mut bytes = Vec::new();
         response
             .into_reader()
             .take(4 * 1024 * 1024 + 1)
             .read_to_end(&mut bytes)?;
         ensure!(bytes.len() <= 4 * 1024 * 1024, "Release 列表过大");
+        Ok(bytes)
+        })?;
         let items: Vec<Release> = serde_json::from_slice(&bytes)?;
         let finished = items.len() < 100;
         all.extend(
@@ -209,9 +233,17 @@ pub fn download(
         crate::progress::Progress::new(crate::progress::Stage::Download, &asset.name);
     starting.total = Some(asset.size);
     progress(starting);
-    let mut input = get(&asset.browser_download_url)?.into_reader();
-    let mut output = File::create(dest)?;
-    crate::progress::copy(
+    let settings = crate::proxy::current();
+    crate::github_fallback::run(settings.github_auto_fallback, &asset.browser_download_url, &[], |fallback| {
+        let mut route=settings.clone();
+        if fallback {
+            route.github=crate::github_fallback::PREFIX.into();
+            route.github_fallback_attempt=true;
+            progress(crate::progress::Progress::new(crate::progress::Stage::Download, "正在尝试 gh-proxy.com 自动代理"));
+        }
+        let mut input = get_routed(&asset.browser_download_url, &route, true)?.into_reader();
+        let mut output = File::create(dest)?;
+        crate::progress::copy(
         &mut input,
         &mut output,
         asset.size,
@@ -219,12 +251,26 @@ pub fn download(
         &asset.name,
         progress,
     )?;
-    output.sync_all()?;
-    Ok(())
+        output.sync_all()?;
+        Ok(())
+    })
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn github_fallback_restarts_a_truncated_installer_download_from_zero() {
+        let (target,server)=crate::github_fallback::local_truncated_server();
+        let source=format!("https://github.com/framely-test/{}/asset",target.rsplit(':').next().unwrap());
+        let _routes=crate::github_fallback::TestRoutes::new(vec![(source.clone(),target.clone()),(format!("{}/{}",crate::github_fallback::PREFIX,source),target)]);
+        let temp=tempfile::tempdir().unwrap();let dest=temp.path().join("archive");let mut progress=vec![];
+        // This test uses an explicit local transport mapping, never the public network.
+        let asset=Asset{name:"test.tar.gz".into(),browser_download_url:source,size:8};
+        download(&asset,&dest,&mut |value| progress.push(value)).unwrap();
+        assert_eq!(std::fs::read(dest).unwrap(),b"new-data");
+        assert!(progress.iter().any(|p|p.detail.contains("gh-proxy.com")));
+        server.join().unwrap();
+    }
     #[cfg(target_os = "linux")]
     #[test]
     fn https_requests_use_discovered_desktop_proxy() {

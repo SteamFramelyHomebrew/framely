@@ -49,6 +49,7 @@ enum Event {
 struct Installer {
     page: usize,
     system_proxy: bool,
+    github_auto_fallback: bool,
     http_proxy: Entity<InputState>,
     github_proxy: Entity<InputState>,
     chosen_action: String,
@@ -117,6 +118,7 @@ impl Installer {
         let mut view = Self {
             page: 0,
             system_proxy: proxies.system,
+            github_auto_fallback: proxies.github_auto_fallback,
             http_proxy: input(&proxies.http, "http://127.0.0.1:7890", false),
             github_proxy: input(&proxies.github, "https://your-github-proxy.example", false),
             chosen_action: "install".into(),
@@ -601,6 +603,7 @@ impl Installer {
     }
     fn save_proxy(&mut self, cx: &mut Context<Self>) {
         let settings = framely_installer::proxy::DownloadSettings {
+            github_auto_fallback: self.github_auto_fallback,
             system: self.system_proxy,
             http: self.http_proxy.read(cx).value().trim().to_owned(),
             github: self
@@ -610,6 +613,7 @@ impl Installer {
                 .trim()
                 .trim_end_matches('/')
                 .to_owned(),
+            ..Default::default()
         };
         match framely_installer::proxy::save(settings) {
             Ok(()) => {

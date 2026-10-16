@@ -74,7 +74,7 @@ def prepare(base, store):
             def progress(completed):
                 if os.environ.get('FRAMELY_PROGRESS_JSON') == '1':
                     print('FRAMELY_PROGRESS ' + json.dumps(dict(step='cef-download', completed=completed, total=requirement['size'])), file=sys.stderr, flush=True)
-            engine.download(requirement['url'], archive, engine.MAX_ARCHIVE, progress)
+            engine.download(requirement['url'], archive, engine.MAX_ARCHIVE, progress, expected_size=requirement['size'])
             if archive.stat().st_size != requirement['size']:
                 raise ValueError('CEF archive length mismatch')
             with archive.open('rb') as source:

@@ -1281,9 +1281,10 @@ impl Agent {
                 let _gate = APK_STORAGE_API_GATE.lock().unwrap();
                 ensure!(!self.jobs.active_kind("apk:storage") && !self.jobs.active_kind("apk:operation"), "请等待 APK 操作或存储迁移完成");
                 let home = crate::steam::home()?;
+                let proxy:crate::model::ProxySettings = serde_json::from_value(self.core("status", json!({}))?["database"]["proxy"].clone())?;
                 let ticket = p["ticket"].as_str().context("Missing APK review")?.to_owned();
                 self.jobs.task_progress("apk:operation", move |cancel, progress| {
-                    crate::apk::q2f_convert(&home, &ticket, &cancel, |value| { progress(value); Ok(()) })
+                    crate::apk::q2f_convert(&home, &ticket, &cancel, |value| { progress(value); Ok(()) }, &proxy)
                 })
             }
             "apk.cleanup.list" => crate::apk::cleanup_list(&crate::steam::home()?),
@@ -1753,6 +1754,9 @@ pub(crate) fn fetch_catalog_proxy_cancel(
 ) -> Result<Catalog> {
     cancel.check()?;
     source.validate()?;
+    if proxy.github_auto_fallback {
+        return crate::http::with_github_fallback(&source.url, &[], proxy, |route| fetch_catalog_proxy_cancel(source, route, cancel));
+    }
     let response = crate::http::get_with_proxy_cancel(
         &source.url,
         source.allow_http,
@@ -1791,6 +1795,9 @@ pub(crate) fn fetch_plugin_versions_cancel(
     source.validate()?;
     valid_id(plugin_id)?;
     let url = url::Url::parse(&source.url)?.join(&format!("plugins/{plugin_id}/versions.json"))?;
+    if proxy.github_auto_fallback {
+        return crate::http::with_github_fallback(url.as_str(), &[], proxy, |route| fetch_plugin_versions_cancel(source, plugin_id, route, cancel));
+    }
     let response = crate::http::get_with_proxy_cancel(
         url.as_str(),
         source.allow_http,
