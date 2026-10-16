@@ -424,6 +424,7 @@ pub fn from_request_proxy(
     }
     from_request_once(v, proxy, &mut progress)
 }
+#[cfg(test)]
 fn from_request_once(v: &serde_json::Value, proxy: &ProxySettings, progress: &mut dyn FnMut(u64, Option<u64>) -> Result<()>) -> Result<Vec<u8>> {
     if let Some(s) = v.get("package").and_then(|v| v.as_str()) {
         let bytes = STANDARD.decode(s)?;
