@@ -1345,6 +1345,25 @@ fn network_panel_defaults_persist_and_validate() {
 }
 
 #[test]
+fn recording_indicator_visibility_persists_and_rolls_back_on_save_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let mut core = accepted_service(root.path(), 1000).unwrap();
+    assert!(core.db.casting.recording_indicator_visible);
+    core.handle("cast.recordingIndicator.visible.save", json!({"enabled":false})).unwrap();
+    assert!(!accepted_service(root.path(), 1000).unwrap().db.casting.recording_indicator_visible);
+    assert!(core.handle("cast.recordingIndicator.visible.save", json!({"enabled":"yes"})).is_err());
+    // Making the state directory unavailable must not change the in-memory flag.
+    let moved = root.path().with_extension("indicator-save-failure");
+    fs::rename(root.path(), &moved).unwrap();
+    fs::write(root.path(), "not a directory").unwrap();
+    let result = core.handle("cast.recordingIndicator.visible.save", json!({"enabled":true}));
+    fs::remove_file(root.path()).unwrap();
+    fs::rename(moved, root.path()).unwrap();
+    assert!(result.is_err());
+    assert!(!core.db.casting.recording_indicator_visible);
+}
+
+#[test]
 fn proxy_settings_persist_and_reject_invalid_values() {
     let root = tempfile::tempdir().unwrap();
     let mut core = accepted_service(root.path(), 1000).unwrap();

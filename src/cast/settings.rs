@@ -57,6 +57,7 @@ pub struct Settings {
     pub dlna: bool,
     pub receiver_name: String,
     pub recording_region_visible: bool,
+    pub recording_indicator_visible: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -78,6 +79,7 @@ impl Default for Settings {
             dlna: false,
             receiver_name: "Framely".into(),
             recording_region_visible: false,
+            recording_indicator_visible: true,
         }
     }
 }
@@ -88,6 +90,7 @@ impl Settings {
         capture.dlna = other.dlna;
         capture.receiver_name.clone_from(&other.receiver_name);
         capture.recording_region_visible = other.recording_region_visible;
+        capture.recording_indicator_visible = other.recording_indicator_visible;
         capture == *other
     }
     pub fn validate(&self) -> Result<()> {
@@ -128,6 +131,15 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recording_indicator_defaults_on_and_is_not_capture_configuration() {
+        let legacy: Settings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(legacy.recording_indicator_visible);
+        let mut hidden = legacy.clone();
+        hidden.recording_indicator_visible = false;
+        assert!(legacy.same_capture(&hidden));
+        assert_eq!(serde_json::to_value(hidden).unwrap()["recordingIndicatorVisible"], false);
+    }
     #[test]
     fn legacy_settings_keep_h264_and_hevc_is_explicit() {
         let legacy: Settings=serde_json::from_value(serde_json::json!({"source":"screen"})).unwrap();

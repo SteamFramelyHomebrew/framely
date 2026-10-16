@@ -40,7 +40,7 @@ class RecordingIndicator {
  vr::IVROverlay* overlay=nullptr;vr::VROverlayHandle_t handle=0;
  std::string id;uint64_t rendered=~uint64_t(0);bool last_hover=false;std::array<RecordingIndicatorClick,2> clicks{};std::array<bool,2> hover{};
 public:
- void destroy(){if(handle&&overlay)overlay->DestroyOverlay(handle);handle=0;id.clear();hover={};}
+ void destroy(){if(handle&&overlay)overlay->DestroyOverlay(handle);handle=0;id.clear();cancel_input();}
  bool active()const{return handle&&!id.empty();}
  void cancel_input(){clicks={};hover={};}
  bool hovered(int hand)const{return hand>=0&&hand<2&&hover[hand];}

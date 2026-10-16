@@ -447,7 +447,7 @@ impl Agent {
                 .unwrap_or(json!({}));
             return send_json(
                 r,
-                {let (recording,region,framing)=if let Ok(cast)=self.casting.try_lock() {let status=cast.recording_status();*self.recording_overlay_cache.lock().unwrap()=status.clone();(status,cast.region_status(),cast.region.editor_state())}else{(self.recording_overlay_cache.lock().unwrap().clone(),json!({"visible":false}),Value::Null)};json!({"feedback":database["feedback"],"commands":commands,"notificationBadge":badge,"gazeCalibration":self.core("launcher.gaze.calibration.get",json!({})).unwrap_or(Value::Null),"launcher":database["launcher"],"recording":recording,"recordingRegion":region,"framingEditor":framing})},
+                {let (mut recording,region,framing)=if let Ok(cast)=self.casting.try_lock() {let status=cast.recording_status();*self.recording_overlay_cache.lock().unwrap()=status.clone();(status,cast.region_status(),cast.region.editor_state())}else{(self.recording_overlay_cache.lock().unwrap().clone(),json!({"visible":false}),Value::Null)};recording["indicatorVisible"]=json!(database["casting"]["recordingIndicatorVisible"].as_bool().unwrap_or(true));json!({"feedback":database["feedback"],"commands":commands,"notificationBadge":badge,"gazeCalibration":self.core("launcher.gaze.calibration.get",json!({})).unwrap_or(Value::Null),"launcher":database["launcher"],"recording":recording,"recordingRegion":region,"framingEditor":framing})},
             );
         }
         if let Some(rel) = path.strip_prefix("/plugin-assets/") {
@@ -1060,6 +1060,7 @@ impl Agent {
                 self.receivers.lock().unwrap().configure(&settings)?;
                 Ok(result)
             },
+            "cast.recordingIndicator.visible.save" => self.core(method, p),
             "cast.region.visible.save" => {
                 let enabled=p["enabled"].as_bool().context("Missing region visibility")?;
                 let mut settings:crate::cast::settings::Settings=serde_json::from_value(self.core("status",json!({}))?["database"]["casting"].clone())?;

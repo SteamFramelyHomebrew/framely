@@ -4,6 +4,9 @@
 #include <cassert>
 int main(){
  RecordingIndicatorClick click;
+ RecordingIndicator hidden;hidden.cancel_input();hidden.destroy();
+ assert(!hidden.active());assert(!hidden.hovered(0));
+ vr::HmdMatrix34_t pose{};assert(hidden.pointer(0,pose,true,false).empty());
  assert(!click.update(true,true));assert(!click.update(false,true));
  assert(!click.update(true,false));assert(!click.update(false,true));
  assert(!click.update(true,true));assert(click.update(false,true));assert(!click.update(false,true));

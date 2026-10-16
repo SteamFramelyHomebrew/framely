@@ -3,6 +3,8 @@
   "locale": "en-US",
   "name": "English",
   "messages": {
+    "显示录制指示器": "Show recording indicator",
+    "关闭后仅隐藏右上角录制提示，不会停止录制。": "Hides only the recording indicator in the upper-right corner; recording continues.",
     "安装失败，本次新建的容器已清理：{0}": "Installation failed; the newly created container was cleaned up: {0}",
     "安装失败，安全清理未完成，容器已保留：{0}": "Installation failed; safe cleanup failed, so the container was retained: {0}",
     "更新失败，原容器和数据已保留。备份：{0}。详情：{1}": "Update failed; the existing container and data were retained. Backup: {0}. Details: {1}",
