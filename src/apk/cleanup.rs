@@ -16,6 +16,57 @@ fn directory(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+// A failed first boot has no packages.xml. Only explicit Framely ownership
+// plus an exact, non-symlink managed path may replace that validation.
+pub(super) fn validate_location(home: &Path, db: &Database, c: &Container) -> Result<()> {
+    if let Ok(path) = validate_baked(&c.baked) {
+        ensure!(path == c.baked, "Container data location changed");
+        return Ok(());
+    }
+    ensure!(
+        c.managed
+            && !c.steam
+            && c.id == c.name
+            && safe(&c.id)
+            && !c.id.starts_with("steamlaunch-")
+            && db.owned_contexts.contains(&c.id),
+        "Unreadable containers can only be cleaned when owned by Framely"
+    );
+    let base = contexts_root(home);
+    ensure!(
+        base.is_absolute() && fs::canonicalize(&base)? == base,
+        "Managed container location changed"
+    );
+    let parent = base.join(&c.id);
+    ensure!(
+        c.baked == parent.join("baked"),
+        "Container data location changed"
+    );
+    for path in [&base, &parent, &c.baked] {
+        directory(path)?;
+        if path.exists() {
+            ensure!(
+                fs::canonicalize(path)? == *path,
+                "Container cleanup path contains a link"
+            );
+        }
+    }
+    Ok(())
+}
+pub(super) fn ensure_runtime_absent(c: &Container) -> Result<()> {
+    ensure!(
+        runtime(&c.name, &c.baked, true)?.is_none(),
+        "Container runtime already exists; refusing to replace it"
+    );
+    Ok(())
+}
+fn identity(path: &Path) -> Result<Option<(u64, u64)>> {
+    match fs::symlink_metadata(path) {
+        Ok(m) => Ok(Some((m.dev(), m.ino()))),
+        Err(e) if absent(&e) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
 fn remove_owned(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(m) => {
@@ -80,6 +131,24 @@ fn runtime(name: &str, baked: &Path, original: bool) -> Result<Option<String>> {
 }
 
 pub(super) fn delete(home: &Path, db: &mut Database, c: &Container, log: &Path) -> Result<()> {
+    delete_internal(home, db, c, log, false)
+}
+pub(super) fn delete_failed_install(
+    home: &Path,
+    db: &mut Database,
+    c: &Container,
+    log: &Path,
+) -> Result<()> {
+    delete_internal(home, db, c, log, true)
+}
+fn delete_internal(
+    home: &Path,
+    db: &mut Database,
+    c: &Container,
+    log: &Path,
+    preserve_logs: bool,
+) -> Result<()> {
+    validate_location(home, db, c)?;
     let records: Vec<_> = db
         .records
         .values()
@@ -113,7 +182,12 @@ pub(super) fn delete(home: &Path, db: &mut Database, c: &Container, log: &Path) 
     } else {
         c.id.clone()
     };
-    let standard = (if db.owned_contexts.contains(&c.id) { super::contexts_root(home) } else { home.join(".local/share/lepton/contexts") }).join(&c.id);
+    let standard = (if db.owned_contexts.contains(&c.id) {
+        super::contexts_root(home)
+    } else {
+        home.join(".local/share/lepton/contexts")
+    })
+    .join(&c.id);
     let default_location = !c.id.starts_with("external-")
         && !fs::symlink_metadata(&standard).is_ok_and(|m| m.file_type().is_symlink())
         && fs::canonicalize(&standard).is_ok_and(|p| p == standard && p.join("baked") == c.baked);
@@ -122,14 +196,15 @@ pub(super) fn delete(home: &Path, db: &mut Database, c: &Container, log: &Path) 
     } else {
         c.baked.clone()
     };
+    let target_identity = identity(&target)?;
     let mut names = BTreeSet::from([original.clone(), c.name.clone()]);
     names.extend(records.iter().filter_map(native::runtime_name));
     // Resolve every name before stopping anything. A recycled Steam App ID
     // pointing at different storage must never be removed.
     let mut runtimes = Vec::new();
-    for name in names {
-        if let Some(id) = runtime(&name, &c.baked, name == original)? {
-            runtimes.push((name, id));
+    for name in &names {
+        if let Some(id) = runtime(name, &c.baked, *name == original)? {
+            runtimes.push((name.clone(), id));
         }
     }
     for (name, _) in &runtimes {
@@ -156,9 +231,14 @@ pub(super) fn delete(home: &Path, db: &mut Database, c: &Container, log: &Path) 
     for rec in &records {
         steam_shortcuts::unregister(home, rec)?;
     }
+    validate_location(home, db, c)?;
     ensure!(
-        validate_baked(&c.baked)? == c.baked,
-        "Container data location changed"
+        identity(&target)? == target_identity,
+        "Container directory changed during deletion"
+    );
+    ensure!(
+        !names.iter().any(|name| wrapper_active(name)),
+        "A container launcher is still running; wait for it to close"
     );
     for (name, identity) in &runtimes {
         if let Some(current) = runtime(name, &c.baked, *name == original)? {
@@ -181,14 +261,20 @@ pub(super) fn delete(home: &Path, db: &mut Database, c: &Container, log: &Path) 
     for entry in fs::read_dir(root(home).join("logs"))? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if entry.path() != log
+        if !preserve_logs
+            && entry.path() != log
             && name.ends_with(".log")
             && keys.iter().any(|key| name.starts_with(&format!("{key}-")))
         {
             remove_owned(&entry.path())?;
         }
     }
-    remove_tree(&target)?;
+    validate_location(home, db, c)?;
+    ensure!(
+        identity(&target)? == target_identity,
+        "Container directory changed during deletion"
+    );
+    remove_owned(&target)?;
     db.roots.retain(|p| p != &c.baked);
     db.root_contexts.remove(&c.baked);
     db.records.retain(|_, r| r.context != c.id);

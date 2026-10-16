@@ -22,6 +22,7 @@ use std::{
 };
 mod cleanup;
 mod graphics;
+mod install_rollback;
 mod lifecycle;
 mod native;
 pub(crate) mod permissions;
@@ -439,17 +440,16 @@ fn containers(home: &Path, db: &Database) -> Vec<Container> {
     for id in &db.owned_contexts {
         if safe(id) && !out.iter().any(|c| c.id == *id) {
             let baked = managed_base.join(id).join("baked");
-            if baked.parent().is_some_and(|p| p.is_dir())
-                && !fs::symlink_metadata(&baked).is_ok_and(|m| m.file_type().is_symlink())
-            {
-                out.push(Container {
-                    id: id.clone(),
-                    name: id.clone(),
-                    baked,
-                    running: false,
-                    managed: true,
-                    steam: false,
-                });
+            let candidate = Container {
+                id: id.clone(),
+                name: id.clone(),
+                baked,
+                running: false,
+                managed: true,
+                steam: false,
+            };
+            if cleanup::validate_location(home, db, &candidate).is_ok() {
+                out.push(candidate);
             }
         }
     }
@@ -656,7 +656,8 @@ fn automatic_install_context(
 
 fn installed(home: &Path, c: &Container) -> Result<Vec<(Metadata, PathBuf)>> {
     let p = c.baked.join("data_overlay/system/packages.xml");
-    let bytes = fs::read(&p)?;
+    let bytes = fs::read(&p)
+        .with_context(|| format!("Cannot read Android package database {}", p.display()))?;
     ensure!(
         bytes.len() <= 16 * 1024 * 1024,
         "Package database is too large"
@@ -3083,8 +3084,9 @@ fn operate_internal(
                     }
                 }
                 let packages = if c.baked.exists() {
-                    installed(home, &c)?
+                    installed(home, &c).with_context(|| format!("Existing container is unreadable; inspect its log or explicitly clean the damaged container before retrying: {}", c.baked.display()))?
                 } else {
+                    ensure!(!cs.iter().any(|old| old.id == c.id), "Existing container is incomplete; explicitly clean the damaged container before retrying: {}", c.baked.display());
                     Vec::new()
                 };
                 let previous = packages
@@ -3117,6 +3119,12 @@ fn operate_internal(
                     fs::metadata(review.join("base.apk"))?.len() * 4
                         + if c.baked.exists() { size(&c.baked) } else { 0 },
                 )?;
+                let fresh=if !cs.iter().any(|old|old.id==c.id)
+                    && !db.records.values().any(|record|record.context==c.id) {
+                    Some(install_rollback::NewContext::reserve(home,&db,&c)?)
+                } else {None};
+                let mut backup_id=None;
+                let attempt=(|| -> Result<Value> {
                 let rec = db.records.entry(app_id.clone()).or_insert_with(|| Record {
                     id: app_id.clone(),
                     context: c.id.clone(),
@@ -3135,18 +3143,39 @@ fn operate_internal(
                 // Before submission cancellation remains possible. Package-manager submission is a commit.
                 cancel.commit(||{
  progress(json!({"cancellable":false}));
- let mut backup_id=None;if c.baked.exists(){progress(json!({"phase":"backing-up"}));stop(&c,&log)?;backup_id=Some(backup(home,&c,&db,&log)?);}
-progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
+ if fresh.is_none() && c.baked.exists(){progress(json!({"phase":"backing-up"}));stop(&c,&log)?;backup_id=Some(backup(home,&c,&db,&log)?);}
+progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log).with_context(||format!("Cannot initialize Android container {}",c.baked.display()))?;
  let sdk=podman(&["exec",&format!("lepton-{}",c.name),"getprop","ro.build.version.sdk"],Some(&log))?.trim().parse::<u32>()?;ensure!(metadata.min_sdk<=sdk,"APK requires Android SDK {}, container provides {}",metadata.min_sdk,sdk);
  progress(json!({"phase":"installing","cancellable":false}));install_package(&c,&review.join("base.apk"),&log)?;
  progress(json!({"phase":"verifying"}));let path=podman(&["exec",&format!("lepton-{}",c.name),"pm","path",&metadata.package],Some(&log))?;ensure!(path.contains("package:"),"Android did not report the installed APK");let dest=r.join("apks").join(hash(&app_id));store_apk(&review.join("base.apk"),&dest)?;
  // Installation boots a headless container solely for the package manager.
  // Finish that runtime before Steam takes ownership of the first app launch.
  stop(&c,&log)?;
- let rec=db.records.get_mut(&app_id).unwrap();rec.metadata=metadata.clone();rec.removed=false;rec.pending=None;rec.show_window=settings.show_window;rec.q2f_version=q2f_version;save(home,&db)?;fs::remove_dir_all(review)?;
+ let rec=db.records.get_mut(&app_id).unwrap();rec.metadata=metadata.clone();rec.removed=false;rec.pending=None;rec.show_window=settings.show_window;rec.q2f_version=q2f_version;save(home,&db)?;
+ // Review cleanup cannot turn a committed installation into a failed one.
+ if let Err(error)=fs::remove_dir_all(&review) {let _=fs::OpenOptions::new().append(true).create(true).open(&log).and_then(|mut f|writeln!(f,"Review cleanup failed: {error}"));}
  // Mirror the operation log under the stable application id for newly installed apps.
  if id!=app_id {let _=fs::copy(&log,r.join("logs").join(format!("{}-{}.log",hash(&app_id),now())));}
- Ok(json!({"app":app_id,"backup":backup_id,"launchable":!metadata.activities.is_empty()}))})
+ Ok(json!({"app":app_id,"backup":backup_id.clone(),"launchable":!metadata.activities.is_empty()}))})
+                })();
+                match attempt {
+                    Ok(value)=>Ok(value),
+                    Err(error)=>{
+                        let _=fs::OpenOptions::new().append(true).create(true).open(&log).and_then(|mut f|writeln!(f,"APK installation failed: {error:#}"));
+                        if let Some(fresh)=fresh {
+                            progress(json!({"phase":"rolling-back","cancellable":false}));
+                            match fresh.rollback(home,&mut db,&c,&log) {
+                                Ok(())=>bail!("New installation failed; newly created container was cleaned up: {error:#}"),
+                                Err(cleanup_error)=>{
+                                    let _=fs::OpenOptions::new().append(true).create(true).open(&log).and_then(|mut f|writeln!(f,"New container rollback failed: {cleanup_error:#}"));
+                                    bail!("Installation failed; container retained because safe cleanup failed: {error:#}; cleanup: {cleanup_error:#}");
+                                }
+                            }
+                        } else {
+                            bail!("Installation failed; existing container and data retained (backup: {}): {error:#}",backup_id.as_deref().unwrap_or("not created"));
+                        }
+                    }
+                }
             }
             "reconcile" => {
                 let cs = containers(home, &db);
@@ -3527,10 +3556,11 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log)?;
                         .any(|other| other.name == c.name && other.baked != c.baked),
                     "Container name is ambiguous; correct its data location first"
                 );
-                ensure!(
-                    validate_baked(&c.baked)? == c.baked,
-                    "Container data location changed"
-                );
+                if kind == "container.delete" {
+                    cleanup::validate_location(home, &db, &c)?;
+                } else {
+                    ensure!(validate_baked(&c.baked)? == c.baked, "Container data location changed");
+                }
                 cancel.commit(|| {
                     progress(json!({"cancellable":false}));
                     match kind {
@@ -4603,6 +4633,120 @@ echo true > '{}'
         fn save_file(&self) -> PathBuf {
             self.home.join(".local/share/lepton/contexts/test/baked/data_overlay/data/com.example.app/files/save")
         }
+    }
+    #[test]
+    fn failed_install_new_context_is_rolled_back_and_logs_retained() {
+        let f = Fixture::new();
+        fs::write(f.dir.path().join("running"), "missing").unwrap();
+        let entry = f.home.join(".local/share/Steam/steamapps/common/Lepton/lepton");
+        // A missing interpreter reproduces ENOENT after context reservation.
+        let script = fs::read_to_string(&entry).unwrap().replace("#!/bin/bash", "#!/missing-framely-test-interpreter");
+        fs::write(entry, script).unwrap();
+        let ticket = f.review(43);
+        let old_log = root(&f.home).join("logs").join(format!("{}-previous.log", hash("new-test/com.example.app")));
+        fs::write(&old_log, "previous failure").unwrap();
+        let error = f.operation("install", json!({"context":"new-test","ticket":ticket,"approve":true})).unwrap_err();
+        assert!(format!("{error:#}").contains("newly created container was cleaned up"), "{error:#}");
+        assert!(format!("{error:#}").contains("Cannot initialize Android container"), "{error:#}");
+        assert!(format!("{error:#}").contains("No such file or directory"), "{error:#}");
+        assert!(!contexts_root(&f.home).join("new-test").exists());
+        let db = load(&f.home).unwrap();
+        assert!(!db.owned_contexts.iter().any(|id| id == "new-test"));
+        assert!(!db.records.values().any(|r| r.context == "new-test"));
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        assert_eq!(fs::read_to_string(old_log).unwrap(), "previous failure");
+        assert!(fs::read_dir(root(&f.home).join("logs")).unwrap().any(|entry|
+            fs::read_to_string(entry.unwrap().path()).unwrap().contains("APK installation failed")));
+    }
+    #[test]
+    fn failed_install_unsafe_rollback_retains_container_and_record() {
+        let f = Fixture::new();
+        let mut db = load(&f.home).unwrap();
+        let c = Container { id:"new-test".into(), name:"new-test".into(), baked:contexts_root(&f.home).join("new-test/baked"), running:false, managed:true, steam:false };
+        db.owned_contexts.push(c.id.clone());
+        fs::write(f.dir.path().join("running"), "missing").unwrap();
+        let reserved = install_rollback::NewContext::reserve(&f.home, &db, &c).unwrap();
+        db.records.insert("new-test/com.example.app".into(), Record { id:"new-test/com.example.app".into(), context:c.id.clone(), ..Default::default() });
+        save(&f.home, &db).unwrap();
+        fs::write(f.dir.path().join("running"), "query-error").unwrap();
+        let log = root(&f.home).join("logs/rollback-test.log");
+        fs::write(&log, "original installation failure").unwrap();
+        assert!(reserved.rollback(&f.home, &mut db, &c, &log).is_err());
+        assert!(c.baked.parent().unwrap().exists());
+        assert!(load(&f.home).unwrap().records.contains_key("new-test/com.example.app"));
+        assert!(log.exists());
+    }
+    #[test]
+    fn failed_install_reservation_never_adopts_existing_or_replaced_directories() {
+        let f = Fixture::new();
+        let mut db = load(&f.home).unwrap();
+        let parent = contexts_root(&f.home).join("new-test");
+        let c = Container { id:"new-test".into(), name:"new-test".into(), baked:parent.join("baked"), running:false, managed:true, steam:false };
+        db.owned_contexts.push(c.id.clone());
+        fs::write(f.dir.path().join("running"), "missing").unwrap();
+        fs::create_dir(&parent).unwrap();
+        fs::write(parent.join("save"), "old data").unwrap();
+        assert!(install_rollback::NewContext::reserve(&f.home, &db, &c).is_err());
+        let old = f.dir.path().join("old-data");
+        fs::rename(&parent, &old).unwrap();
+        let reservation = install_rollback::NewContext::reserve(&f.home, &db, &c).unwrap();
+        let reserved = f.dir.path().join("reserved");
+        fs::rename(&parent, &reserved).unwrap();
+        fs::create_dir(&parent).unwrap();
+        fs::write(parent.join("save"), "replacement data").unwrap();
+        assert!(reservation.rollback(&f.home, &mut db, &c, &root(&f.home).join("logs/test.log")).is_err());
+        assert_eq!(fs::read_to_string(old.join("save")).unwrap(), "old data");
+        assert_eq!(fs::read_to_string(parent.join("save")).unwrap(), "replacement data");
+        assert!(reserved.exists());
+    }
+    #[test]
+    fn damaged_container_owned_cleanup_preserves_backups() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let mut db = load(&f.home).unwrap();
+        db.owned_contexts.push("test".into());
+        save(&f.home, &db).unwrap();
+        fs::remove_file(contexts_root(&f.home).join("test/baked/data_overlay/system/packages.xml")).unwrap();
+        let ticket = f.review(43);
+        let error = f.operation("install", json!({"context":"test","ticket":ticket,"approve":true})).unwrap_err();
+        assert!(format!("{error:#}").contains("Existing container is unreadable"));
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        let backup = root(&f.home).join("backups/keep");
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(backup.join("save"), "backup").unwrap();
+        assert!(f.operation("container.delete", json!({"context":"test","approve":true})).is_ok());
+        assert!(!contexts_root(&f.home).join("test").exists());
+        assert!(backup.join("save").exists());
+        assert!(!load(&f.home).unwrap().records.contains_key("test/com.example.app"));
+    }
+    #[test]
+    fn damaged_container_unowned_or_symlink_cleanup_is_rejected() {
+        let f = Fixture::new();
+        let mut db = load(&f.home).unwrap();
+        let baked = contexts_root(&f.home).join("test/baked");
+        fs::remove_file(baked.join("data_overlay/system/packages.xml")).unwrap();
+        let c = Container { id:"test".into(), name:"test".into(), baked:baked.clone(), running:false, managed:true, steam:false };
+        assert!(cleanup::validate_location(&f.home, &db, &c).is_err());
+        db.owned_contexts.push("test".into());
+        let moved = f.dir.path().join("preserved-data");
+        fs::rename(&baked, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &baked).unwrap();
+        assert!(cleanup::validate_location(&f.home, &db, &c).is_err());
+        assert_eq!(fs::read_to_string(moved.join("data_overlay/data/com.example.app/files/save")).unwrap(), "saved progress");
+    }
+    #[test]
+    fn damaged_container_missing_directory_can_clear_owned_journal() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let mut db = load(&f.home).unwrap();
+        db.owned_contexts.push("test".into());
+        save(&f.home, &db).unwrap();
+        fs::remove_dir_all(contexts_root(&f.home).join("test")).unwrap();
+        fs::write(f.dir.path().join("running"), "missing").unwrap();
+        assert!(list(&f.home).unwrap()["containers"].as_array().unwrap().iter().any(|c| c["id"] == "test"));
+        f.operation("container.delete", json!({"context":"test","approve":true})).unwrap();
+        assert!(!load(&f.home).unwrap().records.contains_key("test/com.example.app"));
+        assert!(!load(&f.home).unwrap().owned_contexts.iter().any(|id| id == "test"));
     }
     #[test]
     fn unchanged_inventory_preserves_state_file_and_changes_still_persist() {

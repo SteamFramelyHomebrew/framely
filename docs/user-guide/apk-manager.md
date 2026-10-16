@@ -195,6 +195,12 @@ Container list headings show installed application names; the data path identifi
 
 **APK → Settings → Keep installed APKs in Steam** defaults to on. Turning it off removes idle Framely-owned entries and disables automatic registration. Launching an app whose **Launch through Steam** option is enabled registers its entry on demand; after the native launch process and container finish, the entry and its temporary Devkit copy are removed. Installed APKs, containers, saves and downloaded game data are retained. Running entries are protected. Failed or interrupted starts are cleaned up after a startup grace period, with retries when Steam is unavailable. Turning retention back on resumes automatic registration.
 
+### Failed installs and damaged containers
+
+A failed first install rolls back only the container, runtime and installation records created by that attempt, retaining operation logs. A failed update keeps the existing container, application data and any backup already created. If safe cleanup fails, the pending state is retained and both installation and cleanup errors are reported.
+
+For older, incomplete Framely-owned containers without an Android package database, choose **Clean damaged container** in application details or delete the container from the container page. Explicit confirmation permanently deletes its application data, associated APK cache and Steam entries; historical backups remain. Ownership, storage paths and runtime ownership must pass validation. Unreadable old data is never automatically deleted. After confirming that the data is no longer needed, clean the damaged container and select the APK again. Diagnose the original installation failure using its logs.
+
 ### Uninstalling while keeping the container
 
 Keeping application data uses Android PackageManager readiness instead of requiring user unlock or external storage mounting. Deleting data still waits for those conditions. Framely boots a stopped container without showing its desktop and repairs only the selected APK registration if needed. It reports startup, PackageManager, unlock, storage and container-exit failures separately. Steam entries are removed after Android confirms successful uninstall; Android success is saved first so a Steam cleanup retry does not uninstall again. Failed startup or uninstall preserves the application record, Steam binding and application data. The error dialog offers Retry and Export logs. A container that cannot boot still requires diagnosis; Framely does not silently delete it or edit Android package databases.
