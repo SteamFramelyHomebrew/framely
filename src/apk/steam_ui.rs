@@ -54,7 +54,8 @@ pub(crate) fn evaluate(expression: &str) -> Result<Value> {
         &SocketAddr::from(([127, 0, 0, 1], 8080)),
         Duration::from_secs(3),
     )?;
-    stream.set_read_timeout(Some(Duration::from_secs(6)))?;
+    // Artwork renders and hashes a 3840x1240 hero inside Steam's CEF context.
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(Duration::from_secs(3)))?;
     let (mut ws, _) = client(address.as_str(), stream)
         .map_err(|_| anyhow::anyhow!("Cannot connect to Steam UI"))?;
@@ -70,7 +71,7 @@ pub(crate) fn evaluate(expression: &str) -> Result<Value> {
         .to_string()
         .into(),
     ))?;
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         ensure!(Instant::now() < deadline, "Steam UI request timed out");
         let message = ws
@@ -98,10 +99,29 @@ pub(super) fn configure(
     icon: Option<&Path>,
     launch: &str,
     executable: &Path,
+    package: &str,
 ) -> Result<u32> {
-    let art = artwork(icon)?;
+    use base64::Engine;
+    let legacy = legacy_artwork(icon)?;
+    let image = icon
+        .map(|path| -> Result<String> {
+            ensure!(
+                fs::metadata(path)?.len() <= 8 * 1024 * 1024,
+                "APK icon is too large"
+            );
+            Ok(format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(fs::read(path)?)
+            ))
+        })
+        .transpose()?;
+    let ownership = icon
+        .map(|p| load_artwork_ownership(p.parent().context("Missing artwork directory")?))
+        .transpose()?
+        .unwrap_or(Value::Null);
     let parameters = json!({"game":game,"previous":previous,"name":name,
-        "icon":icon,"launch":launch,"exe":executable,"art":art});
+        "icon":icon,"launch":launch,"exe":executable,"image":image,"package":package,
+        "ownership":ownership,"legacy":legacy});
     let expression = format!(
         r#"(async()=>{{
         const p={parameters};
@@ -109,27 +129,90 @@ pub(super) fn configure(
         const id=owned.id;
         SteamClient.Apps.SetShortcutLaunchOptions(id,p.launch);
         SteamClient.Apps.SetShortcutName(id,p.name);
-        if(p.icon) SteamClient.Apps.SetShortcutIcon(id,p.icon);
-        for(const a of p.art){{
-            try{{await SteamClient.Apps.SetCustomArtworkForApp(id,a.data,'png',a.kind)}}
-            catch(e){{
-                await new Promise(r=>setTimeout(r,200));
-                await SteamClient.Apps.SetCustomArtworkForApp(id,a.data,'png',a.kind);
-            }}
-        }}
-        return id;
+        // Existing shortcuts may have a user-selected icon path.
+        if(p.icon&&!p.previous) SteamClient.Apps.SetShortcutIcon(id,p.icon);
+        const ownership=p.image?await ({apply})(p,id,({render}),({palette})):null;
+        return {{id,ownership}};
     }})()"#,
-        lookup = include_str!("steam_shortcut_lookup.js")
+        lookup = include_str!("steam_shortcut_lookup.js"),
+        apply = include_str!("steam_artwork_apply.js"),
+        render = include_str!("steam_artwork_render.js"),
+        palette = include_str!("steam_artwork_palette.js"),
     );
     let result = evaluate(&expression)?;
-    result
+    // Numeric mock responses remain supported by the existing IPC fixtures.
+    let id = result
+        .get("id")
+        .unwrap_or(&result)
         .as_u64()
         .and_then(|v| u32::try_from(v).ok())
         .filter(|v| *v >= 0x80000000)
-        .context("Invalid Steam APK App ID")
+        .context("Invalid Steam APK App ID")?;
+    if let (Some(path), Some(ownership)) = (icon, result.get("ownership").filter(|v| !v.is_null()))
+    {
+        validate_artwork_ownership(ownership)?;
+        ensure!(
+            ownership["appId"] == id,
+            "Artwork ownership does not match shortcut"
+        );
+        super::steam_shortcuts::write_owned(
+            &path
+                .parent()
+                .context("Missing artwork directory")?
+                .join(".framely-artwork.json"),
+            &serde_json::to_vec(ownership)?,
+            0o600,
+        )?;
+        ensure!(
+            ownership["failed"] != true,
+            "Steam artwork update was interrupted; completed images were recorded and will be retried"
+        );
+    }
+    Ok(id)
 }
 
-fn artwork(icon: Option<&Path>) -> Result<Vec<Value>> {
+fn validate_artwork_ownership(value: &Value) -> Result<()> {
+    ensure!(
+        value["version"] == 1
+            && value["appId"]
+                .as_u64()
+                .is_some_and(|id| (0x80000000..=u32::MAX as u64).contains(&id)),
+        "Invalid artwork ownership version or app ID"
+    );
+    let hashes = value["hashes"]
+        .as_object()
+        .context("Invalid artwork ownership hashes")?;
+    ensure!(
+        hashes.len() <= 5
+            && hashes.iter().all(|(kind, hash)| matches!(
+                kind.as_str(),
+                "0" | "1" | "2" | "3" | "4"
+            ) && hash
+                .as_str()
+                .is_some_and(|h| h.len() == 64 && h.bytes().all(|c| c.is_ascii_hexdigit()))),
+        "Invalid artwork ownership hash"
+    );
+    Ok(())
+}
+
+fn load_artwork_ownership(dir: &Path) -> Result<Value> {
+    let path = dir.join(".framely-artwork.json");
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Value::Null),
+        Err(error) => return Err(error.into()),
+    };
+    ensure!(
+        metadata.is_file() && !metadata.file_type().is_symlink() && metadata.len() <= 8192,
+        "Invalid artwork ownership file"
+    );
+    let value: Value = serde_json::from_slice(&fs::read(path)?)?;
+    validate_artwork_ownership(&value)?;
+    Ok(value)
+}
+
+// Kept solely to recognize/migrate exact artwork made by earlier releases.
+fn legacy_artwork(icon: Option<&Path>) -> Result<Vec<Value>> {
     use base64::Engine;
     let Some(path) = icon else { return Ok(vec![]) };
     let image = image::open(path)?.to_rgba8();
@@ -171,7 +254,7 @@ pub(super) fn clear_artwork(app_id: u32, executable: &Path) -> Result<()> {
         sub?.unregister();
         const exe=details.strShortcutExe?.replace(/^"|"$/g,'').replace('/./','/');
         if(exe!==p.exe) throw Error('Shortcut target does not match owned APK');
-        for(const kind of [0,1,3,4]) await SteamClient.Apps.ClearCustomArtworkForApp(p.id,kind);
+        for(const kind of [0,1,2,3,4]) await SteamClient.Apps.ClearCustomArtworkForApp(p.id,kind);
         await SteamClient.Apps.SetShortcutIcon(p.id,'');
     }})()"#
     ))?;
@@ -189,7 +272,7 @@ mod tests {
         image::RgbaImage::from_pixel(128, 64, image::Rgba([230, 30, 20, 255]))
             .save(&p)
             .unwrap();
-        let art = artwork(Some(&p)).unwrap();
+        let art = legacy_artwork(Some(&p)).unwrap();
         assert_eq!(art.len(), 4);
         for (a, expected) in art
             .iter()
@@ -205,6 +288,28 @@ mod tests {
                 [230, 30, 20, 255]
             );
         }
-        assert!(artwork(None).unwrap().is_empty());
+        assert!(legacy_artwork(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn artwork_ownership_is_bounded_and_never_follows_symlinks() {
+        let t = tempfile::tempdir().unwrap();
+        assert!(load_artwork_ownership(t.path()).unwrap().is_null());
+        let valid = json!({"version":1,"appId":0x92345678u32,"hashes":{"0":"a".repeat(64)}});
+        let file = t.path().join(".framely-artwork.json");
+        fs::write(&file, serde_json::to_vec(&valid).unwrap()).unwrap();
+        assert_eq!(load_artwork_ownership(t.path()).unwrap(), valid);
+        for invalid in [
+            json!({}),
+            json!({"version":1,"appId":42,"hashes":{}}),
+            json!({"version":1,"appId":0x92345678u32,"hashes":{"5":"a".repeat(64)}}),
+            json!({"version":1,"appId":0x92345678u32,"hashes":{"0":"not-a-hash"}}),
+        ] {
+            fs::write(&file, serde_json::to_vec(&invalid).unwrap()).unwrap();
+            assert!(load_artwork_ownership(t.path()).is_err());
+        }
+        fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink(t.path().join("other"), &file).unwrap();
+        assert!(load_artwork_ownership(t.path()).is_err());
     }
 }

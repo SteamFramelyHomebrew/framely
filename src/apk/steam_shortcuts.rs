@@ -234,6 +234,7 @@ pub(super) fn register(home: &Path, a: &App, r: &mut Record) -> Result<()> {
         icon.as_deref(),
         &launch,
         &native_apk(home, &a.id),
+        &a.metadata.package,
     )?);
     r.steam_binding = Some(Binding {
         game_id: game,
@@ -271,6 +272,7 @@ pub(super) fn unregister(home: &Path, r: &Record) -> Result<()> {
             "icon.webp",
             "icon.jpg",
             "lepton-show-flatscreen",
+            ".framely-artwork.json",
         ] {
             let file = p.parent().unwrap().join(name);
             if file.exists() {
@@ -287,11 +289,14 @@ pub(super) fn unregister(home: &Path, r: &Record) -> Result<()> {
 }
 pub(super) fn parse_name(value: &Value) -> Result<Option<String>> {
     let name = value.as_str().context("Invalid Steam display name")?.trim();
-    ensure!(name.chars().count() <= 128 && !name.chars().any(char::is_control), "Steam display name must be at most 128 characters without control characters");
+    ensure!(
+        name.chars().count() <= 128 && !name.chars().any(char::is_control),
+        "Steam display name must be at most 128 characters without control characters"
+    );
     Ok((!name.is_empty()).then(|| name.to_owned()))
 }
 fn revision(a: &App, r: &Record) -> String {
-    let mut value = json!({"metadata":a.metadata,"showWindow":a.show_window});
+    let mut value = json!({"metadata":a.metadata,"showWindow":a.show_window,"artworkVersion":1});
     if let Some(name) = &r.steam_name {
         value["steamName"] = json!(name);
     }
@@ -303,8 +308,13 @@ pub(super) fn update_name(home: &Path, a: &App, r: &mut Record) -> Result<()> {
         "(async()=>{{const p={parameters};const owned=await ({lookup})(p);SteamClient.Apps.SetShortcutName(owned.id,p.name);return true;}})()",
         lookup = include_str!("steam_shortcut_lookup.js")
     ))?;
-    ensure!(result == json!(true), "Steam name update was not acknowledged");
-    let current_revision = revision(a, r);
+    ensure!(
+        result == json!(true),
+        "Steam name update was not acknowledged"
+    );
+    // The next synchronization redraws only our generated titles; custom user
+    // artwork is preserved by its content hash. Do not mark stale artwork fresh.
+    let current_revision = format!("artwork-pending:{}", revision(a, r));
     if let Some(binding) = &mut r.steam_binding {
         binding.revision = current_revision;
     }
