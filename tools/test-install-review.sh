@@ -12,7 +12,9 @@ export FRAMELY_INSTALL_REVIEW_FIXTURE="${2:-tests/install_review_fixture.tsx}"
 node --input-type=module - <<'JS'
 import {build} from 'esbuild';
 import {writeFile} from 'node:fs/promises';
+import {buildCodeEditor} from './tools/build-code-editor.mjs';
 const out=process.env.FRAMELY_INSTALL_REVIEW_OUTPUT;
+await buildCodeEditor(`${out}/assets`);
 await build({entryPoints:[process.env.FRAMELY_INSTALL_REVIEW_FIXTURE],bundle:true,outfile:`${out}/fixture.js`,define:{'process.env.NODE_ENV':'"production"'}});
 await writeFile(`${out}/index.html`,'<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="fixture.css"><div id="root"></div><script src="fixture.js"></script></html>');
 JS

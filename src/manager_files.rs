@@ -9,7 +9,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{Read, Write},
-    os::unix::fs::{symlink, FileExt, MetadataExt, PermissionsExt},
+    os::{fd::AsRawFd, unix::fs::{symlink, FileExt, MetadataExt, OpenOptionsExt, PermissionsExt}},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -68,7 +68,6 @@ fn save_json(path: &Path, v: &Value) -> Result<()> {
     fs::rename(&temp, path)?;
     Ok(())
 }
-use std::os::unix::fs::OpenOptionsExt;
 #[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ViewPreferences {
@@ -190,6 +189,9 @@ impl Drop for Download {
 }
 fn entry(p: &Path) -> Result<Value> {
     let m = fs::symlink_metadata(p)?;
+    entry_metadata(p, &m)
+}
+fn entry_metadata(p: &Path, m: &fs::Metadata) -> Result<Value> {
     let link = m.file_type().is_symlink();
     let dir = if link {
         fs::metadata(p).is_ok_and(|m| m.is_dir())
@@ -219,6 +221,43 @@ fn entry(p: &Path) -> Result<Value> {
     Ok(
         json!({"name":p.file_name().unwrap_or_default().to_string_lossy(),"path":p,"directory":dir,"symlink":link,"size":m.len(),"mediaRevision":media_revision,"modified":m.modified().ok().and_then(|t|t.duration_since(UNIX_EPOCH).ok()).map(|t|t.as_secs()),"mode":m.mode()&0o7777,"uid":m.uid(),"gid":m.gid(),"linkTarget":if link{fs::read_link(p).ok()}else{None}}),
     )
+}
+fn account_name(id: u32, group: bool) -> Option<String> {
+    let mut buffer = vec![0u8; 65536];
+    // Reentrant NSS lookups, with numeric IDs retained if no name is available.
+    unsafe {
+        let name = if group {
+            let mut record: libc::group = std::mem::zeroed();
+            let mut found = std::ptr::null_mut();
+            if libc::getgrgid_r(id, &mut record, buffer.as_mut_ptr().cast(), buffer.len(), &mut found) != 0 || found.is_null() { return None; }
+            record.gr_name
+        } else {
+            let mut record: libc::passwd = std::mem::zeroed();
+            let mut found = std::ptr::null_mut();
+            if libc::getpwuid_r(id, &mut record, buffer.as_mut_ptr().cast(), buffer.len(), &mut found) != 0 || found.is_null() { return None; }
+            record.pw_name
+        };
+        (!name.is_null()).then(|| std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned())
+    }
+}
+fn properties(p: &Path) -> Result<Value> {
+    let m = fs::symlink_metadata(p)?;
+    let mut result = entry_metadata(p, &m)?;
+    let time = |value: std::io::Result<SystemTime>| value.ok().and_then(|v|v.duration_since(UNIX_EPOCH).ok()).map(|v|v.as_secs());
+    result["regular"] = json!(m.is_file());
+    result["accessed"] = json!(time(m.accessed()));
+    result["created"] = json!(time(m.created()));
+    result["changed"] = json!(m.ctime());
+    result["allocated"] = json!(m.blocks().saturating_mul(512));
+    result["inode"] = json!(m.ino().to_string());
+    result["device"] = json!(m.dev().to_string());
+    result["links"] = json!(m.nlink());
+    result["owner"] = json!(account_name(m.uid(), false));
+    result["group"] = json!(account_name(m.gid(), true));
+    result["canChmod"] = json!(!m.file_type().is_symlink() && m.uid() == unsafe {libc::geteuid()});
+    // Metadata describes the link itself, never a silently followed target.
+    result["resolvedPath"] = json!(p.canonicalize().ok());
+    Ok(result)
 }
 fn list(p: &Value, home: &Path) -> Result<Value> {
     let dir = PathBuf::from(
@@ -304,22 +343,30 @@ fn binary(bytes: &[u8]) -> bool {
         .any(|byte| (*byte < 0x20 && !matches!(*byte, b'\t' | b'\r' | b'\n')) || *byte == 0x7f)
 }
 fn read_text(p: &Path) -> Result<Value> {
-    let m = fs::metadata(p)?;
+    read_text_mode(p, false)
+}
+fn read_text_mode(p: &Path, as_text: bool) -> Result<Value> {
+    let file = fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(p)?;
+    let m = file.metadata()?;
     ensure!(
         m.is_file() && m.len() <= 5 * 1024 * 1024,
         "Text editor supports files up to 5 MiB"
     );
     let mut bytes = Vec::new();
-    fs::File::open(p)?
+    file
         .take(5 * 1024 * 1024 + 1)
         .read_to_end(&mut bytes)?;
     ensure!(
         bytes.len() <= 5 * 1024 * 1024,
         "Text editor supports files up to 5 MiB"
     );
-    ensure!(!binary(&bytes), "Binary files cannot be edited as text");
-    let text = std::str::from_utf8(&bytes).context("Only UTF-8 text can be edited")?;
-    Ok(json!({"text":text,"revision":fingerprint(&bytes)}))
+    let read_only = binary(&bytes) || std::str::from_utf8(&bytes).is_err();
+    if !as_text {
+        ensure!(!binary(&bytes), "Binary files cannot be edited as text");
+        std::str::from_utf8(&bytes).context("Only UTF-8 text can be edited")?;
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(json!({"text":text,"revision":fingerprint(&bytes),"readOnly":read_only}))
 }
 fn remove(p: &Path) -> Result<()> {
     let m = fs::symlink_metadata(p)?;
@@ -558,7 +605,7 @@ impl Files {
         );
         let operation = p["operation"].as_str().unwrap_or("list");
         match operation {
-            "list" => list(p, home),"properties" => entry(&path(p,"path")?),
+            "list" => list(p, home),"properties" => properties(&path(p,"path")?),
             "view.preferences" => {
                 let _guard = self.preferences.lock().unwrap();
                 view_preferences(home, p)
@@ -581,7 +628,7 @@ impl Files {
                     json!([])
                 })
             },
-            "read" => read_text(&path(p,"path")?),
+            "read" => read_text_mode(&path(p,"path")?, p["asText"] == true),
             "write" => {
                 let file = path(p,"path")?.canonicalize()?;
                 let current = read_text(&file)?;
@@ -621,10 +668,17 @@ impl Files {
             },
             "chmod" => {
                 let file = path(p,"path")?;
-                ensure!(!fs::symlink_metadata(&file)?.file_type().is_symlink(),"Cannot change symlink permissions");
+                // O_PATH permits changing an owned file even when it has mode
+                // 000. Pin the inode so path replacement cannot redirect chmod.
+                let handle = fs::OpenOptions::new().read(true).custom_flags(libc::O_PATH|libc::O_NOFOLLOW).open(&file)?;
+                let metadata = handle.metadata()?;
+                ensure!(!metadata.file_type().is_symlink(),"Cannot change symlink permissions");
+                if let Some(expected) = p.get("identity") {
+                    ensure!(expected["device"] == metadata.dev().to_string() && expected["inode"] == metadata.ino().to_string(), "File changed outside the properties panel; reopen properties");
+                }
                 let mode = p["mode"].as_u64().context("Missing file permissions")?;
                 ensure!(mode<=0o777,"Only normal user permission bits can be changed");
-                fs::set_permissions(file, fs::Permissions::from_mode(mode as u32))?;
+                fs::set_permissions(format!("/proc/self/fd/{}",handle.as_raw_fd()), fs::Permissions::from_mode((metadata.mode()&0o7000)|mode as u32))?;
                 Ok(json!(true))
             },
             "trash.list" => Ok(json!(read_trash(home)?.into_iter().map(|t|json!({
@@ -1240,6 +1294,59 @@ fn target_resolution(path: &Path, p: &Value) -> Result<Option<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn detailed_properties_and_safe_permission_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("private.txt");
+        fs::write(&file, "data").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o2600)).unwrap();
+        let details = properties(&file).unwrap();
+        assert_eq!(details["regular"], true);
+        assert_eq!(details["size"], 4);
+        assert!(details["inode"].is_string() && details["device"].is_string());
+        assert!(details["allocated"].is_number() && details["links"].is_number());
+        assert_eq!(details["canChmod"], true);
+        let manager = Files::default();
+        let identity = json!({"device":details["device"],"inode":details["inode"]});
+        manager.api(temp.path(), &json!({"operation":"chmod","path":file,"mode":0o640,"identity":identity})).unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().mode() & 0o7777, 0o2640);
+        assert!(manager.api(temp.path(), &json!({"operation":"chmod","path":file,"mode":0o1000})).is_err());
+        let replacement = temp.path().join("replacement");
+        fs::write(&replacement, "other").unwrap();
+        fs::rename(&replacement, &file).unwrap();
+        assert!(manager.api(temp.path(), &json!({"operation":"chmod","path":file,"mode":0o777,"identity":identity})).is_err());
+        let link = temp.path().join("link");
+        symlink(&file,&link).unwrap();
+        let details = properties(&link).unwrap();
+        assert_eq!(details["canChmod"], false);
+        assert_eq!(details["symlink"], true);
+        assert!(manager.api(temp.path(), &json!({"operation":"chmod","path":link,"mode":0o777})).is_err());
+        fs::set_permissions(&file, fs::Permissions::from_mode(0)).unwrap();
+        manager.api(temp.path(), &json!({"operation":"chmod","path":file,"mode":0o600})).unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().mode() & 0o777, 0o600);
+    }
+    #[test]
+    fn explicit_text_preview_never_allows_binary_overwrite() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("unknown.data");
+        fs::write(&file, "const answer = 42;\n").unwrap();
+        assert_eq!(read_text_mode(&file,true).unwrap()["readOnly"], false);
+        for data in [vec![255,254,0,1],b"binary\x01data".to_vec()] {
+            fs::write(&file, &data).unwrap();
+            let preview = read_text_mode(&file,true).unwrap();
+            assert_eq!(preview["readOnly"], true);
+            assert_eq!(preview["revision"], fingerprint(&data));
+            assert!(Files::default().api(temp.path(), &json!({"operation":"write","path":file,"revision":preview["revision"],"text":"new","approve":true})).is_err());
+            assert_eq!(fs::read(&file).unwrap(),data);
+        }
+        let fifo = temp.path().join("pipe");
+        let path = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe {libc::mkfifo(path.as_ptr(),0o600)},0);
+        assert!(read_text_mode(&fifo,true).is_err());
+        let oversized = temp.path().join("large");
+        fs::File::create(&oversized).unwrap().set_len(5*1024*1024+1).unwrap();
+        assert!(read_text_mode(&oversized,true).is_err());
+    }
     #[test]
     fn media_revisions_track_replacements_and_symlink_targets() {
         let temp = tempfile::tempdir().unwrap();

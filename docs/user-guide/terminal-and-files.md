@@ -72,6 +72,14 @@ Download a single file directly, or select multiple files/folders to download a 
 
 Opening an ordinary file attempts the UTF-8 editor, limited to 5 MiB. Invalid UTF-8, binary data and larger files cannot be edited; use Download instead. Saving checks a content revision. External changes require reloading the file or explicitly confirming overwrite. Unsaved changes require confirmation before closing the editor.
 
+**Edit as text** is available in the context menu and Actions for every non-directory entry, including images, archives and unknown extensions. It bypasses media preview. Binary data and invalid UTF-8 can be viewed as read-only text (replacement characters may appear); they cannot be saved through the editor. Devices, pipes and files over 5 MiB are rejected. Nothing is executed or converted on disk.
+
+The offline CodeMirror editor loads only when needed. It provides line numbers, highlighting for JavaScript/TypeScript, JSON, HTML, CSS, Python and Rust, indentation, folding, find/replace, undo/redo, word wrap and Ctrl/Cmd+S. Other formats open as plain text. There are no completion popups, diagnostics, language servers or CDN requests. Headset keyboard input edits the document at the current selection. If loading fails, the ordinary textarea remains available.
+
+The editor occupies the file workspace, with a document tab and parent path, a compact toolbar, a manual language-mode selector and live line/column status. Saving and closing stay at the top. The status bar reports encoding and line endings; consistent CRLF and CR files retain their line separators when edited. Opening a confirmation dialog preserves the editor's undo history and temporarily blocks hidden input.
+
+**Properties** reads fresh metadata: path, type, byte size, allocated disk space, owner/group names and numeric IDs, modification/access/metadata-change/creation times (where supported), inode, device and hard-link count. Link properties describe the link itself and show its target and resolved path. Directory size describes the directory entry, not a recursive total. Owned non-symlink entries support a read/write/execute matrix synchronized with a validated three-digit octal mode. Existing special bits are preserved; other users' permissions are not elevated. Saving checks device/inode identity to reject replaced entries.
+
 ## Archives and media
 
 Create ZIP, TAR or TAR.GZ archives; the output filename selects the format. Choose a destination and conflict behavior when extracting. Archive operations reject absolute paths, parent traversal, symbolic/hard links and special files; extracted contents are never executed. Archive limits are 50,000 entries and 64 GiB expanded data. Cancelling removes staging files and leaves already committed items intact.

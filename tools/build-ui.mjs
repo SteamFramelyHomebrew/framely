@@ -1,5 +1,7 @@
 import {build} from 'esbuild';
 import {mkdir,copyFile,cp} from 'node:fs/promises';
+import {buildCodeEditor} from './build-code-editor.mjs';
+await buildCodeEditor();
 await mkdir('ui/dist/assets',{recursive:true});
 await build({entryPoints:['ui/src/main.tsx'],bundle:true,minify:true,outfile:'ui/dist/assets/app.js',define:{'process.env.NODE_ENV':'"production"'}});
 await build({entryPoints:['sdk/src/bootstrap.ts'],bundle:true,minify:true,outfile:'ui/dist/assets/plugin-bootstrap.js'});

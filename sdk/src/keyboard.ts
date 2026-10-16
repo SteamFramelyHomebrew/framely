@@ -1,16 +1,23 @@
-type Editable=HTMLInputElement|HTMLTextAreaElement;
+type Editable=HTMLInputElement|HTMLTextAreaElement|HTMLElement;
 export function installKeyboard(open:(params:{existing:string;password:boolean;multiline:boolean})=>Promise<unknown>){
  let field:Editable|null=null,last:Editable|null=null,openedAt=0;
  const request=(target:EventTarget|null)=>{
-  if(!(target instanceof HTMLInputElement||target instanceof HTMLTextAreaElement)||target.disabled||target.readOnly)return;
+  const embedded=target instanceof HTMLElement&&target.matches('[data-framely-editor-input][contenteditable="true"]');
+  if(!embedded&&(!(target instanceof HTMLInputElement||target instanceof HTMLTextAreaElement)||target.disabled||target.readOnly))return;
+  if(!(target instanceof HTMLElement))return;
   if(target instanceof HTMLInputElement&&!['text','password','url','search','email','number','tel'].includes(target.type))return;
   field=target;const now=performance.now();if(last===target&&now-openedAt<300)return;last=target;openedAt=now;
-  void open({existing:target.value,password:target instanceof HTMLInputElement&&target.type==='password',multiline:target instanceof HTMLTextAreaElement}).catch(console.error);
+  const params={existing:target instanceof HTMLInputElement||target instanceof HTMLTextAreaElement?target.value:'',password:target instanceof HTMLInputElement&&target.type==='password',multiline:embedded||target instanceof HTMLTextAreaElement};
+  if(embedded)target.dispatchEvent(new CustomEvent('framely.keyboard.open',{detail:params}));
+  void open(params).catch(console.error);
  };
  document.addEventListener('focusin',e=>request(e.target));
  document.addEventListener('pointerdown',e=>request(e.target));
  (window as any).__framelyCommitKeyboard=(value:string)=>{
   if(!field?.isConnected)return;
+  if(field.closest('[inert]')||((field instanceof HTMLInputElement||field instanceof HTMLTextAreaElement)&&(field.disabled||field.readOnly)))return;
+  if(!field.dispatchEvent(new CustomEvent('framely.keyboard.commit',{detail:value,cancelable:true})))return;
+  if(!(field instanceof HTMLInputElement||field instanceof HTMLTextAreaElement))return;
   const proto=field instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
   Object.getOwnPropertyDescriptor(proto,'value')!.set!.call(field,value);
   field.dispatchEvent(new Event('input',{bubbles:true}));field.dispatchEvent(new Event('change',{bubbles:true}));
@@ -18,9 +25,11 @@ export function installKeyboard(open:(params:{existing:string;password:boolean;m
  };
  (window as any).__framelyEditKeyboard=(edit:string)=>{
   if(!field?.isConnected)return;
+  if(field.closest('[inert]')||((field instanceof HTMLInputElement||field instanceof HTMLTextAreaElement)&&(field.disabled||field.readOnly)))return;
   // Embedded editors can consume the native keyboard without mutating their
   // hidden textarea. Ordinary inputs continue through the path below.
   if(!field.dispatchEvent(new CustomEvent('framely.keyboard.edit',{detail:edit,cancelable:true})))return;
+  if(!(field instanceof HTMLInputElement||field instanceof HTMLTextAreaElement))return;
   const value=field.value;
   let start=field.selectionStart??value.length,end=field.selectionEnd??start;
   const segments=Array.from(new (Intl as any).Segmenter(undefined,{granularity:'grapheme'}).segment(value)) as {index:number;segment:string}[];
