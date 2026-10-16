@@ -1,5 +1,6 @@
 """Focused network fallback tests: no public network or device access."""
 import http.server
+import errno
 import importlib.util
 import io
 import os
@@ -20,6 +21,33 @@ spec.loader.exec_module(network)
 
 
 class FallbackTests(unittest.TestCase):
+    def test_unreachable_network_retries_once_but_local_io_errors_do_not(self):
+        url = 'https://github.com/a/b/releases/download/v1/archive'
+        for code in (errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTUNREACH):
+            for wrapped in (False, True):
+                with self.subTest(code=code, wrapped=wrapped):
+                    calls = []
+                    def attempt(fallback):
+                        calls.append(fallback)
+                        error = OSError(code, 'simulated network failure')
+                        raise urllib.error.URLError(error) if wrapped else error
+                    with self.assertRaisesRegex(RuntimeError, 'primary route failed.*fallback failed'):
+                        network.github_attempt(url, attempt, enabled=True)
+                    self.assertEqual(calls, [False, True])
+                    calls.clear()
+                    with self.assertRaises((OSError, urllib.error.URLError)):
+                        network.github_attempt(url, attempt, enabled=False)
+                    self.assertEqual(calls, [False])
+        for code in (errno.ENOSPC, errno.EACCES, errno.ENOENT, errno.EIO):
+            with self.subTest(code=code):
+                calls = []
+                def attempt(fallback):
+                    calls.append(fallback)
+                    raise OSError(code, 'simulated local failure')
+                with self.assertRaises(OSError):
+                    network.github_attempt(url, attempt, enabled=True)
+                self.assertEqual(calls, [False])
+
     def test_q2f_checksum_failure_does_not_retry(self):
         spec = importlib.util.spec_from_file_location('q2f', ROOT / 'tools/q2f-runtime.py')
         runtime = importlib.util.module_from_spec(spec); spec.loader.exec_module(runtime)

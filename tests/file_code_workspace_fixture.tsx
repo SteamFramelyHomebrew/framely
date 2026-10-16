@@ -59,6 +59,15 @@ const until=async(f:()=>unknown)=>{for(let n=0;n<150;n++){if(f())return;await wa
  const [save,close]=[...document.querySelectorAll<HTMLButtonElement>('.file-editor-heading button')];save.click();await until(()=>text.startsWith('// // ')&&save.disabled&&!close.disabled);
  if(text.replaceAll('\r\n','').includes('\n'))throw Error('Saving changed CRLF line endings');
  const host=document.createElement('div');host.style.cssText='position:fixed;left:-5000px;width:500px;height:300px';document.body.append(host);let modified=false;
+ let saves=0;
+ const writable=window.FramelyCodeEditor!.mount({parent:host,path:'save.txt',value:'hello hello',readOnly:false,label:'Save shortcut test',phrases:{},onChange:()=>{modified=true;},onSave:()=>{saves++;}});writable.find();
+ host.querySelector<HTMLButtonElement>('[name="Toggle replace"]')!.click();
+ const mac=/Mac|iPhone|iPad/.test(navigator.platform);
+ for(const target of [host.querySelector<HTMLElement>('.cm-content')!,...host.querySelectorAll<HTMLInputElement>('.file-code-search input')]){
+  target.focus();const before=saves,event=new KeyboardEvent('keydown',{key:'s',code:'KeyS',ctrlKey:!mac,metaKey:mac,bubbles:true,cancelable:true});target.dispatchEvent(event);
+  if(saves!==before+1||!event.defaultPrevented)throw Error('Save shortcut failed in '+(target.getAttribute('name')??'document'));
+ }
+ if(modified)throw Error('Save shortcut changed document text');writable.destroy();
  const readonly=window.FramelyCodeEditor!.mount({parent:host,path:'readonly.txt',value:'hello hello',readOnly:true,label:'Readonly test',phrases:{},onChange:()=>{modified=true;},onSave:()=>{}});readonly.find();
  const panel=host.querySelector('.file-code-search')!,readonlyFind=panel.querySelector<HTMLInputElement>('[name=Find]')!;set(readonlyFind,'hello');panel.querySelector<HTMLButtonElement>('[name="Toggle replace"]')!.click();
  if(!panel.querySelector<HTMLInputElement>('[name=Replace]')!.disabled||!panel.querySelector<HTMLButtonElement>('[name="replace all"]')!.disabled)throw Error('Read-only replacement allowed');

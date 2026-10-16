@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Shared device-side installation engine, also embedded in the desktop installer."""
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -73,6 +74,10 @@ def retryable(error):
                     or error.headers.get('Retry-After') is not None))
     if isinstance(error, urllib.error.URLError):
         return retryable(error.reason)
+    # These routing failures are plain OSError, not ConnectionError. Keep an
+    # explicit network-only allowlist so disk/permission failures never retry.
+    if isinstance(error, OSError) and error.errno in (errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTUNREACH):
+        return True
     return isinstance(error, (socket.gaierror, TimeoutError, ConnectionError,
                               http.client.IncompleteRead, http.client.RemoteDisconnected))
 
