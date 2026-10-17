@@ -275,7 +275,12 @@ impl Installer {
                     self.busy = false;
                     match result {
                         Ok(probe) => {
-                            self.status = "SSH 握手成功。确认下方设备指纹后登录。".into();
+                            self.status = if probe.changed() {
+                                "设备指纹已变化。若设备已重装，请核对下方新指纹后重新信任并连接。"
+                            } else {
+                                "SSH 握手成功。确认下方设备指纹后登录。"
+                            }
+                            .into();
                             self.probe = Some(probe);
                         }
                         Err(error) => {
@@ -294,6 +299,10 @@ impl Installer {
                     self.busy = false;
                     match result {
                         Ok(connection) => {
+                            if let Some(probe) = &mut self.probe {
+                                probe.previous_fingerprint = Some(probe.fingerprint.clone());
+                                probe.known = true;
+                            }
                             self.status =
                                 format!("已连接 {}：{}", connection.host, connection.version);
                             self.chosen_action = connection.installation.default_action().into();
@@ -527,7 +536,7 @@ impl Installer {
         self.connection_stage = Some(self.status.clone());
         let sender = self.sender.clone();
         std::thread::spawn(move || {
-            let result = remote::connect(credentials, &probe.fingerprint, &mut |stage| {
+            let result = remote::connect(credentials, &probe, &mut |stage| {
                 let _ = sender.send(Event::ConnectionStage(stage));
             })
             .map_err(|e| format!("{e:#}"));
@@ -837,6 +846,75 @@ fn preview_pages(dir: PathBuf) -> anyhow::Result<()> {
     })?;
     context.update_window(handle, |_, window, cx| transparent_window_root(window, cx))?;
     context.allow_parking();
+    if std::env::var("FRAMELY_INSTALLER_PREVIEW_CASE").as_deref() == Ok("fingerprint-change") {
+        context.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.page = 0;
+                view.busy = true;
+                view.connection = None;
+                view.sender
+                    .send(Event::Probe(Ok(Probe {
+                        endpoint: "192.168.1.42:22".into(),
+                        fingerprint: "SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".into(),
+                        known: false,
+                        previous_fingerprint: Some(
+                            "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+                        ),
+                    })))
+                    .unwrap();
+                view.poll(window, cx);
+                assert!(!view.busy && view.probe.as_ref().unwrap().changed());
+                assert!(view.status.contains("设备指纹已变化"));
+            });
+            window.render_frame(cx);
+            assert!(window.find("connect").visible());
+            assert!(window.find("cancel-fingerprint-change").visible());
+        })?;
+        context.run_until_parked();
+        context.update_window(handle, |_, window, cx| window.render_frame(cx))?;
+        context
+            .capture_screenshot(handle)?
+            .save(dir.join("installer-fingerprint-change.png"))?;
+        let pending =
+            context.update_window(handle, |_, _, cx| view.read(cx).probe.clone().unwrap())?;
+        context.update_window(handle, |_, window, cx| {
+            window.click("cancel-fingerprint-change", cx);
+            window.render_frame(cx);
+            assert!(view.read(cx).probe.is_none() && !view.read(cx).busy);
+            assert!(view.read(cx).status.contains("未更改"));
+            assert!(window.find("probe").visible());
+            view.update(cx, |view, cx| {
+                view.probe = Some(pending.clone());
+                view.sender
+                    .send(Event::Connected(Err("SSH 登录失败".into())))
+                    .unwrap();
+                view.poll(window, cx);
+                assert!(view.probe.as_ref().unwrap().changed() && !view.busy);
+            });
+            window.close_all_dialogs(cx);
+            view.update(cx, |view, cx| {
+                view.prompts.clear();
+                view.sender
+                    .send(Event::Connected(Ok(Connection {
+                        session: ssh2::Session::new().unwrap(),
+                        host: "192.168.1.42".into(),
+                        user: "steamos".into(),
+                        version: "frame · 0.8.3".into(),
+                        installation: Installation {
+                            present: true,
+                            current_version: Some("0.8.3".into()),
+                            previous_version: None,
+                        },
+                    })))
+                    .unwrap();
+                view.poll(window, cx);
+                let probe = view.probe.as_ref().unwrap();
+                assert!(probe.known && !probe.changed() && !view.busy);
+            });
+        })?;
+        println!("Fingerprint change preview, cancellation and connection state checks passed");
+        return Ok(());
+    }
     for (page, name) in [
         (0, "devices"),
         (1, "versions"),
@@ -870,8 +948,10 @@ fn preview_pages(dir: PathBuf) -> anyhow::Result<()> {
                     view.devices.clear();
                 } else if name == "connecting" {
                     view.probe = Some(Probe {
+                        endpoint: "192.168.1.42:22".into(),
                         fingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
                         known: false,
+                        previous_fingerprint: None,
                     });
                     view.busy = true;
                     view.sender

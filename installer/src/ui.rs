@@ -336,6 +336,9 @@ impl Installer {
                 this.child(field("扫描范围", &self.cidr, self.busy || self.scanning))
             });
         let mut connection = panel()
+            .when(self.probe.as_ref().is_some_and(Probe::changed), |this| {
+                this.gap_3().p_5()
+            })
             .flex_1()
             .min_w_0()
             .child(
@@ -391,32 +394,99 @@ impl Installer {
                                     .gap_2()
                                     .items_center()
                                     .child(icon(IconName::ShieldCheck))
-                                    .child(div().text_sm().child(if probe.known {
+                                    .child(div().text_sm().child(if probe.changed() {
+                                        "设备指纹已变化"
+                                    } else if probe.known {
                                         "设备指纹与上次一致"
                                     } else {
                                         "首次连接，请核对设备指纹"
                                     })),
                             )
+                            .when(probe.changed(), |this| {
+                                this.child(muted("设备重装后，请核对并信任新指纹，继续连接。"))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .flex_none()
+                                                    .text_xs()
+                                                    .text_color(rgb(MUTED))
+                                                    .child("上次指纹"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .text_color(rgb(MUTED))
+                                                    .child(
+                                                        probe
+                                                            .previous_fingerprint
+                                                            .clone()
+                                                            .unwrap_or_default(),
+                                                    ),
+                                            ),
+                                    )
+                            })
                             .child(
                                 div()
-                                    .text_size(px(12.))
-                                    .text_color(rgb(BLUE))
-                                    .child(probe.fingerprint.clone()),
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .when(probe.changed(), |this| {
+                                        this.child(
+                                            div()
+                                                .flex_none()
+                                                .text_xs()
+                                                .text_color(rgb(MUTED))
+                                                .child("当前指纹"),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(rgb(BLUE))
+                                            .child(probe.fingerprint.clone()),
+                                    ),
                             ),
                     )
                 })
                 .child(
-                    Button::new("connect")
-                        .h(px(42.))
-                        .primary()
-                        .label(if self.connection_stage.is_some() {
-                            "正在连接…"
-                        } else {
-                            "确认指纹并连接"
-                        })
-                        .loading(self.connection_stage.is_some())
-                        .disabled(locked)
-                        .on_click(cx.listener(|view, _, _, cx| view.connect(cx))),
+                    div()
+                        .flex()
+                        .gap_3()
+                        .child(
+                            Button::new("connect")
+                                .flex_1()
+                                .h(px(42.))
+                                .primary()
+                                .label(if self.connection_stage.is_some() {
+                                    "正在连接…"
+                                } else if probe.changed() {
+                                    "信任新指纹并连接"
+                                } else {
+                                    "确认指纹并连接"
+                                })
+                                .loading(self.connection_stage.is_some())
+                                .disabled(locked)
+                                .on_click(cx.listener(|view, _, _, cx| view.connect(cx))),
+                        )
+                        .when(probe.changed(), |this| {
+                            this.child(
+                                Button::new("cancel-fingerprint-change")
+                                    .h(px(42.))
+                                    .ghost()
+                                    .label("取消")
+                                    .disabled(locked)
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        view.probe = None;
+                                        view.error = None;
+                                        view.status = "未更改已保存的设备指纹。".into();
+                                        cx.notify();
+                                    })),
+                            )
+                        }),
                 );
         } else {
             connection = connection.child(

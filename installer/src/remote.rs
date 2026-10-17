@@ -23,8 +23,32 @@ pub struct Credentials {
 }
 #[derive(Clone, Debug)]
 pub struct Probe {
+    pub endpoint: String,
     pub fingerprint: String,
     pub known: bool,
+    pub previous_fingerprint: Option<String>,
+}
+impl Probe {
+    pub fn changed(&self) -> bool {
+        self.previous_fingerprint
+            .as_ref()
+            .is_some_and(|old| old != &self.fingerprint)
+    }
+    fn confirm(&self, actual: &str, hosts: &Hosts) -> Result<()> {
+        ensure!(
+            actual == self.fingerprint,
+            "SSH 指纹与刚才检查的不一致，请重新检查 SSH 连接"
+        );
+        ensure!(
+            hosts
+                .keys
+                .get(&self.endpoint)
+                .map(|saved| normalized_saved_fingerprint(saved))
+                == self.previous_fingerprint,
+            "已保存的 SSH 指纹记录发生变化，请重新检查 SSH 连接"
+        );
+        Ok(())
+    }
 }
 pub struct Connection {
     pub session: Session,
@@ -44,7 +68,9 @@ fn hosts_file() -> Result<PathBuf> {
         .join("known-hosts.json"))
 }
 fn load_hosts() -> Result<Hosts> {
-    let path = hosts_file()?;
+    load_hosts_from(&hosts_file()?)
+}
+fn load_hosts_from(path: &Path) -> Result<Hosts> {
     if path.exists() {
         Ok(serde_json::from_slice(&fs::read(path)?)?)
     } else {
@@ -88,20 +114,24 @@ pub fn probe(host: &str, port: u16) -> Result<Probe> {
     let fingerprint = fingerprint(&session)?;
     let hosts = load_hosts()?;
     let endpoint = format!("{host}:{port}");
-    if let Some(saved) = hosts.keys.get(&endpoint) {
-        ensure!(
-            normalized_saved_fingerprint(saved) == fingerprint,
-            "SSH 主机指纹发生变化，已阻止连接；请先核实设备身份"
-        );
-    }
-    Ok(Probe {
+    Ok(observed_probe(endpoint, fingerprint, &hosts))
+}
+fn observed_probe(endpoint: String, fingerprint: String, hosts: &Hosts) -> Probe {
+    let previous_fingerprint = hosts
+        .keys
+        .get(&endpoint)
+        .map(|saved| normalized_saved_fingerprint(saved));
+    let known = previous_fingerprint.as_ref() == Some(&fingerprint);
+    Probe {
+        endpoint,
         fingerprint,
-        known: hosts.keys.contains_key(&endpoint),
-    })
+        known,
+        previous_fingerprint,
+    }
 }
 pub fn connect(
     credentials: Credentials,
-    expected: &str,
+    confirmed: &Probe,
     progress: &mut dyn FnMut(String),
 ) -> Result<Connection> {
     ensure!(
@@ -118,12 +148,15 @@ pub fn connect(
         "密码不能包含换行符"
     );
     ensure!(!credentials.password.is_empty(), "请输入设备登录密码");
+    ensure!(
+        confirmed.endpoint == format!("{}:{}", credentials.host, credentials.port),
+        "设备地址已变化，请重新检查 SSH 连接"
+    );
     progress("正在建立 SSH 连接…".into());
     let session = handshake(&credentials.host, credentials.port).context("无法建立 SSH 连接")?;
-    ensure!(
-        fingerprint(&session)? == expected,
-        "SSH 指纹与刚才检查的不一致"
-    );
+    // The Connect button confirms this exact observation, including a changed
+    // key. Recheck before sending credentials; never accept a second change.
+    confirmed.confirm(&fingerprint(&session)?, &load_hosts()?)?;
     progress("正在验证用户名和密码…".into());
     session
         .userauth_password(&credentials.user, &credentials.password)
@@ -161,16 +194,7 @@ pub fn connect(
             "未安装"
         });
     progress("正在保存设备指纹…".into());
-    let path = hosts_file()?;
-    fs::create_dir_all(path.parent().unwrap())
-        .context("无法创建指纹配置目录，请检查本机目录权限")?;
-    let mut hosts = load_hosts()?;
-    hosts.keys.insert(
-        format!("{}:{}", credentials.host, credentials.port),
-        expected.into(),
-    );
-    fs::write(path, serde_json::to_vec_pretty(&hosts)?)
-        .context("无法保存设备指纹，请检查本机配置目录权限")?;
+    remember_probe(&hosts_file()?, confirmed)?;
     Ok(Connection {
         session,
         host: credentials.host,
@@ -178,6 +202,21 @@ pub fn connect(
         version: format!("{} · {}", fields[0], version.trim()),
         installation,
     })
+}
+fn remember_probe(path: &Path, confirmed: &Probe) -> Result<()> {
+    let parent = path.parent().context("无效的指纹配置路径")?;
+    fs::create_dir_all(parent).context("无法创建指纹配置目录，请检查本机目录权限")?;
+    let mut hosts = load_hosts_from(path)?;
+    confirmed.confirm(&confirmed.fingerprint, &hosts)?;
+    hosts
+        .keys
+        .insert(confirmed.endpoint.clone(), confirmed.fingerprint.clone());
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(&serde_json::to_vec_pretty(&hosts)?)?;
+    file.as_file().sync_all()?;
+    file.persist(path)
+        .context("无法保存设备指纹，请检查本机配置目录权限")?;
+    Ok(())
 }
 fn read_installation(
     session: &Session,
@@ -463,6 +502,83 @@ mod tests {
             normalized_saved_fingerprint(&format!("SHA256:{}", hex::encode([1_u8; 32]))),
             standard
         );
+        let hosts = Hosts {
+            keys: BTreeMap::from([("frame:22".into(), format!("SHA256:{}", hex::encode(digest)))]),
+        };
+        let probe = observed_probe("frame:22".into(), standard.clone(), &hosts);
+        assert!(probe.known && !probe.changed());
+        probe.confirm(&standard, &hosts).unwrap();
+    }
+    #[test]
+    fn changed_fingerprint_can_be_confirmed_without_losing_other_devices() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known-hosts.json");
+        let old = "SHA256:old";
+        let new = "SHA256:new";
+        let hosts = Hosts {
+            keys: BTreeMap::from([
+                ("frame:22".into(), old.into()),
+                ("other:2222".into(), "SHA256:other".into()),
+            ]),
+        };
+        fs::write(&path, serde_json::to_vec(&hosts).unwrap()).unwrap();
+        let fresh = observed_probe("fresh:22".into(), new.into(), &hosts);
+        assert!(!fresh.known && !fresh.changed() && fresh.previous_fingerprint.is_none());
+        let changed = observed_probe("frame:22".into(), new.into(), &hosts);
+        assert!(!changed.known && changed.changed());
+        assert_eq!(changed.previous_fingerprint.as_deref(), Some(old));
+        // Merely inspecting or cancelling leaves the original record intact.
+        assert_eq!(load_hosts_from(&path).unwrap().keys["frame:22"], old);
+        assert!(changed.confirm("SHA256:changed-again", &hosts).is_err());
+        assert_eq!(load_hosts_from(&path).unwrap().keys["frame:22"], old);
+        changed.confirm(new, &hosts).unwrap();
+        remember_probe(&path, &changed).unwrap();
+        let saved = load_hosts_from(&path).unwrap();
+        assert_eq!(saved.keys["frame:22"], new);
+        assert_eq!(saved.keys["other:2222"], "SHA256:other");
+        let next = observed_probe("frame:22".into(), new.into(), &saved);
+        assert!(next.known && !next.changed());
+        next.confirm(new, &saved).unwrap();
+    }
+    #[test]
+    fn stale_fingerprint_confirmation_does_not_replace_a_newer_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known-hosts.json");
+        let mut hosts = Hosts {
+            keys: BTreeMap::from([("frame:22".into(), "SHA256:old".into())]),
+        };
+        let pending = observed_probe("frame:22".into(), "SHA256:new".into(), &hosts);
+        hosts
+            .keys
+            .insert("frame:22".into(), "SHA256:confirmed-elsewhere".into());
+        fs::write(&path, serde_json::to_vec(&hosts).unwrap()).unwrap();
+        assert!(pending.confirm(&pending.fingerprint, &hosts).is_err());
+        assert!(remember_probe(&path, &pending).is_err());
+        assert_eq!(
+            load_hosts_from(&path).unwrap().keys["frame:22"],
+            "SHA256:confirmed-elsewhere"
+        );
+    }
+    #[test]
+    fn confirmed_fingerprint_is_bound_to_the_checked_address_and_port() {
+        let pending = observed_probe("frame:22".into(), "SHA256:new".into(), &Hosts::default());
+        for (host, port) in [("other", 22), ("frame", 2222)] {
+            let mut stages = vec![];
+            let error = connect(
+                Credentials {
+                    host: host.into(),
+                    port,
+                    user: "steamos".into(),
+                    password: Zeroizing::new("test".into()),
+                },
+                &pending,
+                &mut |stage| stages.push(stage),
+            )
+            .err()
+            .unwrap();
+            assert!(error.to_string().contains("设备地址已变化"));
+            assert!(stages.is_empty());
+        }
     }
     #[test]
     #[ignore = "Requires an explicitly supplied SSH device and trusted OpenSSH fingerprints"]
@@ -492,7 +608,7 @@ mod tests {
                 user: "steamos".into(),
                 password: Zeroizing::new("framely-invalid-password-test-9c45bc39".into()),
             },
-            &probe.fingerprint,
+            &probe,
             &mut |stage| stages.push(stage),
         );
         let error = match result {
