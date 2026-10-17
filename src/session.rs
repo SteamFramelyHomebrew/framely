@@ -77,6 +77,23 @@ fn push(q: &Mutex<VecDeque<Value>>, v: Value) {
     q.push_back(v);
 }
 impl Agent {
+    fn send_page(&self, r: Request, remote: bool, guest: bool, network_cookie: Option<String>) -> Result<()> {
+        let data = fs::read(self.assets.join("index.html"))?;
+        let data = if remote {
+            String::from_utf8(data)?.replacen("<head>", "<head><meta name=\"framely-remote\" content=\"true\">", 1).into_bytes()
+        } else { data };
+        let data = if guest {
+            String::from_utf8(data)?.replacen("<head>", "<head><meta name=\"framely-cast-guest\" content=\"true\">", 1).into_bytes()
+        } else { data };
+        let mut response = Response::from_data(data)
+            .with_header(header("Content-Type", "text/html; charset=utf-8"))
+            .with_header(header("Cache-Control", "no-store"))
+            .with_header(header("Referrer-Policy", "no-referrer"))
+            .with_header(header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; media-src 'self' blob:; frame-src 'self' http://localhost:*; connect-src 'self'; base-uri 'none'; form-action 'none'"));
+        if let Some(cookie) = network_cookie { response = response.with_header(header("Set-Cookie", &cookie)); }
+        r.respond(response)?;
+        Ok(())
+    }
     fn watch_cookie(r: &Request) -> Option<String> {
         r.headers().iter().filter(|h| h.field.equiv("Cookie"))
             .flat_map(|h| h.value.as_str().split(';'))
@@ -283,18 +300,18 @@ impl Agent {
                 && r.method() == &Method::Get
                 && (path == "/" || path == "/manager" || path == "/cast/watch")
             {
-                r.respond(
-                    Response::empty(StatusCode(302))
-                        .with_header(header("Location", if path == "/cast/watch" { "/cast/watch" } else { "/manager" }))
-                        .with_header(header(
-                            "Set-Cookie",
-                            &format!(
-                                "framely-network={}; HttpOnly; SameSite=Strict; Path=/",
-                                self.network_key.lock().unwrap()
-                            ),
-                        )),
-                )?;
-                return Ok(());
+                // A cross-site redirect chain may withhold Strict cookies on
+                // every hop. Commit a page instead of redirecting to itself;
+                // subsequent same-site asset/API requests carry the cookie.
+                let cookie = format!("framely-network={}; HttpOnly; SameSite=Strict; Path=/", self.network_key.lock().unwrap());
+                if path == "/" {
+                    r.respond(Response::empty(StatusCode(302))
+                        .with_header(header("Location", "/manager"))
+                        .with_header(header("Set-Cookie", &cookie))
+                        .with_header(header("Cache-Control", "no-store")))?;
+                    return Ok(());
+                }
+                return self.send_page(r, true, false, Some(cookie));
             }
             if path == "/setup" && r.method() == &Method::Post {
                 ensure!(
@@ -313,7 +330,7 @@ impl Agent {
                 match self.core("network.password.setup", json!({"password":fields.get("password"),"confirmPassword":fields.get("confirmPassword")})) {
                     Ok(_) => {
                         *self.network_key.lock().unwrap() = random_key();
-                        r.respond(Response::empty(StatusCode(303)).with_header(header("Location", "/manager")))?;
+                        r.respond(Response::empty(StatusCode(303)).with_header(header("Location", "/manager")).with_header(header("Cache-Control", "no-store")))?;
                     }
                     Err(error) => {
                         r.respond(Response::from_string(format!("{error}。请返回重试。"))
@@ -368,6 +385,7 @@ impl Agent {
                 if verified && key_before == *self.network_key.lock().unwrap() {
                     r.respond(
                         Response::empty(StatusCode(302))
+                            .with_header(header("Cache-Control", "no-store"))
                             .with_header(header("Location", if destination { "/cast/watch" } else { "/manager" }))
                             .with_header(header(
                                 "Set-Cookie",
@@ -387,7 +405,7 @@ impl Agent {
                 return Ok(());
             }
             if r.method() == &Method::Get && (path == "/" || path == "/manager" || path == "/cast/watch") {
-                r.respond(Response::from_string(if configured { if path == "/cast/watch" { NETWORK_LOGIN.replace("<form method=\"post\" action=\"/login\">", "<form method=\"post\" action=\"/login\"><input type=\"hidden\" name=\"next\" value=\"/cast/watch\">") } else { NETWORK_LOGIN.into() } } else { NETWORK_SETUP.into() }).with_header(header("Content-Type","text/html; charset=utf-8")).with_header(header("Content-Security-Policy","default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")))?;
+                r.respond(Response::from_string(if configured { if path == "/cast/watch" { NETWORK_LOGIN.replace("<form method=\"post\" action=\"/login\">", "<form method=\"post\" action=\"/login\"><input type=\"hidden\" name=\"next\" value=\"/cast/watch\">") } else { NETWORK_LOGIN.into() } } else { NETWORK_SETUP.into() }).with_header(header("Content-Type","text/html; charset=utf-8")).with_header(header("Cache-Control","no-store")).with_header(header("Content-Security-Policy","default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")))?;
             } else {
                 r.respond(
                     Response::empty(StatusCode(401))
@@ -398,7 +416,7 @@ impl Agent {
         }
         if remote && r.method() == &Method::Get && path == "/" {
             r.respond(
-                Response::empty(StatusCode(302)).with_header(header("Location", "/manager")),
+                Response::empty(StatusCode(302)).with_header(header("Location", "/manager")).with_header(header("Cache-Control", "no-store")),
             )?;
             return Ok(());
         }
@@ -577,6 +595,7 @@ impl Agent {
         if let Some(key) = path.strip_prefix("/boot/") {
             ensure!(key == self.web_key, "Invalid boot token");
             let response = Response::empty(StatusCode(302))
+                .with_header(header("Cache-Control", "no-store"))
                 .with_header(header(
                     "Set-Cookie",
                     &format!(
@@ -956,22 +975,7 @@ impl Agent {
             || path == "/launcher"
             || path.starts_with("/window/")
         {
-            let data = fs::read(self.assets.join("index.html"))?;
-            let data = if remote {
-                String::from_utf8(data)?
-                    .replacen(
-                        "<head>",
-                        "<head><meta name=\"framely-remote\" content=\"true\">",
-                        1,
-                    )
-                    .into_bytes()
-            } else {
-                data
-            };
-            let data = if guest { String::from_utf8(data)?.replacen("<head>", "<head><meta name=\"framely-cast-guest\" content=\"true\">", 1).into_bytes() } else { data };
-            let response=Response::from_data(data).with_header(header("Content-Type","text/html; charset=utf-8")).with_header(header("Cache-Control","no-store")).with_header(header("Referrer-Policy","no-referrer")).with_header(header("Content-Security-Policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; media-src 'self' blob:; frame-src 'self' http://localhost:*; connect-src 'self'; base-uri 'none'; form-action 'none'"));
-            r.respond(response)?;
-            return Ok(());
+            return self.send_page(r, remote, guest, None);
         }
         r.respond(Response::from_string("Not found").with_status_code(404))?;
         Ok(())
@@ -3456,6 +3460,50 @@ mod tests {
             .set("Origin", "http://other.example")
             .send_json(json!({"method":"ui.events"}))
             .is_err());
+        agent.core("agreement.accept", json!({"version":crate::model::AGREEMENT_VERSION,"userAgreement":true,"privacyStatement":true})).unwrap();
+        agent.core("network.save", json!({"enabled":true,"port":15915,"passwordEnabled":false})).unwrap();
+        // Reproduce a cross-site navigation whose redirect chain never sends
+        // Strict cookies. Each direct landing must terminate without a hop.
+        for path in ["/manager", "/cast/watch"] {
+            for _ in 0..3 {
+                let page = client.get(&format!("{origin}{path}"))
+                    .set("Sec-Fetch-Site", "cross-site")
+                    .set("Sec-Fetch-Mode", "navigate")
+                    .call().unwrap();
+                assert_eq!(page.status(), 200);
+                assert!(page.header("Location").is_none());
+                assert_eq!(page.header("Cache-Control"), Some("no-store"));
+                assert_eq!(page.header("Referrer-Policy"), Some("no-referrer"));
+                let grant = page.header("Set-Cookie").unwrap();
+                assert!(grant.contains("HttpOnly") && grant.contains("SameSite=Strict") && grant.contains("Path=/"));
+                let html = page.into_string().unwrap();
+                assert!(html.contains("framely-remote"));
+                assert!(!html.contains("framely-cast-guest"));
+            }
+        }
+        let landing = client.get(&origin).call().unwrap();
+        assert_eq!(landing.status(), 302);
+        assert_eq!(landing.header("Location"), Some("/manager"));
+        assert_eq!(landing.header("Cache-Control"), Some("no-store"));
+        // Only the landing grants a cookie; it does not authorize other
+        // cookie-less routes or bypass same-origin checks on later requests.
+        for path in ["/api", "/manager-api/files"] {
+            assert!(matches!(client.post(&format!("{origin}{path}"))
+                .set("Origin", &origin).send_json(json!({"method":"ui.events"})),
+                Err(ureq::Error::Status(401, _))));
+        }
+        assert!(client.post(&format!("{origin}/api"))
+            .set("Cookie", cookie).set("Origin", "http://other.example")
+            .send_json(json!({"method":"ui.events"})).is_err());
+        assert!(client.post(&format!("{origin}/api"))
+            .set("Cookie", cookie).set("Origin", &origin)
+            .send_json(json!({"method":"ui.events"})).is_ok());
+        agent.core("network.save", json!({"enabled":true,"port":15915,"passwordEnabled":true})).unwrap();
+        let login = client.get(&format!("{origin}/manager")).call().unwrap();
+        assert_eq!(login.status(), 200);
+        assert!(login.header("Set-Cookie").is_none());
+        assert_eq!(login.header("Cache-Control"), Some("no-store"));
+        assert!(login.into_string().unwrap().contains("action=\"/login\""));
         stop.store(true, Ordering::Relaxed);
         worker.join().unwrap();
         core_worker.join().unwrap();
