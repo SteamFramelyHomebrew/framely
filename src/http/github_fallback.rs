@@ -47,17 +47,35 @@ pub(crate) fn local_truncated_server() -> (String, std::thread::JoinHandle<()>) 
         for body in [b"old".as_slice(), b"new-data".as_slice()] {
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut stream = loop {
-                if let Ok((stream, _)) = listener.accept() {
-                    break stream;
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(error) => panic!("local fallback server accept failed: {error}"),
                 }
                 assert!(Instant::now() < deadline, "local fallback server timed out");
                 std::thread::sleep(Duration::from_millis(5));
             };
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let mut request = [0u8; 8192];
-            let _ = stream.read(&mut request).unwrap();
+            // Accepted sockets can inherit O_NONBLOCK on macOS. Wait for
+            // the complete request even when its headers arrive separately.
+            stream.set_nonblocking(false).unwrap();
+            let request_deadline = Instant::now() + Duration::from_secs(2);
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let remaining = request_deadline
+                    .checked_duration_since(Instant::now())
+                    .expect("local fallback server request timed out");
+                stream.set_read_timeout(Some(remaining)).unwrap();
+                let received = match stream.read(&mut chunk) {
+                    Ok(received) => received,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => panic!("local fallback server read failed: {error}"),
+                };
+                assert!(received > 0, "local fallback server request ended before headers");
+                request.extend_from_slice(&chunk[..received]);
+                assert!(request.len() <= 8192, "local fallback server request too large");
+            }
+            stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n")
                 .unwrap();
@@ -188,6 +206,30 @@ pub fn run<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_fallback_server_waits_for_complete_fragmented_headers() {
+        use std::{io::{Read, Write}, net::TcpStream, time::Duration};
+
+        let (address, server) = local_truncated_server();
+        for expected in [b"old".as_slice(), b"new-data".as_slice()] {
+            let mut stream = TcpStream::connect(address.trim_start_matches("http://")).unwrap();
+            // Leave time for accept before sending a partial request. The
+            // server must wait for the final header delimiter before replying.
+            std::thread::sleep(Duration::from_millis(25));
+            stream.write_all(b"GET /asset HTTP/1.1\r\nHost: localhost\r\n").unwrap();
+            stream.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+            let mut byte = [0u8; 1];
+            let error = stream.read(&mut byte).expect_err("server replied before headers completed");
+            assert!(matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut));
+            stream.write_all(b"\r\n").unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).unwrap();
+            let header_end = response.windows(4).position(|bytes| bytes == b"\r\n\r\n").unwrap() + 4;
+            assert_eq!(&response[header_end..], expected);
+        }
+        server.join().unwrap();
+    }
     #[test]
     fn github_fallback_only_public_exact_hosts_without_credentials() {
         assert!(eligible(

@@ -39,7 +39,7 @@ Deleted `/home` data cannot be recovered. OS updates may require manual interven
 Device and installer share the repository with independent versions/tags/workflows:
 
 - Device: root Cargo version, `v<version>` (currently `v0.8.3-preview.3`), `.github/workflows/release.yml`, Linux ARM64 and pinned CEF.
-- Installer: `installer/Cargo.toml`, `installer-v<version>` (currently `installer-v0.4.2`), `.github/workflows/installer-release.yml`, Linux x64/ARM64, Windows x64, macOS Intel/Apple Silicon, pinned GPUI Kit.
+- Installer: `installer/Cargo.toml`, `installer-v<version>` (currently `installer-v0.4.3`), `.github/workflows/installer-release.yml`, Linux x64/ARM64, Windows x64, macOS Intel/Apple Silicon, pinned GPUI Kit.
 
 Versions need not match or ship together. Update the relevant Cargo.lock with version changes. Installer package/macOS versions use the installer version.
 
@@ -50,8 +50,8 @@ Both workflows cache dependencies/builds by product/platform/toolchain/configura
 git tag v0.8.3-preview.3
 git push origin v0.8.3-preview.3
 # Independent installer release:
-git tag installer-v0.4.2
-git push origin installer-v0.4.2
+git tag installer-v0.4.3
+git push origin installer-v0.4.3
 ```
 
 Prerelease suffixes create GitHub Prereleases without Latest. Installer releases are never Latest. Only stable device releases become Latest, keeping default installer/update URLs on the device product. The desktop installer filters device archive names and does not mistake ARM64 installer packages for device runtimes. Download desktop installers from their explicit installer tags.
