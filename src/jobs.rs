@@ -258,6 +258,28 @@ impl Jobs {
         let key = id.clone();
         std::thread::spawn(move || {
             let result = (|| -> Result<Value> {
+                let mut request = request.clone();
+                let mut github_source = None;
+                let mut github_entry = None;
+                if let Some(repo) = request["githubRepository"].as_str() {
+                    let mut source = crate::github_plugins::source(repo)?;
+                    let status = ipc::call(&socket, "status", json!({}))?;
+                    let saved: Vec<crate::model::Source> = serde_json::from_value(status["database"]["sources"].clone())?;
+                    if let Some(existing) = saved.iter().find(|s| request["source"].as_str() == Some(s.id.as_str())) {
+                        ensure!(existing.enabled && crate::github_plugins::repository(&existing).is_some_and(|r| r.eq_ignore_ascii_case(repo)), "GitHub source is disabled or changed");
+                        source = existing.clone();
+                    } else {
+                        ensure!(!saved.iter().any(|s| crate::github_plugins::repository(s).is_some_and(|r|r.eq_ignore_ascii_case(repo))), "GitHub source identity changed; refresh the plugin library");
+                        ensure!(request["source"].as_str() == Some(source.id.as_str()), "GitHub source identity mismatch");
+                    }
+                    let proxy = serde_json::from_value(status["database"]["proxy"].clone())?;
+                    let client = crate::github_plugins::Client::system(&proxy, &cancel, false)?;
+                    let entry = client.entries(repo)?.into_iter().find(|entry|
+                        request["pluginId"] == entry.id && request["version"] == entry.version
+                        && request["sha256"] == entry.sha256 && request["url"] == entry.url).context("GitHub release selection changed or is invalid")?;
+                    request["allowHttp"] = json!(false);
+                    github_source = Some(source); github_entry = Some(entry);
+                }
                 jobs.patch(&key, json!({"phase":"downloading"}));
                 let bytes = if let Some(staged) = staged {
                     staged
@@ -297,6 +319,10 @@ impl Jobs {
                 ensure!(cancel.check().is_ok(), "下载已取消");
                 jobs.patch(&key, json!({"phase":"verifying"}));
                 let manifest = bytes.manifest()?;
+                if let Some(entry) = &github_entry {
+                    ensure!(entry.sha256 == bytes.hash, "GitHub release package SHA256 mismatch");
+                    crate::github_plugins::check_package(entry, &manifest)?;
+                }
                 if let Some(expected) = request["pluginId"].as_str() {
                     ensure!(manifest.id == expected, "插件包 ID 与目录不一致");
                 }
@@ -324,12 +350,12 @@ impl Jobs {
                     .cloned()
                     .unwrap_or_else(|| json!({}));
                 jobs.patch(&key, json!({"phase":"resolving"}));
-                let batch = match crate::planner::prepare_staged(
+                let batch = match crate::planner::prepare_staged_sources(
                     &database,
                     bytes.clone(),
                     request["source"].as_str().map(str::to_owned),
                     choices,
-                    cancel.clone(),
+                    cancel.clone(), github_source.into_iter().collect(),
                 ) {
                     Ok(batch) => {
                         info["plan"] = json!(batch.plan);

@@ -1,0 +1,55 @@
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {Store,catalogChoices,githubRepository,Entry,Source,CatalogResult} from '../ui/src/store';
+import {configureLanguage} from '../ui/src/i18n';
+import '../ui/src/style.css';
+configureLanguage('zh-CN',[]);
+const source:Source={id:'community',name:'社区插件源',url:'https://example.org/catalog.json',enabled:true,allowHttp:false};
+const github:Source={id:'github-fixture',name:'example/plugin',url:'https://github.com/example/plugin',enabled:true,allowHttp:false};
+const plugin=(version:string,sha='a',compatible=true):Entry=>({id:'example.test',name:'示例插件',author:'Example',description:'从 GitHub Release 自动发现，与现有插件库合并显示。',version,apiVersion:1,compatible,url:`https://github.com/example/plugin/releases/download/v${version}/plugin.framely`,sha256:sha.repeat(64),runAs:'steamos'});
+const versions=[plugin('2.0.0','d',false),plugin('1.1.0-preview.10','b'),plugin('1.1.0-preview.10','c'),plugin('1.0.1','e')];
+const data:CatalogResult[]=[{source,catalog:{name:source.name,plugins:[plugin('1.0.0')]}},{source:github,catalog:{name:github.name,plugins:[versions[1]]},versions}];
+const requests:any[]=[],inspected:any[]=[];
+window.fetch=async(_url,init)=>{
+ const {method,params}=JSON.parse(String(init?.body));requests.push({method,params});let result:any=true;
+ if(method==='catalog.start')result={job:'library'};
+ if(method==='catalog.versions.start')result={job:`history-${params.source}`};
+ if(method==='job.status')result=params.job==='library'?{id:params.job,phase:'done',result:data}:params.job==='history-community'?{id:params.job,phase:'failed',error:'历史版本请求失败'}:{id:params.job,phase:'done',result:versions};
+ return new Response(JSON.stringify({result}));
+};
+const root=createRoot(document.getElementById('root')!);
+root.render(<div className="app manager"><header className="shell-header"><strong>framely</strong></header><div className="workspace"><nav><button>已安装</button><button className="active">插件库</button><button>插件源</button></nav><main className="content"><Store sources={[source]} plugins={{'example.test':{source:source.id,manifest:{version:'1.0.0'}}}} busy={false} onSources={()=>{}} onInspect={async request=>{inspected.push(request);}}/></main></div></div>);
+const wait=(ms=50)=>new Promise(resolve=>setTimeout(resolve,ms));
+async function until(test:()=>any){for(let i=0;i<100;i++){if(test())return;await wait();}throw Error('Timed out: '+document.body.innerText.slice(0,250));}
+const click=(selector:string)=>{const button=document.querySelector<HTMLButtonElement>(selector);if(!button)throw Error('Missing '+selector);button.click();};
+async function select(label:string,option:string){click(`[aria-label="${label}"]`);await until(()=>!!document.querySelector('[role=option]'));const button=[...document.querySelectorAll<HTMLButtonElement>('[role=option]')].find(b=>b.textContent?.includes(option));if(!button)throw Error('Missing option '+option);button.click();await wait();}
+(window as any).runInstallReviewChecks=async()=>{try{
+ if(catalogChoices(data).length!==5)throw Error('Different hashes were deduplicated');
+ if(catalogChoices([...data,{source:{...github,id:'duplicate'},catalog:{name:'Duplicate',plugins:[versions[1]]}}]).length!==5)throw Error('Identical package was duplicated');
+ if(catalogChoices(data,'all','stable')[1].entry.version!=='1.0.1')throw Error('Stable versions were lost');
+ if(githubRepository({...github,url:'https://github.com.evil/example/plugin'}))throw Error('Similar host accepted');
+ await until(()=>document.querySelectorAll('.store-card').length===1);
+ if(document.querySelector('.store-version')?.textContent!=='1.1.0-preview.10')throw Error('Highest compatible version not recommended');
+ await wait(350);console.log('FRAMELY_PREVIEW_INSTALL_GITHUB_STORE');
+ await select('版本通道','仅正式版');
+ if(document.querySelector('.store-version')?.textContent!=='1.0.1')throw Error('Stable filter incorrect');
+ await select('版本通道','所有版本');click('.store-title');
+ await until(()=>document.body.textContent?.includes('历史版本暂时不可用'));
+ click('[aria-label="可选安装版本"]');await wait();
+ const options=[...document.querySelectorAll<HTMLElement>('[role=option]')];
+ const duplicates=options.filter(o=>o.textContent?.includes('1.1.0-preview.10'));
+ if(duplicates.length!==2||duplicates[0].textContent===duplicates[1].textContent)throw Error('Same-version hash choices are ambiguous');
+ const menu=document.querySelector<HTMLElement>('[role=listbox]')!;menu.scrollIntoView({block:'nearest'});await wait();
+ const content=document.querySelector<HTMLElement>('.content')!;
+ if(content.scrollWidth>content.clientWidth+1||menu.scrollWidth>menu.clientWidth+1)throw Error('Version menu overflows horizontally');
+ await wait(350);console.log('FRAMELY_PREVIEW_INSTALL_GITHUB_STORE_VERSIONS');
+ options.find(o=>o.textContent?.startsWith('1.0.1'))!.click();await wait();click('.detail-heading button');
+ if(inspected[0]?.githubRepository!=='example/plugin'||inspected[0]?.sha256!=='e'.repeat(64))throw Error('Install origin/hash not preserved');
+ click('.back-link');await wait();
+ const refresh=[...document.querySelectorAll<HTMLButtonElement>('.list-heading button')].find(b=>b.textContent==='刷新')!;refresh.click();
+ await until(()=>requests.some(r=>r.method==='catalog.start'&&r.params.refresh===true));
+ if(requests.filter(r=>r.method==='catalog.versions.start').some(r=>r.params.source===github.id&&r.params.githubRepository!=='example/plugin'))throw Error('History origin missing');
+ if(document.documentElement.scrollWidth>innerWidth+1)throw Error('Page overflows viewport');
+ console.log('FRAMELY_BRIDGE_PASS');
+}catch(error){console.error('FRAMELY_BRIDGE_FAIL '+error);}};
+until(()=>!!document.querySelector('.store-card')).then(()=>console.log('FRAMELY_VIEW_READY'));

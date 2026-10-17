@@ -33,3 +33,5 @@ cargo run --manifest-path "$FRAMELY_REPO/Cargo.toml" --locked -- verify my-plugi
 模板及随附 SDK 使用 `AGPL-3.0-only`。完整开发到发布说明见 Framely 的 `docs/zh-CN/developer-guide/README.md`；模板的生命周期回调不会删除用户数据。
 
 用于社区 GitHub Release 登记时，源码可省略 `downloadUrl`，默认附件名为 `<id>-<version>.framely`。发布包要用包含自动生成地址的临时清单打包；完整命令、Release digest 校验、自定义地址和数据库窗口尺寸校验规则见 Framely 的 `docs/zh-CN/developer-guide/publishing.md`。上面的直接打包命令用于本体测试，不代表社区登记已经通过。
+
+需要 GitHub 自动发现时，为仓库添加 `framely-plugin` topic，每个 Release 上传最终包及 `release.json`。使用 `framely release-json --packages ./release --output ./release/release.json` 自动生成元数据和发布图片，将发行目录内所有文件加入自己的发布流程；无需 npm 发布或目录文件。格式及旧 Release 兼容见 Framely 的 `docs/zh-CN/github-plugin-discovery.md`。

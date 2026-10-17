@@ -79,7 +79,7 @@ framely catalog --name 'My plugins' --base-url https://example.org/plugins --pac
 
 包中包含 manifest.json 和文件载荷，files 记录每个载荷的 SHA256；不生成公钥或签名。只支持 manifest.json 与清单中声明的载荷文件，拒绝未声明的附加文件。
 
-源需静态托管 catalog.json 及相对路径下的 plugins/<ID>/versions.json；插件包可放在作者自己的 GitHub Release。在插件源管理中添加目录完整 URL；当前代码首次初始化加入社区 stable/testing 来源，实际内容以服务器为准。目录条目有版本、下载 URL、SHA256。每个源独立显示，插件记录所选来源；另一个源同 ID 不会静默替换。HTTP 必须用户明确允许；目录和包支持最多五次重定向，HTTPS 不允许降级为 HTTP。
+传统源可静态托管 catalog.json 及相对路径下的 plugins/<ID>/versions.json；插件包可放在作者自己的 GitHub Release。在插件源管理中添加目录完整 URL；当前代码首次初始化加入社区 stable/testing 来源，实际内容以服务器为准。目录条目有版本、下载 URL、SHA256。插件库也支持 [GitHub 自动发现及 release.json](github-plugin-discovery.md)，同 ID 合并展示并按兼容语义版本推荐，历史版本保留不同来源及哈希。插件记录所选来源，切换来源仍经过安装确认。HTTP 必须用户明确允许；目录和包支持最多五次重定向，HTTPS 不允许降级为 HTTP。
 
 ### 悬停反馈
 

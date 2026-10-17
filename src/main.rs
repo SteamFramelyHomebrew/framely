@@ -6,6 +6,7 @@ mod desktop;
 mod diagnostics;
 mod file_browser;
 mod gamepad;
+mod github_plugins;
 mod http;
 mod ipc;
 mod jobs;
@@ -33,7 +34,7 @@ use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
-use std::{fs, path::PathBuf};
+use std::{fs, path::{Path, PathBuf}};
 
 #[derive(Parser)]
 #[command(version, about = "Framely plugin manager")]
@@ -170,9 +171,27 @@ enum Cmd {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Generate release.json from finalized plugin packages.
+    ReleaseJson {
+        #[arg(long)]
+        packages: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 fn run() -> Result<()> {
     match Cli::parse().command {
+        Cmd::ReleaseJson { packages, output } => {
+            let value = github_plugins::release_json(&packages)?;
+            let parent = output.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+            fs::create_dir_all(parent)?;
+            use std::io::Write;
+            let mut file = tempfile::NamedTempFile::new_in(parent)?;
+            file.write_all(&serde_json::to_vec_pretty(&value)?)?;
+            file.as_file().sync_all()?;
+            file.persist(output)?;
+            Ok(())
+        }
         Cmd::ApkSteam { app, token } => apk::steam_wrapper(&app, &token),
         Cmd::ApkNative {
             app,
@@ -369,6 +388,7 @@ fn run() -> Result<()> {
                 let v = package::verify(&bytes)?;
                 let publish = v.manifest.publish.clone().unwrap_or_default();
                 entries.push(model::CatalogEntry {
+                    prerelease: !semver::Version::parse(&v.manifest.version).map(|v| v.pre.is_empty()).unwrap_or(true),
                     run_as: Some(v.manifest.run_as()),
                     dependencies: v.manifest.dependencies.clone(),
                     optional_dependencies: v.manifest.optional_dependencies.clone(),

@@ -25,6 +25,7 @@ pub fn get_headers(
 ) -> Result<ureq::Response> {
     get_with_proxy(initial, allow_http, timeout, headers, &Default::default())
 }
+#[cfg(test)]
 pub fn get_with_proxy(
     initial: &str,
     allow_http: bool,

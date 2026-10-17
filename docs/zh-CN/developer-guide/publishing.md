@@ -6,6 +6,8 @@
 
 ## GitHub Release 默认地址
 
+现在也支持通过 GitHub topic 自动发现，无需目录文件。`release.json` 格式、生成命令和旧 Release 兼容规则见 [GitHub 插件自动发现](../github-plugin-discovery.md)。
+
 公开 GitHub 插件仓库的**源码 `manifest.json` 可以省略 `downloadUrl`**。社区数据库从登记的仓库地址、版本和插件 ID 自动生成：
 
 ```text

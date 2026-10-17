@@ -84,8 +84,12 @@ pub fn eligible(initial: &str, headers: &[(&str, &str)]) -> bool {
         && url.port_or_known_default() == Some(443)
         && url.username().is_empty() && url.password().is_none()
         && url.fragment().is_none()
-        // Allow only known public API pagination parameters, never signed URLs.
-        && url.query_pairs().all(|(key, value)| matches!(key.as_ref(), "page" | "per_page") && !value.is_empty() && value.bytes().all(|c|c.is_ascii_digit()))
+        // Only pagination and Framely's fixed public topic search, never arbitrary queries or signed asset addresses.
+        && url.query_pairs().all(|(key, value)| {
+            if matches!(key.as_ref(), "page" | "per_page") { return !value.is_empty() && value.bytes().all(|c| c.is_ascii_digit()); }
+            url.host_str() == Some("api.github.com") && url.path() == "/search/repositories"
+                && matches!((key.as_ref(), value.as_ref()), ("q", "topic:framely-plugin archived:false fork:false") | ("sort", "stars") | ("order", "desc"))
+        })
         && headers.iter().all(|(key, _)| matches!(key.to_ascii_lowercase().as_str(), "accept" | "accept-encoding" | "user-agent" | "if-none-match" | "if-modified-since" | "cache-control"))
 }
 fn certificate_error(error: &(dyn std::error::Error + 'static)) -> bool {
@@ -190,6 +194,9 @@ mod tests {
             "https://api.github.com/repos/a/b/releases?page=1&per_page=100",
             &[]
         ));
+        assert!(eligible("https://api.github.com/search/repositories?q=topic%3Aframely-plugin+archived%3Afalse+fork%3Afalse&sort=stars&order=desc&per_page=100&page=1", &[]));
+        assert!(!eligible("https://api.github.com/search/repositories?q=secret", &[]));
+        assert!(!eligible("https://github.com/search/repositories?q=topic%3Aframely-plugin+archived%3Afalse+fork%3Afalse", &[]));
         for u in [
             "https://github.com.evil/a",
             "https://foo.github.com/a",

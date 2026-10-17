@@ -3,6 +3,11 @@
   "locale": "en-US",
   "name": "English",
   "messages": {
+    "浏览插件源及 GitHub Releases 中的插件。": "Browse plugins from sources and GitHub Releases.",
+    "版本通道": "Version channel",
+    "所有版本": "All versions",
+    "仅正式版": "Stable only",
+    "部分 GitHub 版本暂时不可用。": "Some GitHub releases are temporarily unavailable.",
     "以文本编辑": "Edit as text",
     "文本编辑器": "Text editor",
     "纯文本": "Plain text",

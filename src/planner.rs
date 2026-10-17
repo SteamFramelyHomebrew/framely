@@ -212,6 +212,7 @@ impl Resolver<'_> {
         if let Some(e) = &manifest.engines {
             e.check()?;
         }
+        if crate::github_plugins::repository(&source).is_some() { crate::github_plugins::check_package(entry, &manifest)?; }
         ensure!(
             manifest.id == entry.id && manifest.version == entry.version,
             "依赖包 ID 或版本与目录不一致"
@@ -312,18 +313,34 @@ pub fn prepare_staged(
     choices: BTreeMap<String, String>,
     cancel: crate::jobs::Cancellation,
 ) -> Result<Prepared> {
+    prepare_staged_sources(db, bytes, source, choices, cancel, vec![])
+}
+pub fn prepare_staged_sources(
+    db: &Database, bytes: std::sync::Arc<crate::package::Staged>, source: Option<String>,
+    choices: BTreeMap<String, String>, cancel: crate::jobs::Cancellation, additional: Vec<Source>,
+) -> Result<Prepared> {
     cancel.check()?;
+    let mut sources = db.sources.clone();
+    for candidate in additional {
+        candidate.validate()?;
+        if let Some(old) = sources.iter().find(|s| s.id == candidate.id) {
+            ensure!(old.enabled && old.url == candidate.url, "GitHub plugin source is disabled or changed");
+        } else {
+            ensure!(sources.len() < 200, "插件源数量超过 200");
+            sources.push(candidate);
+        }
+    }
     let manifest = bytes.manifest()?;
     if let Some(e) = &manifest.engines {
         e.check()?;
     }
     let root = manifest.id.clone();
     if let Some(source) = &source {
-        ensure!(db.sources.iter().any(|s| &s.id == source), "未知安装来源");
+        ensure!(sources.iter().any(|s| &s.id == source && s.enabled), "未知安装来源");
     }
     let mut resolver = Resolver {
         db,
-        sources: db.sources.clone(),
+        sources,
         catalogs: BTreeMap::new(),
         histories: Default::default(),
         selected: BTreeMap::new(),

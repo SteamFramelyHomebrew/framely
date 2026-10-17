@@ -64,6 +64,8 @@ framely catalog --name 'My plugins' --base-url https://example.org/plugins --pac
 
 Archives contain Manifest and hashed payload only, without keys/signatures. Host the main catalog and relative history JSON. Authors can host packages on GitHub Releases. Current first initialization includes community stable/testing sources. Origins remain explicit; same-ID plugins in other sources do not silently replace existing origins. HTTP needs explicit development permission; up to five validated redirects, without HTTPS downgrade.
 
+Alternatively, opt into [GitHub plugin discovery](github-plugin-discovery.md) with topic `framely-plugin` and a generated `release.json` asset. The library merges identical IDs and recommends the highest compatible version, preserving origin/hash choices and installation confirmation. Existing catalogs and older Releases remain supported.
+
 ## Hover feedback
 
 Interactive controls automatically receive one hover pulse per entry, excluding disabled/inert controls and movement between their children. Supported elements include buttons, links, inputs, interactive ARIA roles/focusable controls or pointer cursors. Custom controls may mark `data-framely-interactive`. Native feedback uses the current hit controller, 12 ms/120 Hz/amplitude 0.15 with at least 80 ms spacing. Pages cannot target other windows/controllers.

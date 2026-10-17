@@ -6,6 +6,8 @@
 
 ## Default GitHub Release URL
 
+GitHub topic discovery is also supported without a catalog. See [GitHub plugin discovery and release.json](../github-plugin-discovery.md) for the generated Release asset, legacy compatibility and publishing commands.
+
 A public GitHub plugin repository's **source `manifest.json` may omit `downloadUrl`**. The community database derives it from the registered repository, version and plugin ID:
 
 ```text

@@ -1043,6 +1043,8 @@ pub struct Catalog {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogEntry {
+    #[serde(default)]
+    pub prerelease: bool,
     pub id: String,
     pub name: String,
     pub version: String,

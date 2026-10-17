@@ -1442,6 +1442,7 @@ impl Agent {
             }
             "catalog" => self.catalog(),
             "catalog.start" => {
+                let refresh = p["refresh"].as_bool().unwrap_or(false);
                 let status = self.core("status", json!({}))?;
                 let sources: Vec<Source> =
                     serde_json::from_value(status["database"]["sources"].clone())?;
@@ -1450,11 +1451,11 @@ impl Agent {
                 let kind = format!(
                     "catalog:{}",
                     crate::package::digest(&serde_json::to_vec(
-                        &json!({"sources":sources,"proxy":proxy})
+                        &json!({"sources":sources,"proxy":proxy,"refresh":refresh})
                     )?)
                 );
                 self.jobs.task_progress(&kind, move |cancel, progress| {
-                    fetch_catalogs_progress(sources, proxy, cache, &cancel, progress.as_ref())
+                    fetch_library(sources, proxy, cache, &cancel, progress.as_ref(), refresh)
                 })
             }
             "catalog.versions.start" => {
@@ -1467,10 +1468,16 @@ impl Agent {
                 let status = self.core("status", json!({}))?;
                 let sources: Vec<Source> =
                     serde_json::from_value(status["database"]["sources"].clone())?;
+                ensure!(!sources.iter().any(|s| s.id == source_id && !s.enabled), "插件源不存在或已停用");
                 let source = sources
                     .into_iter()
                     .find(|s| s.id == source_id && s.enabled)
-                    .context("插件源不存在或已停用")?;
+                    .map(Ok).unwrap_or_else(|| {
+                        let repo = p["githubRepository"].as_str().context("插件源不存在或已停用")?;
+                        let source = crate::github_plugins::source(repo)?;
+                        ensure!(source.id == source_id, "GitHub source identity mismatch");
+                        Ok::<_, anyhow::Error>(source)
+                    })?;
                 let proxy = self.proxy()?;
                 self.jobs.task(
                     &format!("versions:{}:{}", source.id, plugin_id),
@@ -1744,11 +1751,11 @@ impl Agent {
     fn catalog(&self) -> Result<Value> {
         let status = self.core("status", json!({}))?;
         let sources: Vec<Source> = serde_json::from_value(status["database"]["sources"].clone())?;
-        Ok(fetch_catalogs_proxy(
+        fetch_library(
             sources,
             serde_json::from_value(status["database"]["proxy"].clone())?,
-            self.catalog_cache.clone(),
-        ))
+            self.catalog_cache.clone(), &Default::default(), &|_| {}, false,
+        )
     }
 }
 pub(crate) fn fetch_catalog_proxy_cancel(
@@ -1758,6 +1765,10 @@ pub(crate) fn fetch_catalog_proxy_cancel(
 ) -> Result<Catalog> {
     cancel.check()?;
     source.validate()?;
+    if let Some(repo) = crate::github_plugins::repository(source) {
+        let client = crate::github_plugins::Client::system(proxy, cancel, false)?;
+        return Ok(crate::github_plugins::catalog(&source.name, &client.entries(&repo)?));
+    }
     if proxy.github_auto_fallback {
         return crate::http::with_github_fallback(&source.url, &[], proxy, |route| fetch_catalog_proxy_cancel(source, route, cancel));
     }
@@ -1798,6 +1809,10 @@ pub(crate) fn fetch_plugin_versions_cancel(
 ) -> Result<Vec<CatalogEntry>> {
     source.validate()?;
     valid_id(plugin_id)?;
+    if let Some(repo) = crate::github_plugins::repository(source) {
+        let client = crate::github_plugins::Client::system(proxy, cancel, false)?;
+        return Ok(client.entries(&repo)?.into_iter().filter(|p| p.id == plugin_id).collect());
+    }
     let url = url::Url::parse(&source.url)?.join(&format!("plugins/{plugin_id}/versions.json"))?;
     if proxy.github_auto_fallback {
         return crate::http::with_github_fallback(url.as_str(), &[], proxy, |route| fetch_plugin_versions_cancel(source, plugin_id, route, cancel));
@@ -1881,6 +1896,7 @@ fn fetch_catalogs(
 ) -> Value {
     fetch_catalogs_proxy(sources, Default::default(), cache)
 }
+#[cfg(test)]
 fn fetch_catalogs_proxy(
     sources: Vec<Source>,
     proxy: crate::model::ProxySettings,
@@ -1896,6 +1912,49 @@ fn fetch_catalogs_cancel(
     cancel: &crate::jobs::Cancellation,
 ) -> Result<Value> {
     fetch_catalogs_progress(sources, proxy, cache, cancel, &|_| {})
+}
+fn fetch_library(
+    sources: Vec<Source>, proxy: ProxySettings,
+    cache: Arc<Mutex<std::collections::BTreeMap<String, Value>>>, cancel: &crate::jobs::Cancellation,
+    progress: &(dyn Fn(Value) + Send + Sync), refresh: bool,
+) -> Result<Value> {
+    let client = crate::github_plugins::Client::system(&proxy, cancel, refresh)?;
+    let (mut result, discovered) = std::thread::scope(|scope| {
+        let searching = scope.spawn(|| client.discover());
+        let normal = sources.iter().filter(|s| crate::github_plugins::repository(s).is_none()).cloned().collect();
+        let result = fetch_catalogs_progress(normal, proxy.clone(), cache.clone(), cancel, progress);
+        (result, searching.join().unwrap_or_else(|_| Err(anyhow::anyhow!("GitHub discovery failed"))))
+    });
+    cancel.check()?;
+    let mut repositories: Vec<_> = sources.iter().filter(|s| s.enabled && crate::github_plugins::repository(s).is_some()).cloned().collect();
+    match discovered {
+        Ok(discovered) => repositories.extend(discovered.into_iter().filter(|s| !sources.iter().any(|old|
+                old.id == s.id || crate::github_plugins::repository(old).is_some_and(|repo|
+                    crate::github_plugins::repository(s).is_some_and(|new|repo.eq_ignore_ascii_case(&new)))))),
+        Err(error) => client.warnings.lock().unwrap().push(crate::http::github_fallback::diagnostic(&error)),
+    }
+    {
+            let discovered = repositories;
+            let values = result.as_mut().map_err(|e| anyhow::anyhow!("{e:#}"))?.as_array_mut().context("Invalid catalog results")?;
+            for chunk in discovered.chunks(6) {
+                cancel.check()?;
+                let batch = std::thread::scope(|scope| chunk.iter().map(|source| {
+                    let client = &client;
+                    scope.spawn(move || match client.entries(&crate::github_plugins::repository(source).unwrap()) {
+                        Ok(entries) => json!({"source":source,"catalog":crate::github_plugins::catalog(&source.name,&entries),"versions":entries,"fetchedAt":crate::service::now_ms()}),
+                        Err(error) => json!({"source":source,"error":crate::http::github_fallback::diagnostic(&error)}),
+                    })
+                }).collect::<Vec<_>>().into_iter().map(|h| h.join().unwrap_or_else(|_| json!({"error":"GitHub release worker failed"}))).collect::<Vec<_>>());
+                values.extend(batch);
+                progress(json!({"completedSources":values.len(),"totalSources":sources.iter().filter(|s|s.enabled && crate::github_plugins::repository(s).is_none()).count()+discovered.len(),"partial":values}));
+            }
+    }
+    let warnings = client.warnings.lock().unwrap();
+    if !warnings.is_empty() {
+        result.as_mut().map_err(|e| anyhow::anyhow!("{e:#}"))?.as_array_mut().unwrap().push(json!({"source":{"id":"github-discovery","name":"GitHub","url":"https://github.com/topics/framely-plugin","enabled":true,"allowHttp":false},
+            "warning":warnings.iter().take(20).cloned().collect::<Vec<_>>().join("\n")}));
+    }
+    result
 }
 fn fetch_catalogs_progress(
     sources: Vec<Source>,

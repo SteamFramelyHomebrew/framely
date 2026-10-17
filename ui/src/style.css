@@ -69,6 +69,7 @@ a:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
 button{overflow-wrap:anywhere}
 .shell-header .primary,.store-filters .framely-select>button{white-space:nowrap}
 .store-filters .framely-select{max-width:100%;flex-shrink:0}
+.store-detail .framely-select [role=listbox]{width:100%!important;min-width:0!important;max-width:100%!important;left:0!important}
 .store-title{max-width:100%;overflow-wrap:anywhere}
 .manage-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 .language-import{margin:0;min-height:52px}
