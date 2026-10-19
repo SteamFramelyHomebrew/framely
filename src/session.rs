@@ -13,6 +13,27 @@ use std::{
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 static APK_STORAGE_API_GATE: Mutex<()> = Mutex::new(());
 
+fn apply_system_menu_binding(helper: &Path, enabled: bool) -> Result<bool> {
+    ensure!(helper.is_file(), "缺少 Steam 键绑定助手");
+    let mut command=Command::new("python3");
+    command.arg(helper);
+    if !enabled {command.arg("--restore");}
+    let status=command.status().context("无法更新 Steam 键绑定")?;
+    ensure!(status.success()||status.code()==Some(10),"Steam 键绑定更新失败：{status}");
+    Ok(status.code()==Some(10))
+}
+
+fn schedule_steamvr_restart() -> Result<()> {
+    let unit=format!("framely-system-menu-{}",cast_random_key());
+    let output=Command::new("systemd-run")
+        .args(["--user","--quiet","--collect","--on-active=2s"])
+        .arg(format!("--unit={unit}"))
+        .args(["/usr/bin/systemctl","--user","restart","steamvr.service"])
+        .output().context("无法安排 SteamVR 重启")?;
+    ensure!(output.status.success(),"无法安排 SteamVR 重启：{}",String::from_utf8_lossy(&output.stderr).trim());
+    Ok(())
+}
+
 struct FrameAccess {
     plugin: String,
     version: String,
@@ -36,8 +57,10 @@ struct Agent {
     terminals: crate::terminal::Terminals,
     files: Arc<crate::manager_files::Files>,
     catalog_cache: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
-    casting: Mutex<crate::cast::runtime::Casting>,
+    casting: Arc<Mutex<crate::cast::runtime::Casting>>,
+    screenshot: Arc<Mutex<ScreenshotState>>,
     recording_overlay_cache: Mutex<Value>,
+    radial_last: Mutex<String>,
     watch_access: Mutex<crate::cast::watch_access::Access>,
     receivers: Mutex<crate::cast::receiver::Receivers>,
 }
@@ -45,6 +68,53 @@ struct Agent {
 struct EventLog {
     sequence: u64,
     entries: VecDeque<Value>,
+}
+#[derive(Default)]
+struct ScreenshotState {
+    id: String,
+    open: bool,
+    closed: bool,
+    settings: Option<crate::cast::settings::Settings>,
+    geometry: Value,
+    preview: Option<Vec<u8>>,
+    preview_aspect: Option<f64>,
+    hotkey_active: bool,
+    hotkey_preview: Value,
+    hotkey_settings: Option<crate::cast::settings::Settings>,
+    hotkey_thumbnail: Option<Vec<u8>>,
+    hotkey_warm_geometry: Option<(crate::cast::settings::Settings, Value)>,
+    hotkey_warm_pending: Option<crate::cast::settings::Settings>,
+    hotkey_warm_capture: Option<(crate::cast::settings::Settings, crate::cast::screenshot::PreparedScreen)>,
+    hotkey_warm_capture_pending: Option<crate::cast::settings::Settings>,
+}
+impl ScreenshotState {
+    fn status(&self) -> Value { json!({"id":self.id,"open":self.open}) }
+    fn editor(&self) -> Result<Value> {
+        ensure!(self.open,"截图取景窗口已关闭");
+        Ok(json!({"id":self.id,"settings":self.settings,"geometry":self.geometry,"spatial":self.geometry.is_object(),"preview":if self.preview.is_some(){Some(format!("/cast/screenshot/preview/{}",self.id))}else{None},"previewAspect":self.preview_aspect}))
+    }
+    fn acknowledge(&mut self,id:&str) {if self.id==id {self.closed=true;self.open=false;self.preview=None;}}
+}
+fn capture_hotkey_image(
+    settings: &crate::cast::settings::Settings,
+    binaries: &Path,
+    panel: Option<&Path>,
+    state: &Arc<Mutex<ScreenshotState>>,
+) -> Result<image::DynamicImage> {
+    let deadline=std::time::Instant::now()+Duration::from_millis(1400);
+    let prepared=loop {
+        let mut state=state.lock().unwrap();
+        if state.hotkey_warm_capture.as_ref().is_some_and(|(old,_)|old==settings) {
+            break state.hotkey_warm_capture.take().map(|(_,capture)|capture);
+        }
+        if state.hotkey_warm_capture_pending.as_ref()!=Some(settings)||std::time::Instant::now()>=deadline {break None;}
+        drop(state);
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    if let Some(prepared)=prepared {
+        if let Ok(image)=prepared.capture() {return Ok(image);}
+    }
+    crate::cast::screenshot::capture(settings,binaries,panel,None)
 }
 impl EventLog {
     fn append(&mut self, mut event: Value) {
@@ -75,6 +145,29 @@ fn push(q: &Mutex<VecDeque<Value>>, v: Value) {
         q.pop_front();
     }
     q.push_back(v);
+}
+fn radial_record(casting: Arc<Mutex<crate::cast::runtime::Casting>>, socket: PathBuf) {
+    std::thread::spawn(move || {
+        let result=(||->Result<()> {
+            let mut cast=casting.lock().unwrap();
+            if cast.recording_status()["active"]==true {
+                cast.stop_recording()?;
+            } else {
+                let status=ipc::call(&socket,"status",json!({}))?;
+                ensure!(status["agreement"]["accepted"]==true,"请先同意用户协议和隐私声明");
+                let settings:crate::cast::settings::Settings=serde_json::from_value(status["database"]["casting"].clone())?;
+                let panel=if settings.source==crate::cast::settings::Source::Screen {
+                    let response=ipc::call(&socket,"cast.panel.start",json!({}))?;
+                    Some(PathBuf::from(response["socket"].as_str().context("Missing panel socket")?))
+                }else{None};
+                cast.record(&settings,panel.as_deref(),&crate::steam::home()?.join("Videos/framely"))?;
+            }
+            Ok(())
+        })();
+        if let Err(error)=result {
+            let _=ipc::call(&socket,"cast.notification",json!({"notification":{"id":format!("cast.radial.{}",cast_random_key()),"title":"录屏失败","body":format!("{error:#}"),"durationMs":5000,"actions":[]}}));
+        }
+    });
 }
 impl Agent {
     fn send_page(&self, r: Request, remote: bool, guest: bool, network_cookie: Option<String>) -> Result<()> {
@@ -422,11 +515,15 @@ impl Agent {
         }
         if path == "/host/poll" {
             ensure!(!remote && self.native(&r), "Native authentication failed");
+            let mut hotkey_event=String::new();
+            let mut radial_action=String::new();
             if r.method() == &Method::Post {
                 let mut bytes = Vec::new();
                 r.as_reader().take(32769).read_to_end(&mut bytes)?;
                 ensure!(bytes.len() <= 32768, "Visibility report too large");
                 let views: Value = serde_json::from_slice(&bytes)?;
+                hotkey_event=views["screenshotHotkey"].as_str().unwrap_or("").to_owned();
+                radial_action=views["radialAction"].as_str().unwrap_or("").to_owned();
                 // Empty acknowledgements are sent on ordinary native polls.
                 // Do not wait for the casting lock while describe/start is
                 // running: the native HTTP timeout is intentionally short.
@@ -436,12 +533,19 @@ impl Agent {
                 if let Some(id)=views["framingClosed"].as_str().filter(|id|!id.is_empty()) {
                     self.casting.lock().unwrap().region.acknowledge_editor_closed(id);
                 }
+                if let Some(id)=views["screenshotClosed"].as_str().filter(|id|!id.is_empty()) {
+                    self.screenshot.lock().unwrap().acknowledge(id);
+                }
                 if views["views"].is_object() {
                     self.core("host.ui.visibility",views["views"].clone())?;
                     if let Some(ids)=views["closedCasts"].as_array(){ensure!(ids.len()<=32,"Too many closed casts");for id in ids{if let Some(id)=id.as_str(){let _=self.receivers.lock().unwrap().control(id,"stop",json!({}));}}}
                 } else if views.is_object() {
                     self.core("host.ui.visibility", views)?;
                 }
+            }
+            if radial_action.starts_with("record:") && *self.radial_last.lock().unwrap()!=radial_action {
+                *self.radial_last.lock().unwrap()=radial_action.clone();
+                radial_record(Arc::clone(&self.casting),self.socket.clone());
             }
             let mut queue = self.commands.lock().unwrap();
             let mut commands = Vec::new();
@@ -463,9 +567,149 @@ impl Agent {
                 .ok()
                 .map(|v| v["database"].clone())
                 .unwrap_or(json!({}));
+            if !hotkey_event.is_empty() {let event=hotkey_event.as_str();
+                match event {
+                    "radialPrepare" => {
+                        let settings:Result<crate::cast::settings::Settings,_>=serde_json::from_value(database["casting"].clone());
+                        if let Ok(settings)=settings {
+                            if settings.source==crate::cast::settings::Source::Screen {
+                                let mut state=self.screenshot.lock().unwrap();
+                                let ready=state.hotkey_warm_capture.as_ref().is_some_and(|(old,_)|old==&settings);
+                                let pending=state.hotkey_warm_capture_pending.as_ref()==Some(&settings);
+                                if !ready&&!pending {
+                                    state.hotkey_warm_capture=None;
+                                    state.hotkey_warm_capture_pending=Some(settings.clone());
+                                    drop(state);
+                                    let panel=self.core("cast.panel.start",json!({})).ok().and_then(|value|value["socket"].as_str().map(PathBuf::from));
+                                    let binaries=self.casting.lock().unwrap().binaries.clone();
+                                    let state=Arc::clone(&self.screenshot);
+                                    let capture_settings=settings.clone();
+                                    std::thread::spawn(move||{
+                                        let capture=panel.as_deref().and_then(|path|crate::cast::screenshot::PreparedScreen::start(&capture_settings,&binaries,path).ok());
+                                        let mut state=state.lock().unwrap();
+                                        if state.hotkey_warm_capture_pending.as_ref()==Some(&capture_settings) {
+                                            state.hotkey_warm_capture_pending=None;
+                                            state.hotkey_warm_capture=capture.map(|capture|(capture_settings,capture));
+                                        }
+                                    });
+                                }
+                            }
+                            if crate::cast::region::supported(&settings) {
+                                let mut state=self.screenshot.lock().unwrap();
+                                let pending=state.hotkey_warm_pending.as_ref()==Some(&settings);
+                                if !pending {
+                                    state.hotkey_warm_geometry=None;
+                                    state.hotkey_warm_pending=Some(settings.clone());
+                                    drop(state);
+                                    let state=Arc::clone(&self.screenshot);
+                                    let binaries=self.casting.lock().unwrap().binaries.clone();
+                                    std::thread::spawn(move||{
+                                        let mut region=crate::cast::region::Region::default();region.editing=true;
+                                        let geometry=region.refresh(&settings,&binaries,None).and_then(|_|region.editor());
+                                        let mut state=state.lock().unwrap();
+                                        if state.hotkey_warm_pending.as_ref()==Some(&settings) {
+                                            state.hotkey_warm_pending=None;
+                                            if let Ok(geometry)=geometry {
+                                                if state.hotkey_active&&state.hotkey_settings.as_ref()==Some(&settings) {
+                                                    state.hotkey_preview=json!({"visible":true,"view":geometry["view"],"settings":settings});
+                                                }
+                                                state.hotkey_warm_geometry=Some((settings,geometry));
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    },
+                    "radialCancel" => {
+                        let mut state=self.screenshot.lock().unwrap();
+                        state.hotkey_warm_capture_pending=None;
+                        state.hotkey_warm_capture=None;
+                    },
+                    "radialPress" | "radialCapture" => {
+                        let settings:Result<crate::cast::settings::Settings,_>=serde_json::from_value(database["casting"].clone());
+                        if let Ok(settings)=settings {
+                            let mut state=self.screenshot.lock().unwrap();
+                            if !state.open&&!state.hotkey_active {
+                                state.hotkey_active=true;state.hotkey_settings=Some(settings.clone());state.hotkey_preview=Value::Null;state.hotkey_thumbnail=None;
+                                drop(state);
+                                if crate::cast::region::supported(&settings) {
+                                    let warm={let state=self.screenshot.lock().unwrap();state.hotkey_warm_geometry.as_ref().filter(|(old,_)|old==&settings).map(|(_,geometry)|geometry.clone())};
+                                    let warm_pending={self.screenshot.lock().unwrap().hotkey_warm_pending.as_ref()==Some(&settings)};
+                                    if let Some(geometry)=warm {
+                                        let mut state=self.screenshot.lock().unwrap();
+                                        if state.hotkey_active {state.hotkey_preview=json!({"visible":true,"view":geometry["view"],"settings":settings});}
+                                    } else if !warm_pending {
+                                        let state=Arc::clone(&self.screenshot);
+                                        let binaries=self.casting.lock().unwrap().binaries.clone();
+                                        std::thread::spawn(move||{
+                                            let mut region=crate::cast::region::Region::default();region.editing=true;
+                                            if region.refresh(&settings,&binaries,None).is_ok() {
+                                                if let Ok(geometry)=region.editor() {
+                                                    let mut state=state.lock().unwrap();
+                                                    if state.hotkey_active {state.hotkey_preview=json!({"visible":true,"view":geometry["view"],"settings":settings});}
+                                                }
+                                            }
+                                        });
+                                    }
+                                } else {
+                                    let state=Arc::clone(&self.screenshot);
+                                    let queue=Arc::clone(&self.commands);
+                                    let binaries=self.casting.lock().unwrap().binaries.clone();
+                                    let panel=if settings.source==crate::cast::settings::Source::Screen {self.core("cast.panel.start",json!({})).ok().and_then(|value|value["socket"].as_str().map(PathBuf::from))}else{None};
+                                    std::thread::spawn(move||{
+                                        if let Ok(image)=crate::cast::screenshot::capture(&settings,&binaries,panel.as_deref(),None) {
+                                            let mut bytes=std::io::Cursor::new(Vec::new());
+                                            if image.thumbnail(960,540).write_to(&mut bytes,image::ImageFormat::Png).is_ok() {
+                                                let mut state=state.lock().unwrap();
+                                                if state.hotkey_active {state.hotkey_thumbnail=Some(bytes.into_inner());queue.lock().unwrap().push_back(json!({"kind":"cast.screenshot.shortcutPreview.open","aspect":image.width() as f64/image.height() as f64}));}
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    },
+                    "release"|"cancel" => {
+                        let settings={let mut state=self.screenshot.lock().unwrap();state.hotkey_preview=Value::Null;state.hotkey_thumbnail=None;let active=state.hotkey_active;state.hotkey_active=false;if event=="cancel" {state.hotkey_warm_capture_pending=None;state.hotkey_warm_capture=None;}if active&&event=="release" {state.hotkey_settings.take()}else{state.hotkey_settings=None;None}};
+                        self.commands.lock().unwrap().push_back(json!({"kind":"cast.screenshot.shortcutPreview.close"}));
+                        if let Some(settings)=settings {
+                            let binaries=self.casting.lock().unwrap().binaries.clone();
+                            let control=self.socket.clone();
+                            let queue=Arc::clone(&self.commands);
+                            let state=Arc::clone(&self.screenshot);
+                            let panel=if settings.source==crate::cast::settings::Source::Screen {self.core("cast.panel.start",json!({})).ok().and_then(|value|value["socket"].as_str().map(PathBuf::from))}else{None};
+                            std::thread::spawn(move||{
+                                let result=(||->Result<PathBuf>{let image=capture_hotkey_image(&settings,&binaries,panel.as_deref(),&state)?;crate::cast::screenshot::save(&image,&crate::steam::home()?.join("Pictures/framely"))})();
+                                if result.is_ok(){push(&queue,json!({"kind":"cast.screenshot.sound"}));}
+                                let (title,body)=match result {Ok(path)=>("截图已保存",path.display().to_string()),Err(error)=>("截图失败",format!("{error:#}"))};
+                                let _=ipc::call(&control,"cast.notification",json!({"notification":{"id":format!("cast.screenshot.{}",cast_random_key()),"title":title,"body":body,"durationMs":5000,"actions":[]}}));
+                            });
+                        }
+                    },
+                    _=>{}
+                }
+                if event=="radialCapture" {
+                    // Selection and release may happen before the next native poll.
+                    let settings={let mut state=self.screenshot.lock().unwrap();state.hotkey_preview=Value::Null;state.hotkey_thumbnail=None;state.hotkey_active=false;state.hotkey_settings.take()};
+                    if let Some(settings)=settings {
+                        let binaries=self.casting.lock().unwrap().binaries.clone();
+                        let control=self.socket.clone();
+                        let queue=Arc::clone(&self.commands);
+                        let state=Arc::clone(&self.screenshot);
+                        let panel=if settings.source==crate::cast::settings::Source::Screen {self.core("cast.panel.start",json!({})).ok().and_then(|value|value["socket"].as_str().map(PathBuf::from))}else{None};
+                        std::thread::spawn(move||{
+                            let result=(||->Result<PathBuf>{let image=capture_hotkey_image(&settings,&binaries,panel.as_deref(),&state)?;crate::cast::screenshot::save(&image,&crate::steam::home()?.join("Pictures/framely"))})();
+                            if result.is_ok(){push(&queue,json!({"kind":"cast.screenshot.sound"}));}
+                            let (title,body)=match result {Ok(path)=>("截图已保存",path.display().to_string()),Err(error)=>("截图失败",format!("{error:#}"))};
+                            let _=ipc::call(&control,"cast.notification",json!({"notification":{"id":format!("cast.screenshot.{}",cast_random_key()),"title":title,"body":body,"durationMs":5000,"actions":[]}}));
+                        });
+                    }
+                }
+            }
             return send_json(
                 r,
-                {let (mut recording,region,framing)=if let Ok(cast)=self.casting.try_lock() {let status=cast.recording_status();*self.recording_overlay_cache.lock().unwrap()=status.clone();(status,cast.region_status(),cast.region.editor_state())}else{(self.recording_overlay_cache.lock().unwrap().clone(),json!({"visible":false}),Value::Null)};recording["indicatorVisible"]=json!(database["casting"]["recordingIndicatorVisible"].as_bool().unwrap_or(true));json!({"feedback":database["feedback"],"commands":commands,"notificationBadge":badge,"gazeCalibration":self.core("launcher.gaze.calibration.get",json!({})).unwrap_or(Value::Null),"launcher":database["launcher"],"recording":recording,"recordingRegion":region,"framingEditor":framing})},
+                {let (mut recording,region,framing)=if let Ok(cast)=self.casting.try_lock() {let status=cast.recording_status();*self.recording_overlay_cache.lock().unwrap()=status.clone();(status,cast.region_status(),cast.region.editor_state())}else{(self.recording_overlay_cache.lock().unwrap().clone(),json!({"visible":false}),Value::Null)};recording["indicatorVisible"]=json!(database["casting"]["recordingIndicatorVisible"].as_bool().unwrap_or(true));let screenshot=self.screenshot.lock().unwrap();json!({"feedback":database["feedback"],"commands":commands,"notificationBadge":badge,"gazeCalibration":self.core("launcher.gaze.calibration.get",json!({})).unwrap_or(Value::Null),"launcher":database["launcher"],"recording":recording,"recordingRegion":region,"framingEditor":framing,"screenshotEditor":screenshot.status(),"screenshotShortcutPreview":screenshot.hotkey_preview})},
             );
         }
         if let Some(rel) = path.strip_prefix("/plugin-assets/") {
@@ -605,7 +849,11 @@ impl Agent {
                 ))
                 .with_header(header(
                     "Location",
-                    if r.url().ends_with("?view=manager") {
+                    if r.url().ends_with("?view=radial") {
+                        "/system/radial"
+                    } else if r.url().ends_with("?view=radial-progress") {
+                        "/system/radial/progress"
+                    } else if r.url().ends_with("?view=manager") {
                         "/manager"
                     } else if r.url().ends_with("?view=notifications") {
                         "/notifications"
@@ -965,9 +1213,32 @@ impl Agent {
             };
             return send_json(r, v);
         }
+        if let Some(id)=path.strip_prefix("/cast/screenshot/preview/") {
+            ensure!(r.method()==&Method::Get,"Invalid screenshot preview method");
+            let state=self.screenshot.lock().unwrap();
+            ensure!(state.open&&state.id==id,"截图预览已失效");
+            let bytes=state.preview.as_ref().context("截图预览不可用")?.clone();
+            r.respond(Response::from_data(bytes).with_header(header("Content-Type","image/png")).with_header(header("Cache-Control","no-store")))?;
+            return Ok(());
+        }
+        if path == "/cast/screenshot/shortcut/preview.png" {
+            let state=self.screenshot.lock().unwrap();
+            ensure!(state.hotkey_active,"截图预览已失效");
+            let bytes=state.hotkey_thumbnail.as_ref().context("截图预览不可用")?.clone();
+            r.respond(Response::from_data(bytes).with_header(header("Content-Type","image/png")).with_header(header("Cache-Control","no-store")))?;
+            return Ok(());
+        }
+        if path == "/cast/screenshot/shortcut" {
+            r.respond(Response::from_string("<!doctype html><html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><style>html,body{margin:0;width:100%;height:100%;background:#080b0e}body{display:grid;place-items:center}img{display:block;max-width:100%;max-height:100%;object-fit:contain}</style><img src='/cast/screenshot/shortcut/preview.png' alt='截图区域'></html>")
+                .with_header(header("Content-Type","text/html; charset=utf-8")).with_header(header("Cache-Control","no-store")))?;
+            return Ok(());
+        }
         if path == "/"
+            || path == "/system/radial"
+            || path == "/system/radial/progress"
             || path == "/cast/watch"
             || path == "/cast/framing"
+            || path == "/cast/screenshot"
             || path.starts_with("/cast/window/")
             || path == "/apk/permission"
             || path == "/manager"
@@ -1076,6 +1347,85 @@ impl Agent {
                 cast.refresh_region(&settings)?;
                 if let Err(error)=self.core("cast.region.visible.save",json!({"enabled":enabled})) {let _=cast.refresh_region(&previous);return Err(error);}
                 Ok(json!({"enabled":enabled}))
+            },
+            "cast.screenshot.open" => {
+                let settings:crate::cast::settings::Settings=serde_json::from_value(self.core("status",json!({}))?["database"]["casting"].clone())?;
+                {let state=self.screenshot.lock().unwrap();ensure!(!state.open&&!state.hotkey_active,"请先完成当前截图");}
+                let id=cast_random_key();
+                let spatial=crate::cast::region::supported(&settings);
+                let (geometry,preview,preview_aspect)=if spatial {
+                    let binaries=self.casting.lock().unwrap().binaries.clone();
+                    let mut region=crate::cast::region::Region::default();
+                    region.editing=true;region.editor_id=id.clone();region.refresh(&settings,&binaries,None)?;
+                    (region.editor()?,None,None)
+                } else {
+                    let panel=if settings.source==crate::cast::settings::Source::Screen {
+                        Some(PathBuf::from(self.core("cast.panel.start",json!({}))?["socket"].as_str().context("Missing panel socket")?))
+                    }else{None};
+                    let binaries=self.casting.lock().unwrap().binaries.clone();
+                    let image=crate::cast::screenshot::capture(&settings,&binaries,panel.as_deref(),None)?;
+                    let mut bytes=std::io::Cursor::new(Vec::new());
+                    image.thumbnail(960,960).write_to(&mut bytes,image::ImageFormat::Png)?;
+                    (Value::Null,Some(bytes.into_inner()),Some(image.width() as f64/image.height() as f64))
+                };
+                let mut state=self.screenshot.lock().unwrap();
+                ensure!(!state.open&&!state.hotkey_active,"请先完成当前截图");
+                state.id=id.clone();state.open=true;state.closed=false;state.settings=Some(settings);state.geometry=geometry.clone();state.preview=preview;
+                state.preview_aspect=preview_aspect;
+                self.commands.lock().unwrap().push_back(json!({"kind":"cast.screenshot.open","id":id,"geometry":geometry,"spatial":spatial}));
+                state.editor()
+            },
+            "cast.screenshot.get" => self.screenshot.lock().unwrap().editor(),
+            "cast.screenshot.cancel" => {
+                let id=p["id"].as_str().context("Missing screenshot session")?;
+                let mut state=self.screenshot.lock().unwrap();
+                ensure!(state.open&&state.id==id,"截图取景窗口已关闭");
+                state.open=false;state.preview=None;
+                self.commands.lock().unwrap().push_back(json!({"kind":"cast.screenshot.close","id":id}));
+                Ok(json!(true))
+            },
+            "cast.screenshot.capture" => {
+                let id=p["id"].as_str().context("Missing screenshot session")?.to_owned();
+                let settings={
+                    let mut state=self.screenshot.lock().unwrap();
+                    ensure!(state.open&&state.id==id,"截图取景窗口已关闭");
+                    let mut settings=state.settings.clone().context("Missing screenshot settings")?;
+                    if crate::cast::region::supported(&settings) {
+                        let aspect=p["aspect"].as_f64().context("Missing screenshot aspect")?;
+                        ensure!(aspect.is_finite()&&(0.25..=4.).contains(&aspect),"截图比例无效");
+                        settings.width=1920;
+                        settings.height=(((1920.0/aspect).round() as u32).clamp(480,4096)+1)&!1;
+                        settings.horizontal_fov=Some(p["horizontalFov"].as_f64().context("Missing screenshot FOV")?);
+                        settings.center_x=p["centerX"].as_f64().context("Missing screenshot center")?;
+                        settings.center_y=p["centerY"].as_f64().context("Missing screenshot center")?;
+                        settings.validate()?;
+                    }
+                    state.open=false;state.preview=None;
+                    settings
+                };
+                self.commands.lock().unwrap().push_back(json!({"kind":"cast.screenshot.close","id":id}));
+                let deadline=std::time::Instant::now()+Duration::from_secs(2);
+                loop {
+                    if self.screenshot.lock().unwrap().closed {break;}
+                    ensure!(std::time::Instant::now()<deadline,"截图窗口未能及时关闭");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                let crop=if crate::cast::region::supported(&settings){None}else{Some(serde_json::from_value(p["crop"].clone())?)};
+                let panel=if settings.source==crate::cast::settings::Source::Screen {
+                    Some(PathBuf::from(self.core("cast.panel.start",json!({}))?["socket"].as_str().context("Missing panel socket")?))
+                }else{None};
+                let binaries=self.casting.lock().unwrap().binaries.clone();
+                let result=(||->Result<Value>{
+                    let image=crate::cast::screenshot::capture(&settings,&binaries,panel.as_deref(),crop)?;
+                    let path=crate::cast::screenshot::save(&image,&crate::steam::home()?.join("Pictures/framely"))?;
+                    Ok(json!({"path":path,"width":image.width(),"height":image.height()}))
+                })();
+                if let Err(error)=&result {
+                    let _=self.core("cast.notification",json!({"notification":{"id":format!("cast.screenshot.{}",cast_random_key()),"title":"截图失败","body":error.to_string(),"durationMs":5000,"actions":[]}}));
+                } else {
+                    push(&self.commands,json!({"kind":"cast.screenshot.sound"}));
+                }
+                result
             },
             "cast.framing.open" => {
                 let settings:crate::cast::settings::Settings=serde_json::from_value(self.core("status",json!({}))?["database"]["casting"].clone())?;
@@ -1685,6 +2035,26 @@ impl Agent {
                 }
                 Ok(json!(true))
             }
+            "launcher.settings.save" => {
+                let next: LauncherSettings=serde_json::from_value(p.clone())?;
+                next.validate()?;
+                let previous: LauncherSettings=serde_json::from_value(self.core("status",json!({}))?["database"]["launcher"].clone())?;
+                if next.system_radial_menu==previous.system_radial_menu {return self.core(method,p);}
+                let helper=self.assets.parent().unwrap_or(&self.assets).join("input/steam-system-menu.py");
+                let changed=apply_system_menu_binding(&helper,next.system_radial_menu)?;
+                if let Err(error)=self.core(method,p) {
+                    if changed {let _=apply_system_menu_binding(&helper,previous.system_radial_menu);}
+                    return Err(error);
+                }
+                if changed {
+                    if let Err(error)=schedule_steamvr_restart() {
+                        let _=self.core(method,serde_json::to_value(&previous)?);
+                        let _=apply_system_menu_binding(&helper,previous.system_radial_menu);
+                        return Err(error);
+                    }
+                }
+                Ok(json!(true))
+            }
             "status"
             | "storage.plugin.status"
             | "storage.plugin.start"
@@ -1706,7 +2076,6 @@ impl Agent {
             | "plugin.launch"
             | "plugin.launcher.action"
             | "feedback.settings.save"
-            | "launcher.settings.save"
             | "launcher.gaze.calibration.get"
             | "launcher.gaze.calibration.save"
             | "launcher.order.save"
@@ -2160,6 +2529,7 @@ pub fn serve(
         .context("Missing HTTP address")?
         .port();
     let origin = format!("http://127.0.0.1:{port}");
+    let system_menu_binding = assets.parent().unwrap_or(&assets).join("input/steam-system-menu.py");
     let web_key = random_key();
     let native_key = random_key();
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
@@ -2174,8 +2544,10 @@ pub fn serve(
             token: ipc::call(&socket, "cast.watchAccess.get", json!({}))?["token"].as_str().map(str::to_owned),
             ..Default::default()
         }),
-        casting: Mutex::new(crate::cast::runtime::Casting::new(runtime.join("cast"), crate::cast::runtime::binary_directory(&assets))),
-        recording_overlay_cache: Mutex::new(json!({"active":false})),
+        casting: Arc::new(Mutex::new(crate::cast::runtime::Casting::new(runtime.join("cast"), crate::cast::runtime::binary_directory(&assets)))),
+        screenshot: Arc::default(),
+            recording_overlay_cache: Mutex::new(json!({"active":false})),
+            radial_last: Mutex::new(String::new()),
         receivers: Mutex::new(crate::cast::receiver::Receivers::new(runtime.join("receive"), crate::cast::runtime::binary_directory(&assets))),
         socket,
         state,
@@ -2308,8 +2680,24 @@ pub fn serve(
     if !http_only {
         let run = runtime.clone();
         let url = format!("{origin}/boot/{web_key}");
+        let binding_socket=agent.socket.clone();
         std::thread::spawn(move || loop {
             wait_for_steam_session();
+            let mut system_menu_ready = false;
+            if system_menu_binding.exists() {
+                let enabled=ipc::call(&binding_socket,"status",json!({})).ok()
+                    .and_then(|status|status["database"]["launcher"]["systemRadialMenu"].as_bool()).unwrap_or(true);
+                match apply_system_menu_binding(&system_menu_binding,enabled) {
+                    Ok(true) => {
+                        if Command::new("systemctl").args(["--user", "restart", "steamvr.service"]).status().is_ok_and(|s|s.success()) {
+                            std::thread::sleep(Duration::from_secs(2));
+                            continue;
+                        }
+                    }
+                    Ok(false) => system_menu_ready = enabled,
+                    Err(error) => eprintln!("SteamVR system menu binding failed: {error:#}"),
+                }
+            }
             let result = Command::new(&native)
                 .arg("--url")
                 .arg(&url)
@@ -2326,6 +2714,7 @@ pub fn serve(
                     "--change-stack-guard-on-fork=disable",
                 ])
                 .env("FRAMELY_NATIVE_TOKEN", &native_key)
+                .env("FRAMELY_STEAM_MENU_ENABLED", if system_menu_ready {"1"} else {"0"})
                 .env("FRAMELY_STEAM_ROOT", {
                     let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
                     let steam = home.join(".local/share/Steam");
@@ -2346,7 +2735,9 @@ pub fn serve(
     for r in server.incoming_requests() {
         let a = agent.clone();
         std::thread::spawn(move || {
-            let _ = a.handle(r);
+            if let Err(error) = a.handle(r) {
+                eprintln!("UI request failed: {error:#}");
+            }
         });
     }
     Ok(())
@@ -2709,8 +3100,10 @@ mod tests {
     fn agent(server: &Server, root: &Path) -> Arc<Agent> {
         Arc::new(Agent {
             watch_access: Mutex::default(),
-            casting: Mutex::new(crate::cast::runtime::Casting::new(root.join("cast"), root.join("media"))),
-        recording_overlay_cache: Mutex::new(json!({"active":false})),
+            casting: Arc::new(Mutex::new(crate::cast::runtime::Casting::new(root.join("cast"), root.join("media")))),
+            screenshot: Arc::default(),
+            recording_overlay_cache: Mutex::new(json!({"active":false})),
+            radial_last: Mutex::new(String::new()),
             receivers: Mutex::new(crate::cast::receiver::Receivers::new(root.join("receive"), root.join("media"))),
             socket: root.join("control.sock"),
             state: root.join("state"),

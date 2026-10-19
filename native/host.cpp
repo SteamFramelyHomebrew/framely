@@ -34,12 +34,15 @@
 #include "recording_indicator.h"
 #include "recording_region.h"
 #include "recording_region_depth.h"
+#include "system_radial.h"
 #include "framing_lifecycle.h"
 #include "plugin_navigation.h"
 #include <GL/gl.h>
 #include <GL/glx.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/un.h>
+#include <algorithm>
 #include <atomic>
 #include <csignal>
 #include <chrono>
@@ -118,6 +121,15 @@ static cef_frame_t* keyboard_frame=nullptr;
 static std::string keyboard_view;
 static KeyboardMenuGuard keyboard_menu;
 static uint64_t keyboard_token=0;static vr::VROverlayHandle_t keyboard_target=0;
+constexpr const char* frame_keyboard_window_key="framely.window.tooru.frame-keyboard.keyboard";
+struct ExternalKeyboard {
+ bool active=false,hide_pending=false;
+ vr::VROverlayHandle_t target=0;
+ uint64_t token=0;
+ std::string overlay_key,view_key;
+ std::chrono::steady_clock::time_point hide_pending_until{};
+};
+static ExternalKeyboard external_keyboard;
 static std::mutex queue_mutex;
 static std::mutex visibility_mutex;
 static json visible_views=nullptr;
@@ -140,6 +152,7 @@ struct View {
  vr::VROverlayHandle_t overlay=0,thumbnail=0;GLuint textures[2]{};int texture_slot=0;bool texture_ready[2]{};PaintDamage texture_damage[2];std::vector<uint8_t> pixels;
 };
 static std::map<std::string,std::unique_ptr<View>> views;
+static void close_view(View& v);
 static bool permission_trigger_held[2]{};
 static View* find_browser(cef_browser_t* b){int id=b->get_identifier(b);for(auto& [key,v]:views)if(v->browser_id==id)return v.get();return nullptr;}
 static Handler<cef_client_t> client;
@@ -178,10 +191,87 @@ static std::string pending_recording_stop;
 static json recording_state=json::object();
 static json recording_region_state=json::object();
 static json framing_editor_state=nullptr;
+static json screenshot_editor_state=nullptr;
+static json screenshot_shortcut_preview=nullptr;
+static bool screenshot_radial_held=false;
+static bool system_radial_available=false;
+static std::atomic<bool> system_radial_enabled{true};
+static SystemRadial system_radial;
+static bool system_radial_preview_prepared=false;
+static bool system_radial_progress_visible=false;
+static vr::HmdVector3_t system_radial_origin{};
+static vr::HmdVector3_t system_radial_right{};
+static vr::HmdVector3_t system_radial_up{};
+static bool system_radial_origin_valid=false;
+static vr::HmdMatrix34_t system_radial_pose[2]{};
+static SystemRadial::Clock::time_point system_radial_pose_at[2]{};
+static vr::TrackedDeviceIndex_t system_radial_pose_device[2]{vr::k_unTrackedDeviceIndexInvalid,vr::k_unTrackedDeviceIndexInvalid};
+static std::chrono::steady_clock::time_point system_radial_sent{};
+static std::string pending_screenshot_hotkey,pending_screenshot_close,pending_system_action;
+static uint64_t system_action_sequence=0;
+static RecordingRegionOverlay screenshot_region_overlay{"framely.screenshot.region"};
 static std::string pending_region_close;
 static RecordingRegionOverlay recording_region_overlay;
 static RecordingIndicator recording_indicator;
-static json poll_http(int port){int fd=socket(AF_INET,SOCK_STREAM,0);if(fd<0)throw std::runtime_error("HTTP socket failed");timeval timeout{1,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));sockaddr_in addr{};addr.sin_family=AF_INET;addr.sin_port=htons(port);inet_pton(AF_INET,"127.0.0.1",&addr.sin_addr);if(connect(fd,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))){close(fd);throw std::runtime_error("UI agent unavailable");}std::string payload;size_t closed_count=0;std::string stop_id,region_closed;{std::lock_guard<std::mutex> lock(visibility_mutex);closed_count=closed_casts.size();stop_id=pending_recording_stop;region_closed=pending_region_close;payload=json{{"views",visible_views},{"closedCasts",closed_casts},{"stopRecording",stop_id},{"framingClosed",region_closed}}.dump();}std::string req="POST /host/poll HTTP/1.1\r\nHost: 127.0.0.1:"+std::to_string(port)+"\r\nX-Framely-Native: "+token+"\r\nContent-Type: application/json\r\nContent-Length: "+std::to_string(payload.size())+"\r\nConnection: close\r\n\r\n"+payload;size_t sent=0;while(sent<req.size()){auto n=send(fd,req.data()+sent,req.size()-sent,MSG_NOSIGNAL);if(n<=0){close(fd);throw std::runtime_error("HTTP send failed");}sent+=n;}std::string response;char buffer[4096];ssize_t n;while((n=recv(fd,buffer,sizeof(buffer),0))>0){response.append(buffer,n);if(response.size()>4*1024*1024){close(fd);throw std::runtime_error("HTTP body limit");}}close(fd);auto body=response.find("\r\n\r\n");if(body==std::string::npos||response.find("200 OK")==std::string::npos)throw std::runtime_error("Invalid agent response");auto parsed=json::parse(response.substr(body+4));{std::lock_guard<std::mutex> lock(visibility_mutex);if(pending_region_close==region_closed)pending_region_close.clear();if(pending_recording_stop==stop_id)pending_recording_stop.clear();closed_casts.erase(closed_casts.begin(),closed_casts.begin()+std::min(closed_count,closed_casts.size()));}return parsed;}
+static json poll_http(int port){int fd=socket(AF_INET,SOCK_STREAM,0);if(fd<0)throw std::runtime_error("HTTP socket failed");timeval timeout{1,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));sockaddr_in addr{};addr.sin_family=AF_INET;addr.sin_port=htons(port);inet_pton(AF_INET,"127.0.0.1",&addr.sin_addr);if(connect(fd,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))){close(fd);throw std::runtime_error("UI agent unavailable");}std::string payload;size_t closed_count=0;std::string stop_id,region_closed,screenshot_closed,hotkey,system_action;{std::lock_guard<std::mutex> lock(visibility_mutex);closed_count=closed_casts.size();stop_id=pending_recording_stop;region_closed=pending_region_close;screenshot_closed=pending_screenshot_close;hotkey=pending_screenshot_hotkey;system_action=pending_system_action;payload=json{{"views",visible_views},{"closedCasts",closed_casts},{"stopRecording",stop_id},{"framingClosed",region_closed},{"screenshotClosed",screenshot_closed},{"screenshotHotkey",hotkey},{"radialAction",system_action}}.dump();}std::string req="POST /host/poll HTTP/1.1\r\nHost: 127.0.0.1:"+std::to_string(port)+"\r\nX-Framely-Native: "+token+"\r\nContent-Type: application/json\r\nContent-Length: "+std::to_string(payload.size())+"\r\nConnection: close\r\n\r\n"+payload;size_t sent=0;while(sent<req.size()){auto n=send(fd,req.data()+sent,req.size()-sent,MSG_NOSIGNAL);if(n<=0){close(fd);throw std::runtime_error("HTTP send failed");}sent+=n;}std::string response;char buffer[4096];ssize_t n;while((n=recv(fd,buffer,sizeof(buffer),0))>0){response.append(buffer,n);if(response.size()>4*1024*1024){close(fd);throw std::runtime_error("HTTP body limit");}}close(fd);auto body=response.find("\r\n\r\n");if(body==std::string::npos||response.find("200 OK")==std::string::npos)throw std::runtime_error("Invalid agent response");auto parsed=json::parse(response.substr(body+4));{std::lock_guard<std::mutex> lock(visibility_mutex);if(pending_region_close==region_closed)pending_region_close.clear();if(pending_screenshot_close==screenshot_closed)pending_screenshot_close.clear();if(pending_screenshot_hotkey==hotkey)pending_screenshot_hotkey.clear();if(pending_system_action==system_action)pending_system_action.clear();if(pending_recording_stop==stop_id)pending_recording_stop.clear();closed_casts.erase(closed_casts.begin(),closed_casts.begin()+std::min(closed_count,closed_casts.size()));}return parsed;}
+static json service_call(const std::string& method,const json& params){
+ const char* configured=std::getenv("FRAMELY_CONTROL_SOCKET");
+ const std::string path=configured&&*configured?configured:"/run/framely/control.sock";
+ sockaddr_un address{};address.sun_family=AF_UNIX;
+ if(path.size()>=sizeof(address.sun_path))throw std::runtime_error("Control socket path is too long");
+ std::strncpy(address.sun_path,path.c_str(),sizeof(address.sun_path)-1);
+ const int fd=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);
+ if(fd<0)throw std::runtime_error("Control socket failed");
+ timeval timeout{2,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
+ if(connect(fd,reinterpret_cast<sockaddr*>(&address),sizeof(address))<0){close(fd);throw std::runtime_error("Control service unavailable");}
+ const std::string request=json{{"method",method},{"params",params}}.dump()+"\n";
+ size_t sent=0;
+ while(sent<request.size()){
+  const auto count=send(fd,request.data()+sent,request.size()-sent,MSG_NOSIGNAL);
+  if(count<=0){close(fd);throw std::runtime_error("Control request failed");}
+  sent+=static_cast<size_t>(count);
+ }
+ std::string response;char buffer[4096];
+ while(response.find('\n')==std::string::npos){
+  const auto count=recv(fd,buffer,sizeof(buffer),0);
+  if(count<=0){close(fd);throw std::runtime_error("Control response failed");}
+  response.append(buffer,static_cast<size_t>(count));
+  if(response.size()>1024*1024){close(fd);throw std::runtime_error("Control response is too large");}
+ }
+ close(fd);
+ auto reply=json::parse(response.substr(0,response.find('\n')));
+ if(reply.contains("error"))throw std::runtime_error(reply["error"].get<std::string>());
+ return reply.value("result",json(nullptr));
+}
+static bool frame_keyboard_command(const std::string& method,const json& params){
+ try{
+  auto result=service_call("plugin.call",json{{"plugin","tooru.frame-keyboard"},{"method",method},{"params",params}});
+  if(result.is_null())return false;
+  if(result.is_object()&&result.contains("ok")&&result["ok"].is_boolean()&&!result["ok"].get<bool>()){
+   std::cerr<<"Frame keyboard "<<method<<" returned ok=false";
+   if(result.contains("error")&&result["error"].is_string())std::cerr<<": "<<result["error"].get<std::string>();
+   std::cerr<<"\n";
+   return false;
+  }
+  return true;
+ }catch(const std::exception& error){
+  std::cerr<<"Frame keyboard command failed: "<<error.what()<<"\n";
+  return false;
+ }
+}
+static bool plugin_handles_external_keyboard(){
+ // Version 0.3 of the plugin listens to OpenVR global keyboard events itself.
+ // Cache the capability briefly so a missing plugin still falls back quickly.
+ static std::atomic<int> cached{-1};static std::atomic<long long> checked_at{0};
+ const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+ if(cached.load()>=0&&now-checked_at.load()<5000)return cached.load()==1;
+ bool enabled=false;
+ try{
+  auto result=service_call("plugin.call",json{{"plugin","tooru.frame-keyboard"},{"method","keyboardInterception"},{"params",json::object()}});
+  enabled=result.is_object()&&result.value("enabled",false);
+ }catch(...){}
+ cached.store(enabled?1:0);checked_at.store(now);return enabled;
+}
 // Frame renders the native laser cursor in the default overlay sort group.
 // Raising a panel above that group can obscure the runtime cursor.
 // OpenVR owns and renders the laser cursor. Coordinates must remain in the
@@ -320,26 +410,92 @@ static void show(View& v,bool shown){
  if(shown!=actual){auto e=shown?overlays->ShowOverlay(v.overlay):overlays->HideOverlay(v.overlay);if(e){std::cerr<<"Overlay visibility failed "<<v.key<<" "<<e<<"\n";return;}}
  if(shown!=v.shown){
   if(!shown){overlays->ClearOverlayCursorPositionOverride(v.overlay);if(v.key=="notifications"&&v.notification_click.active){cef_mouse_event_t outside{};outside.x=outside.y=-1;v.host->send_mouse_click_event(v.host,&outside,MBT_LEFT,1,1);v.notification_click.clear();}}
-  if(v.key!="notifications")v.host->was_hidden(v.host,!shown);
+  if(v.key!="notifications"&&v.key!="framely.system.radial"&&v.key!="framely.system.radial.progress")v.host->was_hidden(v.host,!shown);
   v.shown=shown;if(shown)v.host->invalidate(v.host,PET_VIEW);
   if(v.key=="menu"||v.key=="notifications")update_menu_modal();
  }
 }
 static void keyboard_state(bool open){if(keyboard_frame)execute(keyboard_frame,std::string("window.dispatchEvent(new CustomEvent('framely.keyboard',{detail:")+(open?"true":"false")+"}))");}
 static void close_keyboard(bool hide=true){keyboard_state(false);if(keyboard_open&&hide)overlays->HideKeyboard();keyboard_open=false;keyboard_close_pending=false;keyboard_toolbar=false;keyboard_chars=false;keyboard_done=false;keyboard_target=0;keyboard_menu.end(std::chrono::steady_clock::now());if(keyboard_view=="menu")update_menu_modal();if(keyboard_frame){keyboard_frame->base.release(&keyboard_frame->base);keyboard_frame=nullptr;}keyboard_view.clear();}
+static void external_keyboard_clear(bool notify_backend){
+ const bool notify=notify_backend&&external_keyboard.active&&running;
+ external_keyboard={};
+ if(notify)std::thread([]{frame_keyboard_command("dashboardClose",json::object());}).detach();
+}
+static void close_external_keyboard(bool close_frame);
+static void external_keyboard_tick(std::chrono::steady_clock::time_point now){
+ // Hiding SteamVR's keyboard emits a close event which must not tear down the
+ // replacement. Bound that guard so a later real close is still observed.
+ if(external_keyboard.active&&external_keyboard.hide_pending&&now>=external_keyboard.hide_pending_until)external_keyboard.hide_pending=false;
+ // Closing the SteamVR dashboard also invalidates the X11 text target.
+ if(external_keyboard.active&&!external_keyboard.hide_pending&&!overlays->IsDashboardVisible())close_external_keyboard(true);
+}
+static void close_external_keyboard(bool close_frame){
+ const std::string view_key=external_keyboard.view_key;
+ external_keyboard_clear(true);
+ if(close_frame&&!view_key.empty()){
+  auto found=views.find(view_key);
+  if(found!=views.end()&&!found->second->closing)close_view(*found->second);
+ }
+}
+static bool open_external_keyboard(const std::string& overlay_key,vr::VROverlayHandle_t target,uint64_t token){
+ const json params={{"overlayKey",overlay_key},{"overlayHandle",target},{"token",token}};
+ if(!frame_keyboard_command("dashboardOpen",params))return false;
+ external_keyboard.active=true;
+ external_keyboard.hide_pending=true;
+ external_keyboard.target=target;
+ external_keyboard.token=token;
+ external_keyboard.overlay_key=overlay_key;
+ external_keyboard.view_key=frame_keyboard_window_key;
+ external_keyboard.hide_pending_until=std::chrono::steady_clock::now()+std::chrono::milliseconds(1500);
+ overlays->HideKeyboard();
+ try{
+  service_call("window.open",json{{"plugin","tooru.frame-keyboard"},{"window","keyboard"}});
+ }catch(const std::exception& error){
+  std::cerr<<"Frame keyboard window failed: "<<error.what()<<"\n";
+  external_keyboard_clear(true);
+  return false;
+ }
+ return true;
+}
 static bool keyboard_event(const vr::VREvent_t& e,vr::VROverlayHandle_t source_overlay=0){
  // The runtime toolbar opens the keyboard without a host.keyboard request.
  if(e.eventType==vr::VREvent_KeyboardOpened_Global){
   auto target=e.data.keyboard.overlayHandle;
   if(keyboard_open&&target==keyboard_target)return true;
   View* owner=nullptr;for(auto&[key,v]:views)if(v->overlay==target&&!v->closing){owner=v.get();break;}
-  if(!owner)return false;
+  if(!owner){
+   char key[1024]{};vr::EVROverlayError error{};overlays->GetOverlayKey(target,key,sizeof(key),&error);
+   const std::string overlay_key=error?"":key;
+   if(overlay_key.empty()||overlay_key.rfind("framely.",0)==0)return false;
+   if(plugin_handles_external_keyboard())return true;
+   if(external_keyboard.active&&external_keyboard.target==target){
+    // A repeated Opened event during the native hide is part of the same
+    // transition. After that grace period treat it as a second keyboard click.
+    if(!external_keyboard.hide_pending)close_external_keyboard(true);
+    overlays->HideKeyboard();
+    return true;
+   }
+   if(!open_external_keyboard(overlay_key,target,e.data.keyboard.uUserValue))return false;
+   return true;
+  }
+  if(owner->key==frame_keyboard_window_key){return true;}
   close_keyboard(false);owner->host->set_focus(owner->host,1);
   keyboard_frame=owner->browser->get_focused_frame(owner->browser);keyboard_view=owner->key;
   keyboard_target=target;keyboard_token=e.data.keyboard.uUserValue;keyboard_open=true;keyboard_toolbar=true;
   keyboard_menu.begin(owner->key=="menu");keyboard_state(true);return true;
  }
  if(e.eventType!=vr::VREvent_KeyboardCharInput&&e.eventType!=vr::VREvent_KeyboardDone&&e.eventType!=vr::VREvent_KeyboardClosed&&e.eventType!=vr::VREvent_KeyboardClosed_Global)return false;
+ const bool external_target=external_keyboard.active&&e.data.keyboard.overlayHandle==external_keyboard.target;
+ const bool external_close=e.eventType==vr::VREvent_KeyboardClosed||e.eventType==vr::VREvent_KeyboardClosed_Global;
+ const bool external_input=!e.data.keyboard.uUserValue||!external_keyboard.token||e.data.keyboard.uUserValue==external_keyboard.token;
+ if(external_target&&(external_close||external_input)){
+  if(external_close){
+   if(external_keyboard.hide_pending){external_keyboard.hide_pending=false;return true;}
+   close_external_keyboard(true);
+  }
+  return true;
+ }
  if(!keyboard_open)return true;
  if(e.data.keyboard.uUserValue&&e.data.keyboard.uUserValue!=keyboard_token)return true;
  if(e.data.keyboard.overlayHandle&&e.data.keyboard.overlayHandle!=keyboard_target)return true;
@@ -349,8 +505,26 @@ static bool keyboard_event(const vr::VREvent_t& e,vr::VROverlayHandle_t source_o
  }else {keyboard_done=keyboard_done||e.eventType==vr::VREvent_KeyboardDone;keyboard_close_pending=true;}
  return true;
 }
-static void close_view(View& v){if(v.closing)return;if(v.key.rfind("framely.cast.",0)==0){std::lock_guard<std::mutex> lock(visibility_mutex);closed_casts.push_back(v.key.substr(13));}if(v.key=="framely.framing"){std::lock_guard<std::mutex> lock(visibility_mutex);pending_region_close=v.region_editor_id;}cancel_file_dialog(v);if(keyboard_view==v.key)close_keyboard();v.closing=true;if(v.key=="menu"||v.key=="framely.apk.permission")overlays->SetOverlayFlag(v.overlay,vr::VROverlayFlags_WantsModalBehavior,false);overlays->ClearOverlayCursorPositionOverride(v.overlay);overlays->HideOverlay(v.overlay);v.host->close_browser(v.host,1);}
+static void close_view(View& v){if(v.closing)return;if(external_keyboard.active&&v.key==external_keyboard.view_key)external_keyboard_clear(true);if(v.key==frame_keyboard_window_key){std::lock_guard<std::mutex> lock(queue_mutex);queue.erase(std::remove_if(queue.begin(),queue.end(),[](const json& command){return command.value("kind",std::string{})=="window.open"&&command.value("plugin",std::string{})=="tooru.frame-keyboard";}),queue.end());if(running)std::thread([]{frame_keyboard_command("dashboardClose",json::object());}).detach();}if(v.key.rfind("framely.cast.",0)==0){std::lock_guard<std::mutex> lock(visibility_mutex);closed_casts.push_back(v.key.substr(13));}if(v.key=="framely.framing"){std::lock_guard<std::mutex> lock(visibility_mutex);pending_region_close=v.region_editor_id;}if(v.key=="framely.screenshot"){std::lock_guard<std::mutex> lock(visibility_mutex);pending_screenshot_close=v.region_editor_id;}cancel_file_dialog(v);if(keyboard_view==v.key)close_keyboard();v.closing=true;if(v.key=="menu"||v.key=="framely.apk.permission")overlays->SetOverlayFlag(v.overlay,vr::VROverlayFlags_WantsModalBehavior,false);overlays->ClearOverlayCursorPositionOverride(v.overlay);overlays->HideOverlay(v.overlay);v.host->close_browser(v.host,1);}
 static void anchor_to_head(View& v,float width,float x=0,float y=0,float z=-1.35f){vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount]{};vr_system->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding,0,poses,vr::k_unMaxTrackedDeviceCount);if(!poses[0].bPoseIsValid)return;auto m=poses[0].mDeviceToAbsoluteTracking;for(int r=0;r<3;r++)m.m[r][3]+=m.m[r][0]*x+m.m[r][1]*y+m.m[r][2]*z;overlays->SetOverlayWidthInMeters(v.overlay,width);overlays->SetOverlayTransformAbsolute(v.overlay,vr::TrackingUniverseStanding,&m);}
+static void anchor_frame_keyboard(View& v){
+ // A keyboard button must not move keyboard focus away from the edited app.
+ // SteamVR owns the keyboard's spatial container and its native grab handle.
+ vr::VROverlayHandle_t native=0;vr::HmdVector2_t scale{};float width=0;
+ vr::HmdMatrix34_t pose{};
+ if(!overlays->FindOverlay("valve.steam.gamepadui.keyboard",&native)&&overlays->IsOverlayVisible(native)&&
+    !overlays->GetOverlayMouseScale(native,&scale)&&scale.v[0]>0&&
+    !overlays->GetOverlayWidthInMeters(native,&width)&&width>0&&
+    !overlays->GetTransformForOverlayCoordinates(native,vr::TrackingUniverseStanding,{{scale.v[0]*.5f,scale.v[1]*.5f}},&pose)){
+  const float dy=(width*float(v.height)/v.width-width*scale.v[1]/scale.v[0])*.5f;
+  for(int r=0;r<3;++r)pose.m[r][3]+=pose.m[r][1]*dy+pose.m[r][2]*.003f;
+  overlays->SetOverlayWidthInMeters(v.overlay,width);
+  overlays->SetOverlayTransformAbsolute(v.overlay,vr::TrackingUniverseStanding,&pose);
+  float curvature=0,pitch=0;
+  overlays->GetOverlayCurvature(native,&curvature);overlays->GetOverlayPreCurvePitch(native,&pitch);
+  overlays->SetOverlayCurvature(v.overlay,curvature);overlays->SetOverlayPreCurvePitch(v.overlay,pitch);
+ }else anchor_to_head(v,1.35f,0,-.38f,-1.2f);
+}
 static void anchor_permission(View& v){
  vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount]{};
  vr_system->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding,0,poses,vr::k_unMaxTrackedDeviceCount);
@@ -380,15 +554,23 @@ static void anchor_notification(View& v){
  v.placement.transform=toast.transform;v.placement.width=toast.width;v.placement.valid=true;
  v.placement.curve(overlays,v.overlay,toast.width,toast.radius);
 }
-static View& create_view(const std::string& key,const std::string& title,const std::string& url,bool dock,int width,int height,const std::string& plugin="",float physical_width=0){
+static View& create_view(const std::string& key,const std::string& title,const std::string& url,bool dock,int width,int height,const std::string& plugin="",float physical_width=0,bool keyboard_surface=false){
  // Plugin windows always use Steam window controls; dock only controls the tab.
- const bool dashboard=dock||!plugin.empty()||key.rfind("framely.cast.",0)==0;
+ keyboard_surface=keyboard_surface||key==frame_keyboard_window_key;
+ const bool dashboard=!keyboard_surface&&(dock||!plugin.empty()||key.rfind("framely.cast.",0)==0);
  if(views.count(key)){auto& v=*views.at(key);if(v.dashboard&&key!="launcher")overlays->ShowDashboard(key.c_str());else if(key!="notifications"&&key!="launcher")show(v,true);return v;}
  // Use 1.5x for launcher artwork and 2x for scrolling panels. CEF readback,
  // texture upload and launcher mipmap generation scale with the pixel count.
- if(views.size()>=34)throw std::runtime_error("Window limit exceeded");auto v=std::make_unique<View>();v->key=key;v->plugin=plugin;v->title=title;v->dashboard=dashboard;v->width=width;v->height=height;v->render_scale=key=="launcher"?1.5f:(key=="framely.manager"||key=="menu"||key=="notifications"||key=="framely.framing")?2:1;
+ if(views.size()>=34)throw std::runtime_error("Window limit exceeded");auto v=std::make_unique<View>();v->key=key;v->plugin=plugin;v->title=title;v->dashboard=dashboard;v->width=width;v->height=height;v->render_scale=key=="launcher"?1.5f:(key=="framely.manager"||key=="menu"||key=="notifications"||key=="framely.framing"||key=="framely.screenshot"||key=="framely.system.radial"||key=="framely.system.radial.progress")?2:1;
  auto error=dashboard?overlays->CreateDashboardOverlay(key.c_str(),title.c_str(),&v->overlay,&v->thumbnail):overlays->CreateOverlay(key.c_str(),title.c_str(),&v->overlay);if(error)throw std::runtime_error("Overlay creation failed: "+std::to_string(error));
- overlays->SetOverlayInputMethod(v->overlay,key=="notifications"?vr::VROverlayInputMethod_None:vr::VROverlayInputMethod_Mouse);vr::HmdVector2_t scale{{float(width),float(height)}};overlays->SetOverlayMouseScale(v->overlay,&scale);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_HideLaserIntersection,false);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_SendVRSmoothScrollEvents,true);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_VisibleInDashboard,true);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,true);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_SortWithNonSceneOverlays,key=="framely.apk.permission");overlays->SetOverlaySortOrder(v->overlay,key=="framely.apk.permission"?100:0);if(key=="framely.framing")recording_region_foreground(overlays,v->overlay);if(key=="framely.apk.permission")overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_WantsModalBehavior,true);
+ const bool radial=key=="framely.system.radial"||key=="framely.system.radial.progress";
+ overlays->SetOverlayInputMethod(v->overlay,key=="notifications"||radial?vr::VROverlayInputMethod_None:vr::VROverlayInputMethod_Mouse);vr::HmdVector2_t scale{{float(width),float(height)}};overlays->SetOverlayMouseScale(v->overlay,&scale);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_HideLaserIntersection,radial);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_SendVRSmoothScrollEvents,!radial);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_VisibleInDashboard,true);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,!radial);overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_SortWithNonSceneOverlays,key==frame_keyboard_window_key||key=="framely.apk.permission"||radial);overlays->SetOverlaySortOrder(v->overlay,key==frame_keyboard_window_key?20:key=="framely.apk.permission"?100:radial?200:0);if(key=="framely.framing"||key=="framely.screenshot")recording_region_foreground(overlays,v->overlay);if(key=="framely.apk.permission")overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_WantsModalBehavior,true);
+ if(key=="framely.system.radial"){
+  vr::VROverlayIntersectionMaskPrimitive_t mask{};
+  mask.m_nPrimitiveType=vr::OverlayIntersectionPrimitiveType_Circle;
+  mask.m_Primitive.m_Circle={width*.5f,height*.5f,260.f};
+  if(auto e=overlays->SetOverlayIntersectionMask(v->overlay,&mask,1))std::cerr<<"Radial input mask failed "<<e<<"\n";
+ }
  if(key=="framely.apk.permission"){
   vr::VROverlayIntersectionMaskPrimitive_t mask{};
   mask.m_nPrimitiveType=vr::OverlayIntersectionPrimitiveType_Rectangle;
@@ -398,17 +580,18 @@ static View& create_view(const std::string& key,const std::string& title,const s
 
  // Keep the runtime's full dashboard controls, including its keyboard and close buttons.
  if(dashboard){
-  overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_NoDashboardTab,!dock||key=="launcher");
+  overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_NoDashboardTab,keyboard_surface||!dock||key=="launcher");
   auto result=overlays->SetOverlayFlag(v->overlay,vr::VROverlayFlags_MinimalControlBar,key=="launcher");
   if(result)std::cerr<<"Dashboard controls unavailable "<<key<<" "<<result<<"\n";
   for(auto flag:{vr::VROverlayFlags_EnableControlBarKeyboard,vr::VROverlayFlags_EnableControlBarClose}){
-   result=overlays->SetOverlayFlag(v->overlay,flag,true);
+   result=overlays->SetOverlayFlag(v->overlay,flag,!keyboard_surface||flag==vr::VROverlayFlags_EnableControlBarClose);
    if(result)std::cerr<<"Dashboard control unavailable "<<key<<" "<<result<<"\n";
   }
  }
- if(dashboard){auto pixels=icon(false,true);overlays->SetOverlayRaw(v->thumbnail,pixels.data(),128,128,4);overlays->SetOverlayWidthInMeters(v->overlay,physical_width>0?physical_width:(key=="framely.manager"?3.2f:key=="launcher"?3.6f:1.2f));}else if(key!="menu"&&key!="notifications"&&key!="launcher"){anchor_to_head(*v,physical_width>0?physical_width:1.0f);}
+ if(keyboard_surface)anchor_frame_keyboard(*v);
+ else if(dashboard){auto pixels=icon(false,true);overlays->SetOverlayRaw(v->thumbnail,pixels.data(),128,128,4);overlays->SetOverlayWidthInMeters(v->overlay,physical_width>0?physical_width:(key=="framely.manager"?3.2f:key=="launcher"?3.6f:1.2f));}else if(key!="menu"&&key!="notifications"&&key!="launcher"&&!radial){anchor_to_head(*v,physical_width>0?physical_width:1.0f);}
  cef_window_info_t info{};info.size=sizeof(info);info.windowless_rendering_enabled=1;info.runtime_style=CEF_RUNTIME_STYLE_ALLOY;cef_browser_settings_t bs{};bs.size=sizeof(bs);bs.windowless_frame_rate=browser_frame_rate();bs.background_color=0;std::cout<<"Browser frame rate "<<key<<" "<<bs.windowless_frame_rate<<"\n";cef_string_t uri{};str(uri,url);auto* browser=cef_browser_host_create_browser_sync(&info,&client.api,&uri,&bs,nullptr,nullptr);cef_string_utf16_clear(&uri);
- if(!browser){overlays->DestroyOverlay(v->overlay);if(v->thumbnail)overlays->DestroyOverlay(v->thumbnail);throw std::runtime_error("Browser creation failed");}v->browser=browser;v->browser_id=browser->get_identifier(browser);v->host=browser->get_host(browser);glGenTextures(2,v->textures);auto* ptr=v.get();views.emplace(key,std::move(v));ptr->host->notify_screen_info_changed(ptr->host);ptr->host->was_resized(ptr->host);ptr->host->was_hidden(ptr->host,key!="notifications");if(ptr->dashboard&&key!="launcher")overlays->ShowDashboard(key.c_str());else if(key!="menu"&&key!="notifications"&&key!="launcher")show(*ptr,true);return *ptr;
+ if(!browser){overlays->DestroyOverlay(v->overlay);if(v->thumbnail)overlays->DestroyOverlay(v->thumbnail);throw std::runtime_error("Browser creation failed");}v->browser=browser;v->browser_id=browser->get_identifier(browser);v->host=browser->get_host(browser);glGenTextures(2,v->textures);auto* ptr=v.get();views.emplace(key,std::move(v));ptr->host->notify_screen_info_changed(ptr->host);ptr->host->was_resized(ptr->host);ptr->host->was_hidden(ptr->host,key!="notifications"&&!radial);if(ptr->dashboard&&key!="launcher")overlays->ShowDashboard(key.c_str());else if(key!="menu"&&key!="notifications"&&key!="launcher"&&!radial)show(*ptr,true);return *ptr;
 }
 static void plugin_thumbnail(View& view,const std::string& encoded){
  if(!view.thumbnail||encoded.empty()||encoded.size()>1400000)return;
@@ -579,6 +762,203 @@ static void launcher_gaze(vr::IVRInput* input,bool allowed,const bool (&connecte
  }
  gaze_active=true;
 }
+static const char* radial_direction(SystemRadialDirection direction){
+ switch(direction){
+  case SystemRadialDirection::Up:return "up";
+  case SystemRadialDirection::UpRight:return "upRight";
+  case SystemRadialDirection::Right:return "right";
+  case SystemRadialDirection::DownRight:return "downRight";
+  case SystemRadialDirection::Down:return "down";
+  case SystemRadialDirection::DownLeft:return "downLeft";
+  case SystemRadialDirection::Left:return "left";
+  case SystemRadialDirection::UpLeft:return "upLeft";
+  default:return "center";
+ }
+}
+static void radial_screenshot(bool active,bool capture){
+ if(active==screenshot_radial_held)return;
+ screenshot_radial_held=active;
+ if(!active){
+  screenshot_region_overlay.destroy();
+  if(auto preview=views.find("framely.screenshot.preview");preview!=views.end())close_view(*preview->second);
+ }
+ std::lock_guard<std::mutex> lock(visibility_mutex);
+ if(active)pending_screenshot_hotkey="radialPress";
+ else if(pending_screenshot_hotkey=="radialPress")pending_screenshot_hotkey=capture?"radialCapture":"";
+ else pending_screenshot_hotkey=capture?"release":"cancel";
+}
+static void system_radial_laser(vr::VROverlayHandle_t overlay,bool enabled){
+ auto method=enabled?vr::VROverlayInputMethod_Mouse:vr::VROverlayInputMethod_None;
+ if(auto e=overlays->SetOverlayInputMethod(overlay,method))std::cerr<<"Radial laser input failed "<<e<<"\n";
+ overlays->SetOverlayFlag(overlay,vr::VROverlayFlags_HideLaserIntersection,!enabled);
+ overlays->SetOverlayFlag(overlay,vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,enabled);
+}
+static std::optional<SystemRadialDirection> system_radial_stick(const char* model,vr::VRInputValueHandle_t hand){
+ vr::RenderModel_ControllerMode_State_t mode{};
+ vr::RenderModel_ComponentState_t rest{},full_x{},full_y{},current{};
+ vr::VRControllerState_t neutral{},sx{},sy{};sx.rAxis[0].x=1;sy.rAxis[0].y=1;
+ auto* models=vr::VRRenderModels();float x=0,y=0;
+ if(!models->GetComponentStateForDevicePath(model,"thumbstick",hand,&mode,&current)||
+    !models->GetComponentState(model,"thumbstick",&neutral,&mode,&rest)||
+    !models->GetComponentState(model,"thumbstick",&sx,&mode,&full_x)||
+    !models->GetComponentState(model,"thumbstick",&sy,&mode,&full_y)||
+    !launcher_stick_axes(rest,full_x,full_y,current,x,y)||x*x+y*y<.35f*.35f)return std::nullopt;
+ return SystemRadial::select(x,y);
+}
+static void system_radial_tick(){
+ if(!system_radial_available||!views.count("framely.system.radial")||!views.count("framely.system.radial.progress"))return;
+ auto& progress_view=*views.at("framely.system.radial.progress");
+ if(!system_radial_enabled.load()){
+  auto& view=*views.at("framely.system.radial");
+  if(system_radial.active||system_radial_progress_visible||system_radial.open){
+   show(view,false);show(progress_view,false);system_radial_laser(view.overlay,false);overlays->ClearOverlayTexture(view.overlay);
+   system_radial={};system_radial_progress_visible=false;
+   if(screenshot_radial_held)radial_screenshot(false,false);
+  }
+  return;
+ }
+ auto now=SystemRadial::Clock::now();
+ vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount]{};
+ vr_system->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding,0,poses,vr::k_unMaxTrackedDeviceCount);
+ int first=system_radial.active?system_radial.hand:0,last=system_radial.active?first:1;
+ for(int hand=first;hand<=last;hand++){
+  auto device=vr_system->GetTrackedDeviceIndexForControllerRole(hand?vr::TrackedControllerRole_RightHand:vr::TrackedControllerRole_LeftHand);
+  if(device!=system_radial_pose_device[hand]){system_radial_pose_device[hand]=device;system_radial_pose_at[hand]={};}
+  if(device!=vr::k_unTrackedDeviceIndexInvalid&&poses[device].bPoseIsValid){system_radial_pose[hand]=poses[device].mDeviceToAbsoluteTracking;system_radial_pose_at[hand]=now;}
+  const bool pose_recent=system_radial_pose_at[hand].time_since_epoch().count()&&now-system_radial_pose_at[hand]<std::chrono::milliseconds(750);
+  bool valid=device!=vr::k_unTrackedDeviceIndexInvalid&&poses[0].bPoseIsValid&&hands[hand];
+  bool down=false;
+  char model[256]{};
+  if(valid){
+   vr_system->GetStringTrackedDeviceProperty(device,vr::Prop_RenderModelName_String,model,sizeof(model));
+   vr::RenderModel_ControllerMode_State_t mode{};
+   vr::RenderModel_ComponentState_t state{};
+   bool component=vr::VRRenderModels()->GetComponentStateForDevicePath(model,"button_system",hands[hand],&mode,&state);
+   down=component&&(state.uProperties&vr::VRComponentProperty_IsPressed);
+   // Another overlay (notably the Frame keyboard) can own the active input
+   // action while its panel is visible. The legacy controller state still
+   // reports the physical button, so use it if the action-path state is idle.
+   if(!down){
+    vr::VRControllerState_t controller{};
+    if(vr_system->GetControllerState(device,&controller,sizeof(controller))){
+     vr::RenderModel_ComponentState_t raw{};
+     down=bool(controller.ulButtonPressed&vr::ButtonMaskFromId(vr::k_EButton_System));
+     if(!down&&vr::VRRenderModels()->GetComponentState(model,"button_system",&controller,&mode,&raw))down=bool(raw.uProperties&vr::VRComponentProperty_IsPressed);
+    }
+   }
+   valid=component||down;
+  }
+  float right=0,up=0;
+  if(valid&&system_radial.active&&pose_recent){
+   const auto& point=system_radial_pose[hand];
+   if(!system_radial_origin_valid){for(int i=0;i<3;i++)system_radial_origin.v[i]=point.m[i][3];system_radial_origin_valid=true;}
+   for(int i=0;i<3;i++){
+    float delta=point.m[i][3]-system_radial_origin.v[i];
+    right+=delta*system_radial_right.v[i];
+    up+=delta*system_radial_up.v[i];
+   }
+  }
+  auto& view=*views.at("framely.system.radial");
+  std::optional<SystemRadialDirection> hover;
+  if(system_radial.open&&view.pointer_valid&&overlays->IsHoverTargetOverlay(view.overlay))hover=SystemRadial::hit(view.pointer.x,view.pointer.y);
+  if(system_radial.open&&!pose_recent&&!hover&&valid)hover=system_radial_stick(model,hands[hand]);
+  if(system_radial.open&&!pose_recent&&!hover)hover=system_radial.direction;
+  auto event=system_radial.update(hand,valid,down,right,up,now,hover);
+  if(event==SystemRadialEvent::Idle)continue;
+  if(event==SystemRadialEvent::Begin){
+   show(view,false);
+   show(progress_view,false);
+   system_radial_laser(view.overlay,false);
+   view.pointer_valid=false;
+   system_radial_preview_prepared=false;
+   system_radial_progress_visible=false;
+   const auto& point=system_radial_pose[hand];
+   const auto& head=poses[0].mDeviceToAbsoluteTracking;
+   system_radial_origin_valid=pose_recent;
+   for(int i=0;i<3;i++){
+    if(pose_recent)system_radial_origin.v[i]=point.m[i][3];
+    system_radial_right.v[i]=head.m[i][0];
+    system_radial_up.v[i]=head.m[i][1];
+   }
+   vr::HmdMatrix34_t transform{{{1,0,0,0},{0,1,0,0},{0,0,1,-.38f}}};
+   overlays->SetOverlayWidthInMeters(progress_view.overlay,.68f);
+   overlays->SetOverlayTransformTrackedDeviceRelative(progress_view.overlay,vr::k_unTrackedDeviceIndex_Hmd,&transform);
+   overlays->SetOverlayWidthInMeters(view.overlay,.68f);
+   overlays->ClearOverlayTexture(view.overlay);
+   system_radial_sent={};
+  }
+  if(event==SystemRadialEvent::Open){
+   show(progress_view,false);
+   system_radial_progress_visible=false;
+   if(pose_recent){
+    const auto& point=system_radial_pose[hand];
+    const auto& head=poses[0].mDeviceToAbsoluteTracking;
+    auto transform=head;
+    for(int i=0;i<3;i++){
+     if(!system_radial_origin_valid)system_radial_origin.v[i]=point.m[i][3];
+     system_radial_right.v[i]=head.m[i][0];
+     system_radial_up.v[i]=head.m[i][1];
+     transform.m[i][3]=point.m[i][3]-head.m[i][2]*.22f;
+    }
+    system_radial_origin_valid=true;
+    overlays->SetOverlayTransformAbsolute(view.overlay,vr::TrackingUniverseStanding,&transform);
+   }else{
+    vr::HmdMatrix34_t transform{{{1,0,0,0},{0,1,0,0},{0,0,1,-.55f}}};
+    overlays->SetOverlayTransformTrackedDeviceRelative(view.overlay,vr::k_unTrackedDeviceIndex_Hmd,&transform);
+   }
+   show(view,true);
+   system_radial_laser(view.overlay,true);
+  }
+  if(event==SystemRadialEvent::Change){
+   if(system_radial.direction==SystemRadialDirection::Right)radial_screenshot(true,false);
+   else if(screenshot_radial_held)radial_screenshot(false,false);
+  }
+  if(event==SystemRadialEvent::Cancel||event==SystemRadialEvent::Commit){
+   const auto direction=system_radial.direction;
+   if(event==SystemRadialEvent::Cancel||direction!=SystemRadialDirection::Right){
+    std::lock_guard<std::mutex> lock(visibility_mutex);
+    if(pending_screenshot_hotkey.empty()||pending_screenshot_hotkey=="radialPrepare")pending_screenshot_hotkey="radialCancel";
+   }
+   show(view,false);
+   show(progress_view,false);
+   system_radial_laser(view.overlay,false);
+   overlays->ClearOverlayTexture(view.overlay);
+   system_radial_progress_visible=false;
+   if(screenshot_radial_held)radial_screenshot(false,event==SystemRadialEvent::Commit&&direction==SystemRadialDirection::Right);
+   if(event==SystemRadialEvent::Commit){
+    if(direction==SystemRadialDirection::Center){
+     if(auto* chaperone=vr::VRChaperone())chaperone->ResetZeroPose(vr::TrackingUniverseStanding);
+    }else if(direction==SystemRadialDirection::Up)toggle_entry(true);
+    else if(direction==SystemRadialDirection::Down){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back({{"kind","manager.open"}});}
+    else if(direction==SystemRadialDirection::Left){std::lock_guard<std::mutex> lock(visibility_mutex);pending_system_action="record:"+std::to_string(++system_action_sequence);}
+    else if(direction==SystemRadialDirection::Right){
+     // A fast move can reach the sector between two host polls.
+     std::lock_guard<std::mutex> lock(visibility_mutex);
+     if(pending_screenshot_hotkey.empty())pending_screenshot_hotkey="radialCapture";
+    }
+   }
+   return;
+  }
+ }
+ if(system_radial.active&&!system_radial_preview_prepared&&system_radial.progress(now)>=.25f){
+  std::lock_guard<std::mutex> lock(visibility_mutex);
+  if(pending_screenshot_hotkey.empty()){pending_screenshot_hotkey="radialPrepare";system_radial_preview_prepared=true;}
+ }
+ if(system_radial.active&&!system_radial.open&&!system_radial_progress_visible&&system_radial.progress(now)>=.4f){
+  show(progress_view,true);
+  system_radial_progress_visible=true;
+ }
+ if(system_radial.active&&now-system_radial_sent>=std::chrono::milliseconds(33)){
+  system_radial_sent=now;
+  bool recording=false;{std::lock_guard<std::mutex> lock(queue_mutex);recording=recording_state.value("active",false);}
+  json detail={{"progress",std::clamp((system_radial.progress(now)-.4f)/.6f,0.f,1.f)},{"open",system_radial.open},{"direction",radial_direction(system_radial.direction)},{"recording",recording}};
+  for(auto* display:{views.at("framely.system.radial.progress").get(),views.at("framely.system.radial").get()}){
+   auto* frame=display->browser->get_main_frame(display->browser);
+   execute(frame,"window.dispatchEvent(new CustomEvent('framely.systemMenu',{detail:"+detail.dump()+"}))");
+   frame->base.release(&frame->base);
+  }
+ }
+}
 static void entry_actions(vr::VROverlayHandle_t button,bool available){
  for(int hand=0;hand<2;hand++){framing_trigger_known[hand]=false;framing_trigger_down[hand]=false;}
  const bool pointer_available=available||recording_indicator.active();
@@ -689,7 +1069,20 @@ static void entry_actions(vr::VROverlayHandle_t button,bool available){
  if(gaze_allowed&&gaze_active)launcher_outside_at={};
  if(launcher_open&&launcher_outside_at.time_since_epoch().count()&&now>=launcher_outside_at){launcher_outside_at={};if(!keyboard_open&&!launcher_dock_interaction())launcher_back();}
 }
-static void commands(){std::deque<json> commands;{std::lock_guard<std::mutex> lock(queue_mutex);commands.swap(queue);}for(const auto& c:commands){try{auto kind=c.value("kind","");if(kind=="cast.framing.open"){auto key="framely.framing";if(views.count(key)&&views.at(key)->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}auto geometry=c.at("geometry");RecordingRegionPlane plane;auto view=geometry.at("view");if(!recording_region_plane(view,geometry.at("referenceTan"),0,0,1,plane))continue;auto& v=create_view(key,"Recording frame",origin+"/cast/framing",false,1600,1600);v.region_editor_id=geometry.at("id");v.region_geometry=geometry;update_framing_placement(v);menu_open=false;hide_launcher(false);}else if(kind=="cast.framing.reference"){auto found=views.find("framely.framing");if(found!=views.end()&&!found->second->closing&&found->second->region_editor_id==c.value("id",std::string{})){double cx=c.at("centerTanX"),cy=c.at("centerTanY");if(std::isfinite(cx)&&std::isfinite(cy)&&std::abs(cx)<=1.733&&std::abs(cy)<=1.733){found->second->region_geometry["view"]["centerTanX"]=cx;found->second->region_geometry["view"]["centerTanY"]=cy;}}}else if(kind=="cast.framing.close"){if(views.count("framely.framing")&&views.at("framely.framing")->region_editor_id==c.value("id",std::string{}))close_view(*views.at("framely.framing"));}else if(kind=="feedback.settings"){ui_haptics=c.value("haptics",true);ui_sounds=c.value("sounds",false);if(!ui_sounds)ui_audio.silence();}else if(kind=="file.dialog.complete"){for(auto& [key,view]:views){auto& v=*view;if(!v.file_dialog||v.file_dialog_id!=c.value("id",std::string{}))continue;auto paths=c.value("paths",json::array());if(paths.empty()){cancel_file_dialog(v);break;}if((!v.file_multiple&&paths.size()!=1)||paths.size()>64)break;auto* callback=v.file_dialog;v.file_dialog=nullptr;v.file_dialog_id.clear();auto list=cef_string_list_alloc();for(const auto& path:paths){cef_string_t value{};str(value,path.get<std::string>());cef_string_list_append(list,&value);cef_string_utf16_clear(&value);}callback->cont(callback,list);cef_string_list_free(list);callback->base.release(&callback->base);break;}}else if(kind=="gaze.correction"){gaze_correction=c.value("calibration",json(nullptr));}else if(kind=="gaze.target"){gaze_target_id=c.value("id",std::string{});gaze_target_u=c.value("x",.5f);gaze_target_v=1-c.value("y",.5f);gaze_preview=c.value("preview",json(nullptr));gaze_target_cached=false;}else if(kind=="launcher.calibrate"){gaze_target_id.clear();gaze_target_cached=false;gaze_preview=nullptr;launcher_calibrating=c.value("active",true);if(launcher_calibrating&&!launcher_open){if(!views.count("launcher"))create_view("launcher","Framely launcher",origin+"/launcher#calibrate",true,1440,800);toggle_entry(true);}if(views.count("launcher")){auto& v=*views.at("launcher");auto* frame=v.browser->get_main_frame(v.browser);execute(frame,std::string("location.hash=")+(launcher_calibrating?"'#calibrate'":"''")+";window.dispatchEvent(new Event('hashchange'))");frame->base.release(&frame->base);}}else if(kind=="launcher.close"){if(c.contains("launcherSession")&&!c["launcherSession"].is_null()&&c["launcherSession"]!=launcher_session)continue;bool handoff=c.value("handoff",false);hide_launcher(!handoff,handoff);}else if(kind=="menu.open"){hide_launcher(false);auto& menu=create_view("menu","Framely",origin+"/",false,600,840);navigate(menu,"#plugin:"+c.at("plugin").get<std::string>());menu_open=true;launcher_open=false;menu_button.opened(std::chrono::steady_clock::now());}else if(kind=="haptic"){auto key=c.value("view","");if(views.count(key)&&views.at(key)->shown&&!views.at(key)->closing){auto& view=*views.at(key);bool activation=c.value("feedback","hover")=="activate";if(activation&&key=="launcher"&&gaze_active&&launcher_gaze_allowed()){auto now=std::chrono::steady_clock::now();if(now-view.activation_at>=std::chrono::milliseconds(80)){view.activation_at=now;if(ui_sounds)ui_audio.play(true);}}else hover_haptic(view.overlay,activation?view.activation_at:view.haptic_at,activation);}}else if(kind=="manager.open"){hide_launcher(false);if(views.count("framely.manager")&&views.at("framely.manager")->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}auto page=c.value("page",std::string{});auto& manager=create_view("framely.manager","Framely",origin+"/manager"+((manager_navigation_page(page)||page.rfind("plugin:",0)==0)?"#"+page:""),true,1440,810);if(page.rfind("plugin:",0)==0)navigate(manager,"#"+page);if(manager_navigation_page(page)){auto* frame=manager.browser->get_main_frame(manager.browser);execute(frame,"location.hash="+json(page).dump()+";window.dispatchEvent(new Event(\"hashchange\"))");frame->base.release(&frame->base);}menu_open=false;launcher_open=false;}else if(kind=="agreement.decline"){auto key=c.value("view","");if(key=="menu"){menu_open=false;if(views.count("menu")){show(*views.at("menu"),false);views.at("menu")->browser->reload(views.at("menu")->browser);}}else if(views.count(key))close_view(*views.at(key));}else if(kind=="manager.close"){if(views.count("framely.manager"))close_view(*views.at("framely.manager"));}else if(kind=="menu.close"){menu_open=false;}else if(kind=="apk.permission.open"){auto key="framely.apk.permission";if(views.count(key)&&views.at(key)->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}auto& v=create_view(key,"Android permission",origin+"/apk/permission",false,1000,560,"",.85f);anchor_permission(v);}else if(kind=="apk.permission.close"){if(views.count("framely.apk.permission"))close_view(*views.at("framely.apk.permission"));}else if(kind=="cast.window"){auto id=c.at("id").get<std::string>();auto key="framely.cast."+id;if(views.count(key)&&views.at(key)->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}int width=c.value("width",640),height=c.value("height",240);if(width<160||width>1920||height<112||height>8192)continue;auto& v=create_view(key,"Framely casting",origin+"/cast/window/"+id,false,width,height,"",2.f);v.cast_frame.path=c.at("frame").get<std::string>();if(v.width!=width||v.height!=height){v.width=width;v.height=height;v.pixels.clear();v.texture_ready[0]=v.texture_ready[1]=false;v.host->was_resized(v.host);vr::HmdVector2_t scale{{float(width),float(height)}};overlays->SetOverlayMouseScale(v.overlay,&scale);}menu_open=false;launcher_open=false;}else if(kind=="cast.close"){auto key="framely.cast."+c.at("id").get<std::string>();if(views.count(key))close_view(*views.at(key));}else if(kind=="window.open"){hide_launcher(false);std::string plugin=c.at("plugin"),win=c.at("window");auto key="framely.window."+plugin+"."+win;if(views.count(key)&&views.at(key)->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}auto spec=c.at("spec");auto& opened=create_view("framely.window."+plugin+"."+win,spec.at("title"),origin+"/window/"+plugin+"/"+win,spec.value("dockIcon",false),spec.value("width",1600),spec.value("height",900),plugin,spec.value("widthMeters",3.f));plugin_thumbnail(opened,spec.value("iconData",std::string{}));menu_open=false;launcher_open=false;}else if(kind=="window.close"){auto key="framely.window."+c.at("plugin").get<std::string>()+"."+c.at("window").get<std::string>();if(views.count(key))close_view(*views.at(key));}else if(kind=="plugin.disabled"){for(auto&[key,v]:views)if(v->plugin==c.at("plugin"))close_view(*v);}else if(kind=="notification.changed"){bool requested=c.value("visible",false);if(!requested){if(views.count("notifications")){auto& v=*views.at("notifications");v.notification_requested=false;v.notification_content=false;show(v,false);}continue;}auto& v=create_view("notifications","Framely notifications",origin+"/notifications",false,600,360);v.notification_requested=true;anchor_notification(v);v.host->was_hidden(v.host,0);v.host->invalidate(v.host,PET_VIEW);}else if(kind=="keyboard"){auto key=c.value("view","menu");if(!views.count(key))continue;auto& v=*views.at(key);if(v.closing)continue;close_keyboard();v.host->set_focus(v.host,1);keyboard_frame=v.browser->get_focused_frame(v.browser);keyboard_view=key;keyboard_target=v.overlay;++keyboard_token;auto existing=c.value("existing","");if(key=="menu")overlays->SetOverlayFlag(v.overlay,vr::VROverlayFlags_WantsModalBehavior,false);auto e=overlays->ShowKeyboardForOverlay(v.overlay,c.value("password",false)?vr::k_EGamepadTextInputModePassword:vr::k_EGamepadTextInputModeNormal,c.value("multiline",false)?vr::k_EGamepadTextInputLineModeMultipleLines:vr::k_EGamepadTextInputLineModeSingleLine,vr::KeyboardFlag_Modal|vr::KeyboardFlag_Minimal|vr::KeyboardFlag_ShowArrowKeys,"Framely",4096,existing.c_str(),keyboard_token);keyboard_open=e==vr::VROverlayError_None;keyboard_menu.begin(keyboard_open&&key=="menu");keyboard_state(keyboard_open);if(!keyboard_open)close_keyboard();}else if(kind=="notifications.empty"){if(views.count("notifications")){views.at("notifications")->notification_requested=false;views.at("notifications")->notification_content=false;show(*views.at("notifications"),false);}}}catch(const std::exception& e){std::cerr<<"Native command error: "<<e.what()<<"\n";}}
+static void commands(){std::deque<json> commands;{std::lock_guard<std::mutex> lock(queue_mutex);commands.swap(queue);}for(const auto& c:commands){try{auto kind=c.value("kind","");if(kind=="cast.screenshot.open"){
+ auto key="framely.screenshot";
+ if(views.count(key)&&views.at(key)->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}
+ auto id=c.at("id").get<std::string>();bool spatial=c.value("spatial",false);
+ if(spatial){auto geometry=c.at("geometry");RecordingRegionPlane plane;if(!recording_region_plane(geometry.at("view"),geometry.at("referenceTan"),0,0,1,plane))continue;auto& v=create_view(key,"Screenshot frame",origin+"/cast/screenshot",false,1600,1600);v.region_editor_id=id;v.region_geometry=geometry;update_framing_placement(v);}
+ else{auto& v=create_view(key,"Screenshot frame",origin+"/cast/screenshot",false,1120,780,"",1.25f);v.region_editor_id=id;}
+ menu_open=false;hide_launcher(false);
+ }else if(kind=="cast.screenshot.close"){
+ if(views.count("framely.screenshot")&&views.at("framely.screenshot")->region_editor_id==c.value("id",std::string{}))close_view(*views.at("framely.screenshot"));
+ }else if(kind=="cast.screenshot.shortcutPreview.open"){
+ if(screenshot_radial_held){auto key="framely.screenshot.preview";if(views.count(key)&&views.at(key)->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}double aspect=c.value("aspect",1.0);if(!std::isfinite(aspect)||aspect<.3||aspect>4)aspect=1.0;int width=960,height=std::clamp(int(960/aspect),240,960);auto& v=create_view(key,"Screenshot preview",origin+"/cast/screenshot/shortcut",false,width,height,"",.95f);overlays->SetOverlayInputMethod(v.overlay,vr::VROverlayInputMethod_None);}
+ }else if(kind=="cast.screenshot.shortcutPreview.close"){
+ if(auto preview=views.find("framely.screenshot.preview");preview!=views.end())close_view(*preview->second);
+ }else if(kind=="cast.framing.open"){auto key="framely.framing";if(views.count(key)&&views.at(key)->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}auto geometry=c.at("geometry");RecordingRegionPlane plane;auto view=geometry.at("view");if(!recording_region_plane(view,geometry.at("referenceTan"),0,0,1,plane))continue;auto& v=create_view(key,"Recording frame",origin+"/cast/framing",false,1600,1600);v.region_editor_id=geometry.at("id");v.region_geometry=geometry;update_framing_placement(v);menu_open=false;hide_launcher(false);}else if(kind=="cast.framing.reference"){auto found=views.find("framely.framing");if(found!=views.end()&&!found->second->closing&&found->second->region_editor_id==c.value("id",std::string{})){double cx=c.at("centerTanX"),cy=c.at("centerTanY");if(std::isfinite(cx)&&std::isfinite(cy)&&std::abs(cx)<=1.733&&std::abs(cy)<=1.733){found->second->region_geometry["view"]["centerTanX"]=cx;found->second->region_geometry["view"]["centerTanY"]=cy;}}}else if(kind=="cast.framing.close"){if(views.count("framely.framing")&&views.at("framely.framing")->region_editor_id==c.value("id",std::string{}))close_view(*views.at("framely.framing"));}else if(kind=="feedback.settings"){ui_haptics=c.value("haptics",true);ui_sounds=c.value("sounds",false);if(!ui_sounds)ui_audio.silence();}else if(kind=="file.dialog.complete"){for(auto& [key,view]:views){auto& v=*view;if(!v.file_dialog||v.file_dialog_id!=c.value("id",std::string{}))continue;auto paths=c.value("paths",json::array());if(paths.empty()){cancel_file_dialog(v);break;}if((!v.file_multiple&&paths.size()!=1)||paths.size()>64)break;auto* callback=v.file_dialog;v.file_dialog=nullptr;v.file_dialog_id.clear();auto list=cef_string_list_alloc();for(const auto& path:paths){cef_string_t value{};str(value,path.get<std::string>());cef_string_list_append(list,&value);cef_string_utf16_clear(&value);}callback->cont(callback,list);cef_string_list_free(list);callback->base.release(&callback->base);break;}}else if(kind=="gaze.correction"){gaze_correction=c.value("calibration",json(nullptr));}else if(kind=="gaze.target"){gaze_target_id=c.value("id",std::string{});gaze_target_u=c.value("x",.5f);gaze_target_v=1-c.value("y",.5f);gaze_preview=c.value("preview",json(nullptr));gaze_target_cached=false;}else if(kind=="launcher.calibrate"){gaze_target_id.clear();gaze_target_cached=false;gaze_preview=nullptr;launcher_calibrating=c.value("active",true);if(launcher_calibrating&&!launcher_open){if(!views.count("launcher"))create_view("launcher","Framely launcher",origin+"/launcher#calibrate",true,1440,800);toggle_entry(true);}if(views.count("launcher")){auto& v=*views.at("launcher");auto* frame=v.browser->get_main_frame(v.browser);execute(frame,std::string("location.hash=")+(launcher_calibrating?"'#calibrate'":"''")+";window.dispatchEvent(new Event('hashchange'))");frame->base.release(&frame->base);}}else if(kind=="launcher.close"){if(c.contains("launcherSession")&&!c["launcherSession"].is_null()&&c["launcherSession"]!=launcher_session)continue;bool handoff=c.value("handoff",false);hide_launcher(!handoff,handoff);}else if(kind=="menu.open"){hide_launcher(false);auto& menu=create_view("menu","Framely",origin+"/",false,600,840);navigate(menu,"#plugin:"+c.at("plugin").get<std::string>());menu_open=true;launcher_open=false;menu_button.opened(std::chrono::steady_clock::now());}else if(kind=="haptic"){auto key=c.value("view","");if(views.count(key)&&views.at(key)->shown&&!views.at(key)->closing){auto& view=*views.at(key);bool activation=c.value("feedback","hover")=="activate";if(activation&&key=="launcher"&&gaze_active&&launcher_gaze_allowed()){auto now=std::chrono::steady_clock::now();if(now-view.activation_at>=std::chrono::milliseconds(80)){view.activation_at=now;if(ui_sounds)ui_audio.play(true);}}else hover_haptic(view.overlay,activation?view.activation_at:view.haptic_at,activation);}}else if(kind=="manager.open"){hide_launcher(false);if(views.count("framely.manager")&&views.at("framely.manager")->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}auto page=c.value("page",std::string{});auto& manager=create_view("framely.manager","Framely",origin+"/manager"+((manager_navigation_page(page)||page.rfind("plugin:",0)==0)?"#"+page:""),true,1440,810);if(page.rfind("plugin:",0)==0)navigate(manager,"#"+page);if(manager_navigation_page(page)){auto* frame=manager.browser->get_main_frame(manager.browser);execute(frame,"location.hash="+json(page).dump()+";window.dispatchEvent(new Event(\"hashchange\"))");frame->base.release(&frame->base);}menu_open=false;launcher_open=false;}else if(kind=="agreement.decline"){auto key=c.value("view","");if(key=="menu"){menu_open=false;if(views.count("menu")){show(*views.at("menu"),false);views.at("menu")->browser->reload(views.at("menu")->browser);}}else if(views.count(key))close_view(*views.at(key));}else if(kind=="manager.close"){if(views.count("framely.manager"))close_view(*views.at("framely.manager"));}else if(kind=="menu.close"){menu_open=false;}else if(kind=="apk.permission.open"){auto key="framely.apk.permission";if(views.count(key)&&views.at(key)->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}auto& v=create_view(key,"Android permission",origin+"/apk/permission",false,1000,560,"",.85f);anchor_permission(v);}else if(kind=="apk.permission.close"){if(views.count("framely.apk.permission"))close_view(*views.at("framely.apk.permission"));}else if(kind=="cast.screenshot.sound"){ui_audio.screenshot();}else if(kind=="cast.window"){auto id=c.at("id").get<std::string>();auto key="framely.cast."+id;if(views.count(key)&&views.at(key)->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}int width=c.value("width",640),height=c.value("height",240);if(width<160||width>1920||height<112||height>8192)continue;auto& v=create_view(key,"Framely casting",origin+"/cast/window/"+id,false,width,height,"",2.f);v.cast_frame.path=c.at("frame").get<std::string>();if(v.width!=width||v.height!=height){v.width=width;v.height=height;v.pixels.clear();v.texture_ready[0]=v.texture_ready[1]=false;v.host->was_resized(v.host);vr::HmdVector2_t scale{{float(width),float(height)}};overlays->SetOverlayMouseScale(v.overlay,&scale);}menu_open=false;launcher_open=false;}else if(kind=="cast.close"){auto key="framely.cast."+c.at("id").get<std::string>();if(views.count(key))close_view(*views.at(key));}else if(kind=="window.open"){std::string plugin=c.at("plugin"),win=c.at("window");auto key="framely.window."+plugin+"."+win;const bool keyboard_surface=key==frame_keyboard_window_key;if(!keyboard_surface)hide_launcher(false);if(views.count(key)&&views.at(key)->closing){std::lock_guard<std::mutex> lock(queue_mutex);queue.push_back(c);continue;}auto spec=c.at("spec");auto& opened=create_view("framely.window."+plugin+"."+win,spec.at("title"),origin+"/window/"+plugin+"/"+win,spec.value("dockIcon",false),spec.value("width",1600),spec.value("height",900),plugin,spec.value("widthMeters",3.f));plugin_thumbnail(opened,spec.value("iconData",std::string{}));if(!keyboard_surface){menu_open=false;launcher_open=false;}}else if(kind=="window.close"){auto key="framely.window."+c.at("plugin").get<std::string>()+"."+c.at("window").get<std::string>();if(views.count(key))close_view(*views.at(key));}else if(kind=="plugin.disabled"){for(auto&[key,v]:views)if(v->plugin==c.at("plugin"))close_view(*v);}else if(kind=="notification.changed"){bool requested=c.value("visible",false);if(!requested){if(views.count("notifications")){auto& v=*views.at("notifications");v.notification_requested=false;v.notification_content=false;show(v,false);}continue;}auto& v=create_view("notifications","Framely notifications",origin+"/notifications",false,600,360);v.notification_requested=true;anchor_notification(v);v.host->was_hidden(v.host,0);v.host->invalidate(v.host,PET_VIEW);}else if(kind=="keyboard"){auto key=c.value("view","menu");if(!views.count(key))continue;auto& v=*views.at(key);if(v.closing||key==frame_keyboard_window_key)continue;close_keyboard();v.host->set_focus(v.host,1);keyboard_frame=v.browser->get_focused_frame(v.browser);keyboard_view=key;keyboard_target=v.overlay;++keyboard_token;auto existing=c.value("existing","");if(key=="menu")overlays->SetOverlayFlag(v.overlay,vr::VROverlayFlags_WantsModalBehavior,false);auto e=overlays->ShowKeyboardForOverlay(v.overlay,c.value("password",false)?vr::k_EGamepadTextInputModePassword:vr::k_EGamepadTextInputModeNormal,c.value("multiline",false)?vr::k_EGamepadTextInputLineModeMultipleLines:vr::k_EGamepadTextInputLineModeSingleLine,vr::KeyboardFlag_Modal|vr::KeyboardFlag_Minimal|vr::KeyboardFlag_ShowArrowKeys,"Framely",4096,existing.c_str(),keyboard_token);keyboard_open=e==vr::VROverlayError_None;keyboard_menu.begin(keyboard_open&&key=="menu");keyboard_state(keyboard_open);if(!keyboard_open)close_keyboard();}else if(kind=="notifications.empty"){if(views.count("notifications")){views.at("notifications")->notification_requested=false;views.at("notifications")->notification_content=false;show(*views.at("notifications"),false);}}}catch(const std::exception& e){std::cerr<<"Native command error: "<<e.what()<<"\n";}}
 }
 static void release_framing_pointer(View& v){
  if(!v.framing_left_down)return;v.framing_left_down=false;
@@ -697,7 +1090,7 @@ static void release_framing_pointer(View& v){
  auto* frame=v.browser->get_main_frame(v.browser);execute(frame,"window.dispatchEvent(new Event('framely.pointerRelease'))");frame->base.release(&frame->base);
 }
 static void reconcile_framing_pointer(View& v){
- if(v.key!="framely.framing"||!v.framing_left_down)return;
+ if((v.key!="framely.framing"&&!(v.key=="framely.screenshot"&&v.region_geometry.contains("view")))||!v.framing_left_down)return;
  bool known=true,held=false,found=false,owner=false;
  for(int hand=0;hand<2;hand++){
   auto device=vr_system->GetTrackedDeviceIndexForControllerRole(hand?vr::TrackedControllerRole_RightHand:vr::TrackedControllerRole_LeftHand);
@@ -710,7 +1103,7 @@ static void reconcile_framing_pointer(View& v){
  }
  if((owner||found)&&known&&!held)release_framing_pointer(v);
 }
-static void overlay_input(View& v,const vr::VREvent_t& e){if(v.closing)return;if((v.key=="notifications"||v.key=="launcher"||v.key=="menu")&&!v.shown&&e.eventType!=vr::VREvent_OverlayClosed)return;if(v.key=="launcher"&&!launcher_open&&e.eventType!=vr::VREvent_OverlayClosed)return;if(v.key=="launcher"&&!launcher_accepts(e)&&(e.eventType==vr::VREvent_Modal_Cancel||e.eventType==vr::VREvent_ButtonPress||e.eventType==vr::VREvent_MouseButtonDown||e.eventType==vr::VREvent_MouseButtonUp))return;if(keyboard_event(e,v.overlay))return;if(menu_open&&v.key!="menu"&&e.eventType==vr::VREvent_MouseButtonDown&&!keyboard_open&&menu_button.can_cancel(std::chrono::steady_clock::now()))menu_open=false;laser_cursor(v.overlay,e);cef_mouse_event_t mouse{};mouse.x=int(e.data.mouse.x);mouse.y=v.height-int(e.data.mouse.y);if(e.eventType==vr::VREvent_MouseMove||e.eventType==vr::VREvent_MouseButtonDown||e.eventType==vr::VREvent_MouseButtonUp){v.pointer=mouse;v.pointer_valid=true;v.pointer_device=e.trackedDeviceIndex;v.pointer_at=std::chrono::steady_clock::now();}switch(e.eventType){case vr::VREvent_Modal_Cancel:if(v.key=="launcher"&&!keyboard_open&&!gaze_active&&!launcher_dock_interaction()&&!overlays->IsHoverTargetOverlay(v.overlay))launcher_back();else if(v.key=="menu"&&!keyboard_open&&!keyboard_menu.holds(std::chrono::steady_clock::now())&&menu_button.can_cancel(std::chrono::steady_clock::now())){menu_open=false;std::cout<<"Menu closed: outside click"<<std::endl;}break;case vr::VREvent_OverlayClosed:if(v.key=="launcher")hide_launcher();else if(v.key!="menu"&&v.key!="notifications")close_view(v);break;case vr::VREvent_ButtonPress:if(e.data.controller.button==vr::k_EButton_ApplicationMenu){if(v.key=="launcher"){launcher_back();break;}auto* frame=v.browser->get_main_frame(v.browser);execute(frame,"window.dispatchEvent(new Event('framely.back'))");frame->base.release(&frame->base);}break;case vr::VREvent_FocusLeave:if(v.key=="framely.framing")release_framing_pointer(v);if(v.key=="launcher"&&v.launcher_pointer.holding(std::chrono::steady_clock::now()))break;if(v.key!="notifications"||!v.notification_click.active)v.host->send_mouse_move_event(v.host,&mouse,1);break;case vr::VREvent_MouseMove:if(v.key=="framely.framing")mouse.modifiers=v.framing_left_down?EVENTFLAG_LEFT_MOUSE_BUTTON:0;if(v.key=="launcher")v.launcher_pointer.constrain(mouse.x,mouse.y,std::chrono::steady_clock::now());if(v.key!="notifications"||!v.notification_click.hold(mouse.x,mouse.y,std::chrono::steady_clock::now()))v.host->send_mouse_move_event(v.host,&mouse,0);break;case vr::VREvent_MouseButtonDown:case vr::VREvent_MouseButtonUp:{v.host->set_focus(v.host,1);auto button=e.data.mouse.button==vr::VRMouseButton_Right?MBT_RIGHT:MBT_LEFT;if(v.key=="launcher"&&button==MBT_LEFT){auto now=std::chrono::steady_clock::now();if(e.eventType==vr::VREvent_MouseButtonDown)v.launcher_pointer.begin(mouse.x,mouse.y,now);else{v.launcher_pointer.constrain(mouse.x,mouse.y,now);v.launcher_pointer.clear();}}if(v.key=="notifications"&&button==MBT_LEFT){auto now=std::chrono::steady_clock::now();if(e.eventType==vr::VREvent_MouseButtonDown)v.notification_click.begin(mouse.x,mouse.y,now);else v.notification_click.release(mouse.x,mouse.y,now);}mouse.modifiers=e.eventType==vr::VREvent_MouseButtonDown?EVENTFLAG_LEFT_MOUSE_BUTTON:0;if(v.key=="framely.framing"&&button==MBT_LEFT)v.framing_left_down=e.eventType==vr::VREvent_MouseButtonDown;v.host->send_mouse_click_event(v.host,&mouse,button,e.eventType==vr::VREvent_MouseButtonUp,1);break;}case vr::VREvent_ScrollSmooth:case vr::VREvent_ScrollDiscrete:if(v.stick_scrolling||keyboard_open||!v.pointer_valid)break;mouse=v.pointer;mouse.modifiers=0;v.host->send_mouse_wheel_event(v.host,&mouse,int(e.data.scroll.xdelta*120),int(e.data.scroll.ydelta*120));break;case vr::VREvent_OverlayGamepadFocusLost:if(v.key=="framely.framing")release_framing_pointer(v);if(!keyboard_open&&!v.dashboard&&v.key!="menu"&&v.key!="notifications"&&v.key!="launcher"&&v.key.rfind("framely.cast.",0)!=0&&v.key!="framely.apk.permission"&&v.key!="framely.framing")close_view(v);break;default:break;}}
+static void overlay_input(View& v,const vr::VREvent_t& e){if(v.closing)return;if(v.key=="framely.system.radial"&&e.eventType==vr::VREvent_FocusLeave)v.pointer_valid=false;if((v.key=="notifications"||v.key=="launcher"||v.key=="menu")&&!v.shown&&e.eventType!=vr::VREvent_OverlayClosed)return;if(v.key=="launcher"&&!launcher_open&&e.eventType!=vr::VREvent_OverlayClosed)return;if(v.key=="launcher"&&!launcher_accepts(e)&&(e.eventType==vr::VREvent_Modal_Cancel||e.eventType==vr::VREvent_ButtonPress||e.eventType==vr::VREvent_MouseButtonDown||e.eventType==vr::VREvent_MouseButtonUp))return;if(keyboard_event(e,v.overlay))return;if(menu_open&&v.key!="menu"&&e.eventType==vr::VREvent_MouseButtonDown&&!keyboard_open&&menu_button.can_cancel(std::chrono::steady_clock::now()))menu_open=false;laser_cursor(v.overlay,e);cef_mouse_event_t mouse{};mouse.x=int(e.data.mouse.x);mouse.y=v.height-int(e.data.mouse.y);if(e.eventType==vr::VREvent_MouseMove||e.eventType==vr::VREvent_MouseButtonDown||e.eventType==vr::VREvent_MouseButtonUp){v.pointer=mouse;v.pointer_valid=true;v.pointer_device=e.trackedDeviceIndex;v.pointer_at=std::chrono::steady_clock::now();}switch(e.eventType){case vr::VREvent_Modal_Cancel:if(v.key=="launcher"&&!keyboard_open&&!gaze_active&&!launcher_dock_interaction()&&!overlays->IsHoverTargetOverlay(v.overlay))launcher_back();else if(v.key=="menu"&&!keyboard_open&&!keyboard_menu.holds(std::chrono::steady_clock::now())&&menu_button.can_cancel(std::chrono::steady_clock::now())){menu_open=false;std::cout<<"Menu closed: outside click"<<std::endl;}break;case vr::VREvent_OverlayClosed:if(v.key=="launcher")hide_launcher();else if(v.key!="menu"&&v.key!="notifications")close_view(v);break;case vr::VREvent_ButtonPress:if(e.data.controller.button==vr::k_EButton_ApplicationMenu){if(v.key=="launcher"){launcher_back();break;}auto* frame=v.browser->get_main_frame(v.browser);execute(frame,"window.dispatchEvent(new Event('framely.back'))");frame->base.release(&frame->base);}break;case vr::VREvent_FocusLeave:if((v.key=="framely.framing"||(v.key=="framely.screenshot"&&v.region_geometry.contains("view"))))release_framing_pointer(v);if(v.key=="launcher"&&v.launcher_pointer.holding(std::chrono::steady_clock::now()))break;if(v.key!="notifications"||!v.notification_click.active)v.host->send_mouse_move_event(v.host,&mouse,1);break;case vr::VREvent_MouseMove:if((v.key=="framely.framing"||(v.key=="framely.screenshot"&&v.region_geometry.contains("view"))))mouse.modifiers=v.framing_left_down?EVENTFLAG_LEFT_MOUSE_BUTTON:0;if(v.key=="launcher")v.launcher_pointer.constrain(mouse.x,mouse.y,std::chrono::steady_clock::now());if(v.key!="notifications"||!v.notification_click.hold(mouse.x,mouse.y,std::chrono::steady_clock::now()))v.host->send_mouse_move_event(v.host,&mouse,0);break;case vr::VREvent_MouseButtonDown:case vr::VREvent_MouseButtonUp:{if(v.key!=frame_keyboard_window_key)v.host->set_focus(v.host,1);auto button=e.data.mouse.button==vr::VRMouseButton_Right?MBT_RIGHT:MBT_LEFT;if(v.key=="launcher"&&button==MBT_LEFT){auto now=std::chrono::steady_clock::now();if(e.eventType==vr::VREvent_MouseButtonDown)v.launcher_pointer.begin(mouse.x,mouse.y,now);else{v.launcher_pointer.constrain(mouse.x,mouse.y,now);v.launcher_pointer.clear();}}if(v.key=="notifications"&&button==MBT_LEFT){auto now=std::chrono::steady_clock::now();if(e.eventType==vr::VREvent_MouseButtonDown)v.notification_click.begin(mouse.x,mouse.y,now);else v.notification_click.release(mouse.x,mouse.y,now);}mouse.modifiers=e.eventType==vr::VREvent_MouseButtonDown?EVENTFLAG_LEFT_MOUSE_BUTTON:0;if((v.key=="framely.framing"||(v.key=="framely.screenshot"&&v.region_geometry.contains("view")))&&button==MBT_LEFT)v.framing_left_down=e.eventType==vr::VREvent_MouseButtonDown;v.host->send_mouse_click_event(v.host,&mouse,button,e.eventType==vr::VREvent_MouseButtonUp,1);break;}case vr::VREvent_ScrollSmooth:case vr::VREvent_ScrollDiscrete:if(v.stick_scrolling||keyboard_open||!v.pointer_valid)break;mouse=v.pointer;mouse.modifiers=0;v.host->send_mouse_wheel_event(v.host,&mouse,int(e.data.scroll.xdelta*120),int(e.data.scroll.ydelta*120));break;case vr::VREvent_OverlayGamepadFocusLost:if((v.key=="framely.framing"||(v.key=="framely.screenshot"&&v.region_geometry.contains("view"))))release_framing_pointer(v);if(!keyboard_open&&!v.dashboard&&v.key!=frame_keyboard_window_key&&v.key!="menu"&&v.key!="notifications"&&v.key!="launcher"&&v.key!="framely.system.radial"&&v.key.rfind("framely.cast.",0)!=0&&v.key!="framely.apk.permission"&&v.key!="framely.framing"&&v.key!="framely.screenshot")close_view(v);break;default:break;}}
 
 int main(int argc,char** argv){
  std::cout.setf(std::ios::unitbuf);std::string initial;int port=0;for(int i=1;i+1<argc;i++){std::string s=argv[i];if(s=="--url")initial=argv[++i];else if(s=="--port")port=std::stoi(argv[++i]);else if(s=="--runtime")runtime=argv[++i];}
@@ -724,7 +1117,7 @@ int main(int argc,char** argv){
  vr::VR_Shutdown();
  // Frame's compositor requires the Overlay application type for visible UI.
  // The session agent and service gate this renderer on all native services.
- vr_system=vr::VR_Init(&vr_error,vr::VRApplication_Overlay);if(vr_error){std::cerr<<"SteamVR renderer unavailable "<<vr_error<<"\n";return 3;}overlays=vr::VROverlay();setup_entry_actions();
+ vr_system=vr::VR_Init(&vr_error,vr::VRApplication_Overlay);if(vr_error){std::cerr<<"SteamVR renderer unavailable "<<vr_error<<"\n";return 3;}overlays=vr::VROverlay();setup_entry_actions();system_radial_available=std::getenv("FRAMELY_STEAM_MENU_ENABLED")&&std::strcmp(std::getenv("FRAMELY_STEAM_MENU_ENABLED"),"1")==0;
  xdisplay=XOpenDisplay(nullptr);if(!xdisplay){vr::VR_Shutdown();return 4;}int n=0;int attrs[]={GLX_DRAWABLE_TYPE,GLX_PBUFFER_BIT,GLX_RENDER_TYPE,GLX_RGBA_BIT,None};auto* configs=glXChooseFBConfig(xdisplay,DefaultScreen(xdisplay),attrs,&n);if(!configs||!n){vr::VR_Shutdown();return 4;}int pba[]={GLX_PBUFFER_WIDTH,16,GLX_PBUFFER_HEIGHT,16,None};glsurface=glXCreatePbuffer(xdisplay,configs[0],pba);glcontext=glXCreateNewContext(xdisplay,configs[0],GLX_RGBA_TYPE,nullptr,True);XFree(configs);if(!glcontext||!glXMakeContextCurrent(xdisplay,glsurface,glsurface,glcontext)){vr::VR_Shutdown();return 4;}
  cef_settings_t settings{};settings.size=sizeof(settings);settings.windowless_rendering_enabled=1;std::string locale;for(const char* key:{"LC_ALL","LC_MESSAGES","LANG"}){const char* value=std::getenv(key);if(value&&*value){locale=value;break;}}auto suffix=locale.find_first_of(".@");if(suffix!=std::string::npos)locale.erase(suffix);std::replace(locale.begin(),locale.end(),'_','-');if(locale=="C"||locale=="POSIX"||locale.empty())locale="en-US";str(settings.accept_language_list,locale+",en-US,en");str(settings.root_cache_path,runtime+"/cef-cache");str(settings.log_file,runtime+"/cef.log");if(!cef_initialize(&args,&settings,nullptr,nullptr)){vr::VR_Shutdown();return 5;}
  render_handler.api.get_view_rect=[](cef_render_handler_t*,cef_browser_t* b,cef_rect_t* r){auto* v=find_browser(b);*r={0,0,v?v->width:600,v?v->height:840};};
@@ -748,11 +1141,12 @@ int main(int argc,char** argv){
  client.api.get_dialog_handler=[](cef_client_t*){return dialog_handler.acquire();};client.api.get_render_handler=[](cef_client_t*){return render_handler.acquire();};client.api.get_life_span_handler=[](cef_client_t*){return life_handler.acquire();};client.api.get_display_handler=[](cef_client_t*){return display_handler.acquire();};client.api.get_request_handler=[](cef_client_t*){return request_handler.acquire();};
  vr::VROverlayHandle_t button=0;auto err=overlays->CreateOverlay("framely.dock.button","Framely",&button);if(err){cef_shutdown();vr::VR_Shutdown();return 6;}auto pixels=dock_icon(false,false);DockIconTexture icon_texture;icon_texture.init();if(!icon_texture.submit(button,pixels)){icon_texture.destroy();overlays->DestroyOverlay(button);cef_shutdown();vr::VR_Shutdown();return 6;}overlays->SetOverlayInputMethod(button,vr::VROverlayInputMethod_Mouse);vr::HmdVector2_t scale{{dock_canvas_width,dock_canvas_height}};overlays->SetOverlayMouseScale(button,&scale);vr::VROverlayIntersectionMaskPrimitive_t mask{};mask.m_nPrimitiveType=vr::OverlayIntersectionPrimitiveType_Rectangle;mask.m_Primitive.m_Rectangle={dock_icon_left,0,128,128};if(overlays->SetOverlayIntersectionMask(button,&mask,1)){std::cerr<<"Dock input mask unavailable\n";overlays->DestroyOverlay(button);icon_texture.destroy();cef_shutdown();vr::VR_Shutdown();return 6;}overlays->SetOverlayFlag(button,vr::VROverlayFlags_VisibleInDashboard,true);overlays->SetOverlayFlag(button,vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,true);overlays->SetOverlayFlag(button,vr::VROverlayFlags_SortWithNonSceneOverlays,false);overlays->SetOverlaySortOrder(button,0);overlays->SetOverlayFlag(button,vr::VROverlayFlags_HideLaserIntersection,false);
  try{create_view("menu","Framely",initial,false,600,840);}catch(const std::exception& e){std::cerr<<e.what()<<"\n";running=0;}
+ if(system_radial_available)try{create_view("framely.system.radial.progress","Framely radial progress",initial+"?view=radial-progress",false,720,720);create_view("framely.system.radial","Framely radial menu",initial+"?view=radial",false,720,720);}catch(const std::exception& e){std::cerr<<"Radial menu unavailable: "<<e.what()<<"\n";system_radial_available=false;}
  const char* steam_root=std::getenv("FRAMELY_STEAM_ROOT");if(!ui_audio.prepare(steam_root?steam_root:""))std::cerr<<"Steam UI sounds unavailable\n";
- std::thread poller([port]{int failures=0;json last_feedback;json last_gaze;bool gaze_loaded=false;while(running){try{auto data=poll_http(port);notification_badge_count.store(data.value("notificationBadge",0u));launcher_prioritize_ui.store(data.value("launcher",json::object()).value("prioritizeUi",true));std::lock_guard<std::mutex> lock(queue_mutex);recording_state=data.value("recording",json::object());recording_region_state=data.value("recordingRegion",json::object());framing_editor_state=data.value("framingEditor",json(nullptr));if(!recording_state.is_object())recording_state=json::object();auto feedback=data.value("feedback",json::object());if(!feedback.is_object())feedback=json::object();if(feedback!=last_feedback){queue.push_back({{"kind","feedback.settings"},{"haptics",feedback.value("haptics",true)},{"sounds",feedback.value("sounds",false)}});last_feedback=feedback;}auto calibration=data.value("gazeCalibration",json(nullptr));if(!gaze_loaded||calibration!=last_gaze){queue.push_back({{"kind","gaze.correction"},{"calibration",calibration}});last_gaze=calibration;gaze_loaded=true;}for(const auto& c:data.at("commands")){if(queue.size()<256)queue.push_back(c);}failures=0;}catch(const std::exception& e){if(++failures>=10){std::cerr<<"Agent connection lost: "<<e.what()<<"\n";running=0;}}std::this_thread::sleep_for(std::chrono::milliseconds(100));}});
+ std::thread poller([port]{int failures=0;json last_feedback;json last_gaze;bool gaze_loaded=false;while(running){try{auto data=poll_http(port);notification_badge_count.store(data.value("notificationBadge",0u));const auto launcher=data.value("launcher",json::object());launcher_prioritize_ui.store(launcher.value("prioritizeUi",true));system_radial_enabled.store(launcher.value("systemRadialMenu",true));std::lock_guard<std::mutex> lock(queue_mutex);recording_state=data.value("recording",json::object());recording_region_state=data.value("recordingRegion",json::object());framing_editor_state=data.value("framingEditor",json(nullptr));screenshot_editor_state=data.value("screenshotEditor",json(nullptr));screenshot_shortcut_preview=data.value("screenshotShortcutPreview",json(nullptr));if(!recording_state.is_object())recording_state=json::object();auto feedback=data.value("feedback",json::object());if(!feedback.is_object())feedback=json::object();if(feedback!=last_feedback){queue.push_back({{"kind","feedback.settings"},{"haptics",feedback.value("haptics",true)},{"sounds",feedback.value("sounds",false)}});last_feedback=feedback;}auto calibration=data.value("gazeCalibration",json(nullptr));if(!gaze_loaded||calibration!=last_gaze){queue.push_back({{"kind","gaze.correction"},{"calibration",calibration}});last_gaze=calibration;gaze_loaded=true;}for(const auto& c:data.at("commands")){if(queue.size()<256)queue.push_back(c);}failures=0;}catch(const std::exception& e){if(++failures>=10){std::cerr<<"Agent connection lost: "<<e.what()<<"\n";running=0;}}std::this_thread::sleep_for(std::chrono::milliseconds(100));}});
  std::thread priority_worker([]{LauncherPriority priority;while(running){priority.update(launcher_priority_active.load());std::this_thread::sleep_for(std::chrono::milliseconds(100));}});
  DockUVState uv{};OverlayPlacement button_placement;bool icon_active=false,icon_hover=false;unsigned icon_badge=0;int icon_progress=0;vr::VROverlayHandle_t last_dock=0;bool was_visible=false;vr::HmdMatrix34_t saved_anchor{},saved_frame{};float saved_size=0;DockCurveEvidence saved_evidence{};auto button_haptic_at=std::chrono::steady_clock::time_point{};auto anchored_at=std::chrono::steady_clock::time_point{};auto sampled_at=std::chrono::steady_clock::time_point{};
- while(running){auto frame_start=std::chrono::steady_clock::now();cef_do_message_loop_work();commands();json recording,region,framing;{std::lock_guard<std::mutex> lock(queue_mutex);recording=recording_state;region=recording_region_state;framing=framing_editor_state;}if(auto editor=views.find("framely.framing");editor!=views.end()&&framing_editor_should_close(framing,editor->second->region_editor_id))close_view(*editor->second);recording_indicator.tick(overlays,recording.value("active",false)&&recording.value("indicatorVisible",true)?recording.value("id",std::string{}):std::string{},recording.value("elapsedSeconds",uint64_t(0)));if(auto editor=views.find("framely.framing");editor!=views.end())update_framing_placement(*editor->second);if(region.value("visible",false)&&region.contains("view")){auto presentation=recording_region_presentation(region["view"]);recording_region_overlay.tick(overlays,region,presentation.distance,&presentation.view);}else recording_region_overlay.tick(overlays,region);vr::VREvent_t global{};while(vr_system->PollNextEvent(&global,sizeof(global))){if(global.eventType==vr::VREvent_Quit){vr_system->AcknowledgeQuit_Exiting();running=0;}observe_dashboard(global);keyboard_event(global);}launcher_priority_active.store(launcher_open&&launcher_prioritize_ui.load());vr::VROverlayHandle_t dock=0;vr::HmdVector2_t mouse_scale{};bool visible=!overlays->FindOverlay("valve.steam.gamepadui.bar",&dock)&&overlays->IsDashboardVisible()&&overlays->IsOverlayVisible(dock)&&!overlays->GetOverlayMouseScale(dock,&mouse_scale);
+ while(running){auto frame_start=std::chrono::steady_clock::now();cef_do_message_loop_work();commands();json recording,region,framing,screenshot_editor,screenshot_preview;{std::lock_guard<std::mutex> lock(queue_mutex);recording=recording_state;region=recording_region_state;framing=framing_editor_state;screenshot_editor=screenshot_editor_state;screenshot_preview=screenshot_shortcut_preview;}if(auto editor=views.find("framely.framing");editor!=views.end()&&framing_editor_should_close(framing,editor->second->region_editor_id))close_view(*editor->second);if(auto editor=views.find("framely.screenshot");editor!=views.end()&&framing_editor_should_close(screenshot_editor,editor->second->region_editor_id))close_view(*editor->second);recording_indicator.tick(overlays,recording.value("active",false)&&recording.value("indicatorVisible",true)?recording.value("id",std::string{}):std::string{},recording.value("elapsedSeconds",uint64_t(0)));if(auto editor=views.find("framely.framing");editor!=views.end())update_framing_placement(*editor->second);if(auto editor=views.find("framely.screenshot");editor!=views.end()&&editor->second->region_geometry.is_object()&&editor->second->region_geometry.contains("view"))update_framing_placement(*editor->second);if(screenshot_radial_held&&screenshot_preview.is_object()&&screenshot_preview.value("visible",false))screenshot_region_overlay.tick(overlays,screenshot_preview);else screenshot_region_overlay.destroy();if(region.value("visible",false)&&region.contains("view")){auto presentation=recording_region_presentation(region["view"]);recording_region_overlay.tick(overlays,region,presentation.distance,&presentation.view);}else recording_region_overlay.tick(overlays,region);external_keyboard_tick(std::chrono::steady_clock::now());vr::VREvent_t global{};while(vr_system->PollNextEvent(&global,sizeof(global))){if(global.eventType==vr::VREvent_Quit){vr_system->AcknowledgeQuit_Exiting();running=0;}observe_dashboard(global);keyboard_event(global);}launcher_priority_active.store(launcher_open&&launcher_prioritize_ui.load());vr::VROverlayHandle_t dock=0;vr::HmdVector2_t mouse_scale{};bool visible=!overlays->FindOverlay("valve.steam.gamepadui.bar",&dock)&&overlays->IsDashboardVisible()&&overlays->IsOverlayVisible(dock)&&!overlays->GetOverlayMouseScale(dock,&mouse_scale);
   if(visible&&(!was_visible||dock!=last_dock)){uv={};anchored_at={};sampled_at={};}last_dock=dock;
   // Width and aspect are only ray-solver seeds; physical size comes from intersections.
   float width=0,height=0;bool fresh=visible&&!overlays->GetOverlayWidthInMeters(dock,&width)&&std::isfinite(width)&&width>0&&width<10&&std::isfinite(mouse_scale.v[0])&&std::isfinite(mouse_scale.v[1])&&mouse_scale.v[0]>0&&mouse_scale.v[1]>0;
@@ -768,7 +1162,7 @@ int main(int argc,char** argv){
    if(!main_overlay)main_overlay=active_main_window();
    if(main_overlay&&!overlays->GetOverlayMouseScale(main_overlay,&main_scale)&&!overlays->GetTransformForOverlayCoordinates(main_overlay,vr::TrackingUniverseStanding,{{main_scale.v[0]*.5f,main_scale.v[1]*.5f}},&main_pose))main=&main_pose;
    if(evidence.radius>0?dock_menu_placement(anchor,size,evidence.radius,evidence.pre_curve_pitch,popup):menu_placement(anchor,size,popup,0,main)){v.placement.apply(overlays,v.overlay,popup.transform,popup.width);v.placement.curve(overlays,v.overlay,popup.width,popup.radius);show(v,menu_open);}else show(v,false);}}else if(!keyboard_menu.holds(now)){if(overlays->IsOverlayVisible(button))overlays->ClearOverlayCursorPositionOverride(button);overlays->HideOverlay(button);if(views.count("menu"))show(*views.at("menu"),false);}
-  if(was_visible&&!visible&&!keyboard_open&&!keyboard_menu.holds(now)){menu_button.pressed=false;menu_open=false;if(!overlays->IsDashboardVisible())hide_launcher(false,true);for(auto&[key,v]:views)if(!v->dashboard&&key!="menu"&&key!="notifications"&&key!="launcher"&&key.rfind("framely.cast.",0)!=0&&key!="framely.apk.permission")close_view(*v);}was_visible=visible;
+  if(was_visible&&!visible&&!keyboard_open&&!keyboard_menu.holds(now)){menu_button.pressed=false;menu_open=false;if(!overlays->IsDashboardVisible())hide_launcher(false,true);for(auto&[key,v]:views)if(!v->dashboard&&key!=frame_keyboard_window_key&&key!="menu"&&key!="notifications"&&key!="launcher"&&key!="framely.system.radial"&&key.rfind("framely.cast.",0)!=0&&key!="framely.apk.permission")close_view(*v);}was_visible=visible;
   if(launcher_close_at.time_since_epoch().count()&&now>=launcher_close_at){launcher_close_at={};if(!launcher_open)finish_launcher_close();}
   // The runtime owns dashboard placement, curvature, visibility and switching.
   // Never move the launcher into standing space or hide another app's overlay.
@@ -816,6 +1210,7 @@ int main(int argc,char** argv){
   activate_entry(entry_hold.tick(std::chrono::steady_clock::now(),anchor_ok&&entry_connected,entry_inside));
   for(auto&[key,v]:views)v->stick_scrolling=false;
   entry_actions(button,anchor_ok);
+  system_radial_tick();
   // Some dashboard runtimes do not emit Modal_Cancel for clicks on their own
   // overlays. Observe the same controller click edge as a fallback, without
   // consuming the click destined for the other surface.
@@ -831,7 +1226,7 @@ int main(int argc,char** argv){
    if(menu_open&&!keyboard_open&&menu_button.can_cancel(std::chrono::steady_clock::now())&&(pressed&click)&&views.count("menu")&&!overlays->IsHoverTargetOverlay(views.at("menu")->overlay)&&!overlays->IsHoverTargetOverlay(button))menu_open=false;
   }
   if(launcher_open){bool held=false;for(auto& hand:entry_buttons)for(auto& trigger:hand)held|=trigger.held;launcher_dismiss.observe(held);}
-  for(auto&[key,v]:views){if(v->closing)continue;if(v->dashboard){bool active=overlays->IsDashboardVisible()&&overlays->IsActiveDashboardOverlay(v->overlay)&&overlays->IsOverlayVisible(v->overlay);if(active!=v->shown){if(!active&&key=="launcher"){if(v->launcher_pointer.active){cef_mouse_event_t outside{};outside.modifiers=EVENTFLAG_LEFT_MOUSE_BUTTON;v->host->send_mouse_move_event(v->host,&outside,0);outside.modifiers=0;v->host->send_mouse_click_event(v->host,&outside,MBT_LEFT,1,1);}v->launcher_pointer.clear();auto* frame=v->browser->get_main_frame(v->browser);execute(frame,"window.dispatchEvent(new Event('framely.launcher.cancelInput'))");frame->base.release(&frame->base);}v->host->was_hidden(v->host,!active);v->shown=active;}if(!active)v->active_seen=false;if(active&&!v->active_seen){v->active_seen=true;if(key!="launcher")for(auto&[other,t]:views)if(!t->dashboard&&other!="menu"&&other!="notifications"&&other!="launcher"&&other.rfind("framely.cast.",0)!=0&&other!="framely.apk.permission"&&!keyboard_open)close_view(*t);}}
+  for(auto&[key,v]:views){if(v->closing)continue;if(v->dashboard){bool active=overlays->IsDashboardVisible()&&overlays->IsActiveDashboardOverlay(v->overlay)&&overlays->IsOverlayVisible(v->overlay);if(active!=v->shown){if(!active&&key=="launcher"){if(v->launcher_pointer.active){cef_mouse_event_t outside{};outside.modifiers=EVENTFLAG_LEFT_MOUSE_BUTTON;v->host->send_mouse_move_event(v->host,&outside,0);outside.modifiers=0;v->host->send_mouse_click_event(v->host,&outside,MBT_LEFT,1,1);}v->launcher_pointer.clear();auto* frame=v->browser->get_main_frame(v->browser);execute(frame,"window.dispatchEvent(new Event('framely.launcher.cancelInput'))");frame->base.release(&frame->base);}v->host->was_hidden(v->host,!active);v->shown=active;}if(!active)v->active_seen=false;if(active&&!v->active_seen){v->active_seen=true;if(key!="launcher")for(auto&[other,t]:views)if(!t->dashboard&&other!=frame_keyboard_window_key&&other!="menu"&&other!="notifications"&&other!="launcher"&&other!="framely.system.radial"&&other.rfind("framely.cast.",0)!=0&&other!="framely.apk.permission"&&!keyboard_open)close_view(*t);}}
    reconcile_framing_pointer(*v);
    while(overlays->PollNextOverlayEvent(v->overlay,&event,sizeof(event)))overlay_input(*v,event);
    if(!v->cast_frame.path.empty()){glXMakeContextCurrent(xdisplay,glsurface,glsurface,glcontext);if(v->cast_frame.update())v->dirty=true;}
@@ -910,5 +1305,7 @@ int main(int argc,char** argv){
  }
  recording_indicator.destroy();
  recording_region_overlay.destroy();
+ screenshot_region_overlay.destroy();
+ if(external_keyboard.active){frame_keyboard_command("dashboardClose",json::object());external_keyboard={};}
  close_keyboard();for(auto&[key,v]:views)close_view(*v);auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);while(std::chrono::steady_clock::now()<deadline){cef_do_message_loop_work();bool all=true;for(auto&[key,v]:views)all&=v->closed;if(all)break;std::this_thread::sleep_for(std::chrono::milliseconds(5));}poller.join();priority_worker.join();for(auto&[key,v]:views)if(!v->closed){std::cerr<<"Browser shutdown timed out\n";_Exit(7);}for(auto&[key,v]:views){overlays->DestroyOverlay(v->overlay);if(v->thumbnail)overlays->DestroyOverlay(v->thumbnail);glDeleteTextures(2,v->textures);}views.clear();overlays->DestroyOverlay(button);icon_texture.destroy();cef_shutdown();vr::VR_Shutdown();glXMakeContextCurrent(xdisplay,None,None,nullptr);glXDestroyContext(xdisplay,glcontext);glXDestroyPbuffer(xdisplay,glsurface);XCloseDisplay(xdisplay);return 0;
 }
