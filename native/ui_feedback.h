@@ -10,7 +10,7 @@
 // never spawns a process or reads files on a hover/click.
 class SteamUiSounds {
  struct Spec { int format, channels, freq; };
- struct Clip { void* stream=nullptr; uint8_t* data=nullptr; uint32_t size=0; } clips[2];
+ struct Clip { void* stream=nullptr; uint8_t* data=nullptr; uint32_t size=0; } clips[3];
  void* library=nullptr;
  bool initialized=false;
  bool (*init)(uint32_t)=nullptr;
@@ -39,14 +39,15 @@ class SteamUiSounds {
   if(!library)return false;
   if(!(bind(init,"SDL_InitSubSystem")&&bind(quit,"SDL_QuitSubSystem")&&bind(load,"SDL_LoadWAV")&&bind(open,"SDL_OpenAudioDeviceStream")&&bind(resume,"SDL_ResumeAudioStreamDevice")&&bind(put,"SDL_PutAudioStreamData")&&bind(clear,"SDL_ClearAudioStream")&&bind(gain,"SDL_SetAudioStreamGain")&&bind(destroy,"SDL_DestroyAudioStream")&&bind(release,"SDL_free"))){shutdown();return false;}
   if(!init(0x10)){shutdown();return false;}initialized=true;
-  const char* names[]={"deck_ui_typing.wav","deck_ui_typing.wav"};
-  for(int i=0;i<2;++i){Spec spec{};auto& clip=clips[i];
+  const char* names[]={"deck_ui_typing.wav","deck_ui_typing.wav","camera1.wav"};
+  for(int i=0;i<3;++i){Spec spec{};auto& clip=clips[i];
    if(!load((root+"/steamui/sounds/"+names[i]).c_str(),&spec,&clip.data,&clip.size)||!clip.size||clip.size>1024*1024){shutdown();return false;}
    clip.stream=open(0xffffffffu,&spec,nullptr,nullptr);
-   if(!clip.stream||!gain(clip.stream,i==0?.30f:.45f)||!resume(clip.stream)){shutdown();return false;}
+   if(!clip.stream||!gain(clip.stream,i==0?.30f:i==1?.45f:.55f)||!resume(clip.stream)){shutdown();return false;}
   }
   return true;
  }
- void silence(){if(!initialized)return;for(auto& clip:clips)clear(clip.stream);}
+ void silence(){if(!initialized)return;for(int i=0;i<2;i++)clear(clips[i].stream);}
  void play(bool activation=false){if(!initialized)return;silence();auto& clip=clips[activation?1:0];put(clip.stream,clip.data,int(clip.size));}
+ void screenshot(){if(!initialized)return;auto& clip=clips[2];clear(clip.stream);put(clip.stream,clip.data,int(clip.size));}
 };
