@@ -21,6 +21,23 @@ spec.loader.exec_module(network)
 
 
 class FallbackTests(unittest.TestCase):
+    def test_explicit_proxy_routes_github_requests_without_second_proxy(self):
+        class Opener:
+            def open(self, request, timeout):
+                return request.full_url
+        with patch.dict(os.environ, {'FRAMELY_GITHUB_PROXY':'https://gh-proxy.com/'}, clear=False), \
+             patch.object(network.urllib.request, 'build_opener', return_value=Opener()):
+            self.assertEqual(network.fetch_once('https://api.github.com/repos/a/b/releases/latest'),
+                             'https://gh-proxy.com/https://api.github.com/repos/a/b/releases/latest')
+            self.assertEqual(network.fetch_once('https://example.org/file'), 'https://example.org/file')
+            calls = []
+            with self.assertRaises(ConnectionResetError):
+                network.github_attempt('https://github.com/a', lambda fallback: calls.append(fallback) or (_ for _ in ()).throw(ConnectionResetError()))
+            self.assertEqual(calls, [False])
+        for invalid in ('http://gh-proxy.com', 'https://gh-proxy.com/../bad', 'https://gh-proxy.com?x=1'):
+            with self.assertRaises(ValueError):
+                network.github_proxy_url(invalid)
+
     def test_unreachable_network_retries_once_but_local_io_errors_do_not(self):
         url = 'https://github.com/a/b/releases/download/v1/archive'
         for code in (errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTUNREACH):

@@ -27,7 +27,7 @@ Downloads are checked locally and again on the device. Passwords are not saved i
 Run these commands **on Frame**. To install the latest stable release:
 
 ```bash
-curl -fsSL https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash -s -- install
+curl -fsSL https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash -s -- install --yes
 ```
 
 To select a Preview or another tag:
@@ -39,6 +39,14 @@ curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/i
 Replace the example with an existing device release tag. An explicit tag selects the engine and package from that Release and works without a stable release. Without a tag, the latest stable release is selected. Enter the sudo password when prompted.
 
 Explicit `install` and `update` commands need no second confirmation. The interactive action menu and uninstall still ask for `y` and Enter. If sudo needs a password in a single remote `ssh` command, allocate a terminal with `ssh -t`; `--yes` skips only Framely's confirmation, not sudo authentication.
+
+To route the script download and all later GitHub requests through a chosen HTTPS URL prefix, use `--github-proxy`:
+
+```bash
+curl -fsSL https://gh-proxy.com/https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash -s -- install --yes --github-proxy https://gh-proxy.com
+```
+
+Release `v0.8.2` does not include this option; use `v0.8.3` or newer. The installer still verifies archive checksums.
 
 ## Option 3: local archive
 

@@ -27,7 +27,7 @@ Linux 用户可在安装器解压目录执行 `bash install-desktop-entry.sh`，
 以下命令在 **Frame 上** 执行。默认安装最新正式版：
 
 ```bash
-curl -fsSL https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash -s -- install
+curl -fsSL https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash -s -- install --yes
 ```
 
 指定 Preview 或其他标签：
@@ -39,6 +39,14 @@ curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/i
 将示例标签换成 Releases 中实际存在的本体标签。指定标签时从该 Release 下载引擎和包，不要求已有正式版；不指定标签时使用最新正式版。终端会按需请求 sudo 密码。
 
 明确指定 `install` 或 `update` 时无需再次确认。使用交互菜单或卸载时，脚本会询问是否继续，需要输入 `y` 并回车。如果通过一条 `ssh` 远程命令执行且 sudo 需要密码，请用 `ssh -t` 分配交互终端；`--yes` 仅跳过 Framely 的确认，不会跳过 sudo 密码。
+
+使用 `--github-proxy` 可通过指定的 HTTPS 地址代理入口脚本及后续所有 GitHub 下载。例如：
+
+```bash
+curl -fsSL https://gh-proxy.com/https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash -s -- install --yes --github-proxy https://gh-proxy.com
+```
+
+`v0.8.2` 不支持此参数，请使用 `v0.8.3` 或更新版本。安装器仍会校验下载包的哈希值。
 
 ## 方式三：本地发行包
 

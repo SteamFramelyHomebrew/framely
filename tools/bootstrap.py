@@ -57,6 +57,27 @@ def fallback_enabled():
     return device_proxy_settings().get('githubAutoFallback', True)
 
 
+def github_proxy_url(value):
+    value = value.strip().rstrip('/')
+    parsed = urllib.parse.urlsplit(value)
+    if (not value or any(ord(char) <= 32 for char in value)
+            or parsed.scheme != 'https' or not parsed.hostname
+            or parsed.username or parsed.password or parsed.query or parsed.fragment
+            or '..' in parsed.path.split('/')):
+        raise ValueError('GitHub proxy must be an HTTPS base URL')
+    try:
+        parsed.port
+    except ValueError as error:
+        raise ValueError('Invalid GitHub proxy port') from error
+    return value
+
+
+def configured_github_proxy():
+    settings = device_proxy_settings()
+    value = os.environ.get('FRAMELY_GITHUB_PROXY', settings.get('github', '') if settings.get('githubEnabled') else '')
+    return github_proxy_url(value) if value.strip() else ''
+
+
 def public_github(url):
     parsed = urllib.parse.urlsplit(url)
     return (parsed.scheme == 'https' and parsed.hostname in GITHUB_HOSTS
@@ -95,7 +116,7 @@ def github_attempt(url, operation, enabled=None):
     try:
         return operation(False)
     except Exception as primary:
-        if not (fallback_enabled() if enabled is None else enabled) or not public_github(url) or not retryable(primary):
+        if configured_github_proxy() or not (fallback_enabled() if enabled is None else enabled) or not public_github(url) or not retryable(primary):
             raise
         print('GitHub connection failed; trying gh-proxy.com once', file=sys.stderr, flush=True)
         try:
@@ -109,12 +130,10 @@ def fetch_once(url, fallback=False):
     if urllib.parse.urlparse(url).scheme != 'https':
         raise ValueError('HTTPS is required')
     settings = device_proxy_settings()
-    manual = os.environ.get('FRAMELY_GITHUB_PROXY', settings.get('github', '') if settings.get('githubEnabled') else '').strip().rstrip('/')
+    manual = configured_github_proxy()
     if fallback:
         url = GITHUB_FALLBACK + url
     elif manual and public_github(url):
-        if urllib.parse.urlsplit(manual).scheme != 'https':
-            raise ValueError('GitHub proxy must use HTTPS')
         url = manual + '/' + url
     handlers = [HTTPSRedirect()]
     if 'FRAMELY_HTTP_PROXY' in os.environ or settings.get('httpEnabled'):
@@ -366,8 +385,11 @@ def main(argv=None):
     parser.add_argument('--checksums', type=pathlib.Path, help='External SHA256SUMS for the archive')
     parser.add_argument('--user', default=os.environ.get('SUDO_USER', 'steamos'))
     parser.add_argument('--yes', action='store_true', help='Confirm the selected operation')
+    parser.add_argument('--github-proxy', help='HTTPS URL prefix for GitHub downloads, such as https://gh-proxy.com')
     parser.add_argument('--progress-json', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.github_proxy:
+        os.environ['FRAMELY_GITHUB_PROXY'] = github_proxy_url(args.github_proxy)
     if not re.fullmatch(r'[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+', args.repo):
         parser.error('Invalid repository')
     if not re.fullmatch(r'[a-z_][a-zA-Z0-9_-]*', args.user) or args.user == 'root':

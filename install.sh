@@ -8,19 +8,43 @@ work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 release_path=latest/download
 args=("$@")
+github_proxy=${FRAMELY_GITHUB_PROXY:-}
 for ((i=0; i<${#args[@]}; i++)); do
   case ${args[i]} in
     --version)
       ((i+=1))
       version=${args[i]:-}
+      [[ $version =~ ^[a-zA-Z0-9][a-zA-Z0-9.+-]*$ ]] || { echo 'Invalid release version.' >&2; exit 1; }
+      release_path="download/$version"
       ;;
-    --version=*) version=${args[i]#--version=} ;;
+    --version=*)
+      version=${args[i]#--version=}
+      [[ $version =~ ^[a-zA-Z0-9][a-zA-Z0-9.+-]*$ ]] || { echo 'Invalid release version.' >&2; exit 1; }
+      release_path="download/$version"
+      ;;
+    --github-proxy)
+      ((i+=1))
+      github_proxy=${args[i]:-}
+      [[ -n $github_proxy ]] || { echo 'Missing GitHub proxy URL.' >&2; exit 1; }
+      ;;
+    --github-proxy=*)
+      github_proxy=${args[i]#--github-proxy=}
+      [[ -n $github_proxy ]] || { echo 'Missing GitHub proxy URL.' >&2; exit 1; }
+      ;;
     *) continue ;;
   esac
-  [[ $version =~ ^[a-zA-Z0-9][a-zA-Z0-9.+-]*$ ]] || { echo 'Invalid release version.' >&2; exit 1; }
-  release_path="download/$version"
 done
+if [[ -n $github_proxy ]]; then
+  [[ $github_proxy =~ ^https://[a-zA-Z0-9.-]+(:[0-9]{1,5})?(/[a-zA-Z0-9._~/-]*)?$ && /$github_proxy/ != *'/../'* && /$github_proxy/ != *'/./'* ]] || { echo 'Invalid GitHub proxy URL (HTTPS base URL required).' >&2; exit 1; }
+  github_proxy=${github_proxy%/}
+  export FRAMELY_GITHUB_PROXY=$github_proxy
+fi
 bootstrap_url="https://github.com/$repo/releases/$release_path/bootstrap.py"
+if [[ -n $github_proxy ]]; then
+  curl --disable --silent --show-error --fail --location --proto '=https' --proto-redir '=https' --output "$work/bootstrap.py" "$github_proxy/$bootstrap_url"
+  python3 "$work/bootstrap.py" --repo "$repo" "$@"
+  exit
+fi
 if status=$(curl --disable --silent --show-error --fail --location --proto '=https' --proto-redir '=https' --dump-header "$work/headers" --write-out '%{http_code}' --output "$work/bootstrap.py" "$bootstrap_url"); then
   :
 else

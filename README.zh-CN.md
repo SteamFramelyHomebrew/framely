@@ -36,7 +36,7 @@ Framely 使用 Rust 核心服务和独立的 CEF/OpenVR 宿主，并提供电脑
 **在 Frame 的 SSH 终端中**执行以下命令，安装最新正式版：
 
 ```bash
-curl -fsSL https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash -s -- install
+curl -fsSL https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash -s -- install --yes
 ```
 
 安装 Preview 时指定实际已发布的标签：

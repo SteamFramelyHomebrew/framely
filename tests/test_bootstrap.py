@@ -31,6 +31,21 @@ class BootstrapTests(unittest.TestCase):
                     bootstrap.main([action, '--archive', str(archive), '--checksums', str(checksums)])
                 self.assertEqual(operation.call_count, 2)
 
+    def test_github_proxy_option_reaches_engine_downloads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = pathlib.Path(tmp) / 'package.tar.gz'
+            checksums = pathlib.Path(tmp) / 'SHA256SUMS'
+            archive.touch()
+            checksums.touch()
+            with patch.dict(bootstrap.os.environ, {}, clear=True), \
+                 patch.object(bootstrap.os, 'uname', return_value=SimpleNamespace(machine='aarch64')), \
+                 patch.object(bootstrap.os, 'geteuid', return_value=0), \
+                 patch.object(bootstrap, 'verify_archive'), \
+                 patch.object(bootstrap, 'root_operation'):
+                bootstrap.main(['install', '--archive', str(archive), '--checksums', str(checksums),
+                                '--github-proxy', 'https://gh-proxy.com/'])
+                self.assertEqual(bootstrap.configured_github_proxy(), 'https://gh-proxy.com')
+
     def test_explicit_uninstall_still_requires_confirmation(self):
         with patch.object(bootstrap.os, 'uname', return_value=SimpleNamespace(machine='aarch64')), \
              patch.object(bootstrap, 'confirm', return_value=False) as confirmation:
