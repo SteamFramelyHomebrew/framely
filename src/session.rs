@@ -2686,7 +2686,7 @@ pub fn serve(
             let mut system_menu_ready = false;
             if system_menu_binding.exists() {
                 let enabled=ipc::call(&binding_socket,"status",json!({})).ok()
-                    .and_then(|status|status["database"]["launcher"]["systemRadialMenu"].as_bool()).unwrap_or(true);
+                    .and_then(|status|status["database"]["launcher"]["systemRadialMenu"].as_bool()).unwrap_or(false);
                 match apply_system_menu_binding(&system_menu_binding,enabled) {
                     Ok(true) => {
                         if Command::new("systemctl").args(["--user", "restart", "steamvr.service"]).status().is_ok_and(|s|s.success()) {

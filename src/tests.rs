@@ -2166,6 +2166,30 @@ fn launcher_trigger_defaults_preserve_explicit_preferences() {
 }
 
 #[test]
+fn radial_menu_defaults_off_and_legacy_setting_migrates_once() {
+    assert!(!LauncherSettings::default().system_radial_menu);
+    let missing: LauncherSettings = serde_json::from_value(json!({})).unwrap();
+    assert!(!missing.system_radial_menu);
+
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(
+        state.join("state.json"),
+        serde_json::to_vec(&json!({"plugins":{},"sources":[],"safeMode":false,"launcher":{"systemRadialMenu":true}})).unwrap(),
+    ).unwrap();
+    let uid = unsafe { libc::geteuid() };
+    let mut core = Service::load(&state, uid).unwrap();
+    assert!(!core.db.launcher.system_radial_menu);
+    assert!(core.db.system_radial_default_off_applied);
+
+    core.handle("agreement.accept", json!({"version":AGREEMENT_VERSION,"userAgreement":true,"privacyStatement":true})).unwrap();
+    core.handle("launcher.settings.save", json!({"systemRadialMenu":true})).unwrap();
+    let loaded = Service::load(&state, uid).unwrap();
+    assert!(loaded.db.launcher.system_radial_menu);
+}
+
+#[test]
 fn launcher_gaze_calibration_validates_persists_and_clears() {
     let root = tempfile::tempdir().unwrap();
     let state = root.path().join("state");

@@ -198,7 +198,7 @@ impl Default for FeedbackSettings {
 pub struct LauncherSettings {
     #[serde(default = "yes")]
     pub prioritize_ui: bool,
-    #[serde(default = "yes")]
+    #[serde(default)]
     pub system_radial_menu: bool,
     #[serde(default = "yes")]
     pub primary_trigger: bool,
@@ -266,7 +266,7 @@ impl Default for LauncherSettings {
     fn default() -> Self {
         Self {
             prioritize_ui: true,
-            system_radial_menu: true,
+            system_radial_menu: false,
             primary_trigger: true,
             menu_auto_close: true,
             menu_timeout_seconds: 10,
@@ -867,6 +867,8 @@ pub struct Database {
     pub feedback: FeedbackSettings,
     #[serde(default)]
     pub launcher: LauncherSettings,
+    #[serde(default)]
+    pub system_radial_default_off_applied: bool,
     #[serde(default)]
     pub gaze_calibration: Option<GazeCalibration>,
     #[serde(default)]

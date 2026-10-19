@@ -159,6 +159,11 @@ impl Service {
             fs::rename(root.join("state.json.tmp"), root.join("state.json"))?;
             fs::remove_file(root.join("install-transaction.json"))?;
         }
+        let radial_default_migrated = !db.system_radial_default_off_applied;
+        if radial_default_migrated {
+            db.launcher.system_radial_menu = false;
+            db.system_radial_default_off_applied = true;
+        }
         let initialized_defaults = crate::subscriptions::initialize_defaults(&mut db)?;
         crate::subscriptions::initialize(&mut db)?;
         // Rehydrate presentation after a state-schema downgrade from immutable payloads.
@@ -228,7 +233,7 @@ impl Service {
             visibility_pending: BTreeSet::new(),
             launch_contexts: BTreeMap::new(),
         };
-        if initialized_defaults {
+        if initialized_defaults || radial_default_migrated {
             service.save()?;
         }
         Ok(service)
