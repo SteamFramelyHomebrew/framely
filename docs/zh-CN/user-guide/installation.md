@@ -38,6 +38,8 @@ curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/i
 
 将示例标签换成 Releases 中实际存在的本体标签。指定标签时从该 Release 下载引擎和包，不要求已有正式版；不指定标签时使用最新正式版。终端会按需请求 sudo 密码。
 
+明确指定 `install` 或 `update` 时无需再次确认。使用交互菜单或卸载时，脚本会询问是否继续，需要输入 `y` 并回车。如果通过一条 `ssh` 远程命令执行且 sudo 需要密码，请用 `ssh -t` 分配交互终端；`--yes` 仅跳过 Framely 的确认，不会跳过 sudo 密码。
+
 ## 方式三：本地发行包
 
 下载完整离线包 `framely-<版本及构建号>-offline-linux-arm64.tar.gz`、外部 `SHA256SUMS` 和同一 Release 的 `bootstrap.py`，放入 Frame 的同一目录：

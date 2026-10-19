@@ -280,9 +280,12 @@ def confirm(message):
         with open('/dev/tty', 'r+') as terminal:
             terminal.write(message + ' [y/N]: ')
             terminal.flush()
-            return terminal.readline().strip().lower() == 'y'
-    except OSError:
-        return False
+            answer = terminal.readline()
+    except OSError as error:
+        raise ValueError('No interactive terminal for confirmation; run in a terminal or pass --yes') from error
+    if not answer:
+        raise ValueError('No confirmation input; run in a terminal or pass --yes')
+    return answer.strip().lower() == 'y'
 
 
 def root_operation(args):
@@ -371,6 +374,7 @@ def main(argv=None):
         parser.error('Invalid Steam user')
     if sys.platform != 'linux' or os.uname().machine != 'aarch64':
         parser.error('This installation engine requires Linux ARM64 Steam Frame')
+    explicit_action = args.action is not None
     if args.action is None:
         with open('/dev/tty', 'r+') as terminal:
             terminal.write('1 Install  2 Update  3 Repair  4 Rollback  5 Uninstall\nChoose [1-5]: ')
@@ -379,7 +383,7 @@ def main(argv=None):
             args.action = choices.get(terminal.readline().strip())
         if args.action is None:
             parser.error('Invalid action')
-    if not args.yes and not confirm(f'{args.action}: ' + ('disable and uninstall ALL plugins, then remove Framely (saved data retained)' if args.action == 'uninstall' else 'continue with Framely maintenance')):
+    if not args.yes and not (explicit_action and args.action in ('install', 'update')) and not confirm(f'{args.action}: ' + ('disable and uninstall ALL plugins, then remove Framely (saved data retained)' if args.action == 'uninstall' else 'continue with Framely maintenance')):
         raise ValueError('Cancelled')
     cache = pathlib.Path.home() / '.cache' / 'framely-installer' if args.action in ('install', 'update') and not args.archive else None
     if cache is not None:

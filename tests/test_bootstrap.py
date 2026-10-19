@@ -7,6 +7,8 @@ import pathlib
 import tarfile
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import mock_open, patch
 
 spec = importlib.util.spec_from_file_location('bootstrap', pathlib.Path(__file__).parents[1] / 'tools/bootstrap.py')
 bootstrap = importlib.util.module_from_spec(spec)
@@ -14,6 +16,40 @@ spec.loader.exec_module(bootstrap)
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_explicit_install_and_update_skip_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = pathlib.Path(tmp) / 'package.tar.gz'
+            checksums = pathlib.Path(tmp) / 'SHA256SUMS'
+            archive.touch()
+            checksums.touch()
+            with patch.object(bootstrap.os, 'uname', return_value=SimpleNamespace(machine='aarch64')), \
+                 patch.object(bootstrap.os, 'geteuid', return_value=0), \
+                 patch.object(bootstrap, 'confirm', side_effect=AssertionError('unexpected prompt')), \
+                 patch.object(bootstrap, 'verify_archive'), \
+                 patch.object(bootstrap, 'root_operation') as operation:
+                for action in ('install', 'update'):
+                    bootstrap.main([action, '--archive', str(archive), '--checksums', str(checksums)])
+                self.assertEqual(operation.call_count, 2)
+
+    def test_explicit_uninstall_still_requires_confirmation(self):
+        with patch.object(bootstrap.os, 'uname', return_value=SimpleNamespace(machine='aarch64')), \
+             patch.object(bootstrap, 'confirm', return_value=False) as confirmation:
+            with self.assertRaisesRegex(ValueError, 'Cancelled'):
+                bootstrap.main(['uninstall'])
+            confirmation.assert_called_once()
+
+    def test_confirmation_distinguishes_no_terminal_from_decline(self):
+        with patch('builtins.open', side_effect=OSError('no tty')):
+            with self.assertRaisesRegex(ValueError, 'No interactive terminal.*--yes'):
+                bootstrap.confirm('install')
+        with patch('builtins.open', mock_open(read_data='')):
+            with self.assertRaisesRegex(ValueError, 'No confirmation input.*--yes'):
+                bootstrap.confirm('install')
+        with patch('builtins.open', mock_open(read_data='n\n')):
+            self.assertFalse(bootstrap.confirm('install'))
+        with patch('builtins.open', mock_open(read_data='Y\n')):
+            self.assertTrue(bootstrap.confirm('install'))
+
     def test_external_checksums_match_exact_name_and_reject_tampering(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

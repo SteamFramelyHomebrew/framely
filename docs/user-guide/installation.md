@@ -38,6 +38,8 @@ curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/i
 
 Replace the example with an existing device release tag. An explicit tag selects the engine and package from that Release and works without a stable release. Without a tag, the latest stable release is selected. Enter the sudo password when prompted.
 
+Explicit `install` and `update` commands need no second confirmation. The interactive action menu and uninstall still ask for `y` and Enter. If sudo needs a password in a single remote `ssh` command, allocate a terminal with `ssh -t`; `--yes` skips only Framely's confirmation, not sudo authentication.
+
 ## Option 3: local archive
 
 Download `framely-<version-and-build>-offline-linux-arm64.tar.gz`, the external `SHA256SUMS`, and `bootstrap.py` from the same Release. Place them together on Frame:
