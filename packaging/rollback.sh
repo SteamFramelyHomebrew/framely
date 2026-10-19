@@ -5,6 +5,9 @@ root=/var/lib/framely
 previous=$(cat "$root/previous-release")
 [[ $previous == releases/* && $previous != *..* && -d $root/$previous ]] || { echo 'No previous release.' >&2; exit 1; }
 current=$(readlink "$root/current")
+if [[ ! -f $root/$previous/share/input/steam-system-menu.py && -f $root/current/system-menu-restore.sh ]]; then
+  bash "$root/current/system-menu-restore.sh"
+fi
 systemctl stop framely-session.service framely.service
 ln -s "$previous" "$root/current.rollback"
 mv -Tf "$root/current.rollback" "$root/current"

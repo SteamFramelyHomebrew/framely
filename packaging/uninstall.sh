@@ -13,6 +13,9 @@ restore_session() {
   exit "$code"
 }
 trap restore_session ERR
+if [[ -f $root/current/system-menu-restore.sh ]]; then
+  bash "$root/current/system-menu-restore.sh"
+fi
 systemctl start framely.service
 ready=false
 for attempt in {1..30}; do

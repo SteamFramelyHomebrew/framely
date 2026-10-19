@@ -199,6 +199,8 @@ pub struct LauncherSettings {
     #[serde(default = "yes")]
     pub prioritize_ui: bool,
     #[serde(default = "yes")]
+    pub system_radial_menu: bool,
+    #[serde(default = "yes")]
     pub primary_trigger: bool,
     #[serde(default = "yes")]
     pub menu_auto_close: bool,
@@ -264,6 +266,7 @@ impl Default for LauncherSettings {
     fn default() -> Self {
         Self {
             prioritize_ui: true,
+            system_radial_menu: true,
             primary_trigger: true,
             menu_auto_close: true,
             menu_timeout_seconds: 10,

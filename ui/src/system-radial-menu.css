@@ -1,0 +1,14 @@
+html:has(.system-radial),body:has(.system-radial),#root:has(.system-radial){width:100%;height:100%;margin:0;background:transparent!important;overflow:hidden}
+.system-radial{position:relative;display:grid;place-items:center;width:100%;height:100%;color:#fff;font-family:system-ui,"Noto Sans CJK SC",sans-serif;user-select:none;pointer-events:none}
+.system-radial-charge{position:relative;width:86px;height:86px;border-radius:50%;background:rgba(0,0,0,.58)}
+.system-radial-charge-ring{position:absolute;inset:0;width:86px;height:86px;fill:none;stroke-width:3;transform:rotate(-90deg)}
+.system-radial-charge-track{stroke:rgba(255,255,255,.24)}
+.system-radial-charge-progress{stroke:#fff;stroke-linecap:round}
+.system-radial-face{position:relative;width:500px;height:500px}
+.system-radial-slot{--radius:177px;position:absolute;left:50%;top:50%;width:124px;height:82px;transform:translate(-50%,-50%) rotate(var(--angle)) translateY(calc(-1 * var(--radius))) rotate(calc(-1 * var(--angle)));display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;border:1px solid transparent;border-radius:18px;background:transparent;box-sizing:border-box;opacity:.7;text-shadow:0 2px 8px rgba(0,0,0,.9);transition:opacity .12s,background .12s,border-color .12s}
+.system-radial-slot span{font-size:14px;font-weight:590;white-space:nowrap}
+.system-radial-slot.is-selected{opacity:1;background:rgba(0,0,0,.62);border-color:rgba(255,255,255,.65)}
+.system-radial-center{position:absolute;left:50%;top:50%;width:112px;height:112px;transform:translate(-50%,-50%);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:7px;border-radius:50%;border:1px solid rgba(255,255,255,.22);background:rgba(0,0,0,.5);color:#fff;box-sizing:border-box;text-shadow:0 2px 8px rgba(0,0,0,.75);opacity:.68}
+.system-radial-center.is-selected{border-color:rgba(255,255,255,.8);background:rgba(0,0,0,.7);opacity:1}
+.system-radial-center>span{font-size:13px;font-weight:580;white-space:nowrap}
+@media (prefers-reduced-motion:reduce){.system-radial-slot{transition:none}}
