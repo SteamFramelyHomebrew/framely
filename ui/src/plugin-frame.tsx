@@ -1,5 +1,5 @@
 import React,{useEffect,useRef,useState} from 'react';
-import {api,viewKey} from './api';
+import {api,viewKey,nativeKeyboardHost} from './api';
 import {t,currentLanguage} from './i18n';
 export let pluginLanguagePreference='auto';
 export function setPluginLanguagePreference(value:string){pluginLanguagePreference=value;}
@@ -27,7 +27,7 @@ export function PluginFrame({plugin,entry='quick',actionContext,onActionDone}:{p
     }
     else if(op==='ui.visibility.get')result=await api('ui.visibility.get',{view:viewKey()});
     else if(op==='haptic')result=await api('host.haptic',{view:viewKey(),feedback:params?.feedback});
-    else if(op==='keyboard')result=await api('host.keyboard',{...params,view:viewKey()});
+    else if(op==='keyboard'){if(!nativeKeyboardHost)result={ok:false};else if(params?.bridge){const method=params.bridge.method;if(!['webInputOpen','webInputPoll','webInputClaim','webInputAck','webInputClose'].includes(method))throw Error('Invalid keyboard bridge operation');result=await api('plugin.call',{plugin:'tooru.frame-keyboard',method,params:{...params.bridge.params,view:viewKey()}});}else result=await api('host.keyboard',{...params,view:viewKey()});}
     else{const method=methods[op];if(!method)throw new Error(t('插件请求不支持的能力'));result=await api(method,{...params,plugin,...(op==='window.open'&&actionContext?{launchContext:actionContext}:{})});}
     if(live)ref.current?.contentWindow?.postMessage({channel:'framely.reply',id,result},'*');
    }catch(e){if(live)ref.current?.contentWindow?.postMessage({channel:'framely.reply',id,error:String(e)},'*');}

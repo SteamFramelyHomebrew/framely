@@ -1,18 +1,23 @@
+import {createKeyboardBridge,type KeyboardBridgeCall} from './keyboard-bridge';
 type Editable=HTMLInputElement|HTMLTextAreaElement|HTMLElement;
-export function installKeyboard(open:(params:{existing:string;password:boolean;multiline:boolean})=>Promise<unknown>){
+export function installKeyboard(open:(params:{existing:string;password:boolean;multiline:boolean})=>Promise<unknown>,bridgeCall?:KeyboardBridgeCall,options:{requestOnFocus?:boolean}={}){
+ const bridge=bridgeCall?createKeyboardBridge(bridgeCall):null;
  let field:Editable|null=null,last:Editable|null=null,openedAt=0;
  const request=(target:EventTarget|null)=>{
   const embedded=target instanceof HTMLElement&&target.matches('[data-framely-editor-input][contenteditable="true"]');
   if(!embedded&&(!(target instanceof HTMLInputElement||target instanceof HTMLTextAreaElement)||target.disabled||target.readOnly))return;
   if(!(target instanceof HTMLElement))return;
   if(target instanceof HTMLInputElement&&!['text','password','url','search','email','number','tel'].includes(target.type))return;
-  field=target;const now=performance.now();if(last===target&&now-openedAt<300)return;last=target;openedAt=now;
+  if(document.activeElement!==target)return;
+  field=target;const now=performance.now();if(!bridge&&last===target&&now-openedAt<300)return;last=target;openedAt=now;
   const params={existing:target instanceof HTMLInputElement||target instanceof HTMLTextAreaElement?target.value:'',password:target instanceof HTMLInputElement&&target.type==='password',multiline:embedded||target instanceof HTMLTextAreaElement};
   if(embedded)target.dispatchEvent(new CustomEvent('framely.keyboard.open',{detail:params}));
-  void open(params).catch(console.error);
+  void (async()=>{if(bridge&&await bridge(target,params.password))return;if(document.activeElement!==target)return;await open(bridge?{...params,existing:''}:params);})().catch(console.error);
  };
- document.addEventListener('focusin',e=>request(e.target));
- document.addEventListener('pointerdown',e=>request(e.target));
+ const focus=(e:FocusEvent)=>{if(options.requestOnFocus!==false)request(e.target);};
+ const keyboardFocus=(e:KeyboardEvent)=>{if(e.key==='Tab'&&options.requestOnFocus===false)request(document.activeElement);};
+ const pointer=(e:PointerEvent)=>{const target=e.target;setTimeout(()=>request(target),0);};
+ document.addEventListener('focusin',focus);document.addEventListener('pointerdown',pointer);document.addEventListener('keyup',keyboardFocus);
  (window as any).__framelyCommitKeyboard=(value:string)=>{
   if(!field?.isConnected)return;
   if(field.closest('[inert]')||((field instanceof HTMLInputElement||field instanceof HTMLTextAreaElement)&&(field.disabled||field.readOnly)))return;
@@ -59,4 +64,5 @@ export function installKeyboard(open:(params:{existing:string;password:boolean;m
   (window as any).__framelyCommitKeyboard(updated);
   try{field.setSelectionRange(position,position);}catch{}
  };
+ return {activate:()=>request(document.activeElement),dispose:()=>{bridge?.dispose();field=null;last=null;document.removeEventListener('focusin',focus);document.removeEventListener('pointerdown',pointer);document.removeEventListener('keyup',keyboardFocus);}};
 }
