@@ -4,6 +4,7 @@
 #include <vector>
 #include <array>
 #include <chrono>
+#include <utility>
 #include "vendor/json.hpp"
 using RegionJson=nlohmann::json;
 struct RecordingRegionPlane {vr::HmdMatrix34_t transform{};float width=0;};
@@ -46,7 +47,9 @@ inline std::vector<unsigned char> recording_region_pixels(int w,int h,const std:
 }
 class RecordingRegionOverlay {
  vr::IVROverlay* overlays=nullptr;vr::VROverlayHandle_t handle=0;std::string last,last_pixels;
+ std::string key;
 public:
+ explicit RecordingRegionOverlay(std::string overlay_key="framely.recording.region"):key(std::move(overlay_key)){}
  void destroy(){if(handle&&overlays)overlays->DestroyOverlay(handle);handle=0;last.clear();last_pixels.clear();}
  void tick(vr::IVROverlay* api,const RegionJson& state,double distance=2.,const RegionJson* live_view=nullptr){
   overlays=api;
@@ -56,7 +59,7 @@ public:
    const auto& view=live_view?*live_view:state.at("view");double aspect=view.at("aspect");
    RecordingRegionPlane plane;if(!recording_region_plane(view,view.at("tanHalfHorizontal"),view.at("centerTanX"),view.at("centerTanY"),aspect,plane,distance)){destroy();return;}
    if(!handle){
-    if(overlays->CreateOverlay("framely.recording.region","Framely recording region",&handle))return;
+    if(overlays->CreateOverlay(key.c_str(),"Framely capture region",&handle))return;
     overlays->SetOverlayInputMethod(handle,vr::VROverlayInputMethod_None);
     overlays->SetOverlayFlag(handle,vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,false);
     overlays->SetOverlayFlag(handle,vr::VROverlayFlags_HideLaserIntersection,true);

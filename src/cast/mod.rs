@@ -3,6 +3,7 @@
 pub mod settings;
 pub mod runtime;
 mod recording;
+pub mod screenshot;
 pub mod region;
 #[cfg(test)]
 mod region_device_test;

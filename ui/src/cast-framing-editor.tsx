@@ -8,7 +8,7 @@ import {t} from './i18n';
 import {FrameGesture,fitMinimumFrame,minimumFrameWidth,resizeFrameCentered,type MinimumFrame} from './cast-framing-gesture';
 import type {FrameLimiter} from './cast-region';
 
-export function FramingEditor({settings,view,onChange,onError,spatial=false,minimumSize={width:0,height:0},limit,moveHandle}:{settings:CastSettings;view:ReferenceView|null;onChange:(patch:Partial<CastSettings>)=>void;onError:(error:string)=>void;spatial?:boolean;minimumSize?:MinimumFrame;limit?:FrameLimiter;moveHandle?:React.RefObject<HTMLElement|null>}){
+export function FramingEditor({settings,view,onChange,onError,spatial=false,previewUrl,minimumSize={width:0,height:0},limit,moveHandle}:{settings:CastSettings;view:ReferenceView|null;onChange:(patch:Partial<CastSettings>)=>void;onError:(error:string)=>void;spatial?:boolean;previewUrl?:string;minimumSize?:MinimumFrame;limit?:FrameLimiter;moveHandle?:React.RefObject<HTMLElement|null>}){
  const stage=useRef<HTMLDivElement>(null),box=useRef<HTMLDivElement>(null),zoom=useRef<HTMLInputElement>(null),readout=useRef<HTMLOutputElement>(null);
  const current=useRef<FrameRect>({x:0,y:0,width:1,height:1}),gesture=useRef(new FrameGesture()),pointer=useRef<number|null>(null),release=useRef<(id?:number)=>void>(()=>{});
  const capture=useRef<HTMLElement|null>(null),external=useRef({down:(_e:PointerEvent)=>{},move:(_e:PointerEvent)=>{}});
@@ -41,8 +41,8 @@ export function FramingEditor({settings,view,onChange,onError,spatial=false,mini
  function end(e:React.PointerEvent<HTMLDivElement>){finish(e.pointerId);}
  function keyboard(e:React.KeyboardEvent<HTMLDivElement>){if(!view)return;const delta=e.shiftKey?.05:.01,r=current.current;const changes:Record<string,Partial<FrameRect>>={ArrowLeft:{x:r.x-delta},ArrowRight:{x:r.x+delta},ArrowUp:{y:r.y-delta},ArrowDown:{y:r.y+delta}};if(changes[e.key]){e.preventDefault();draw(fitFrame({...r,...changes[e.key]},aspect,view.aspect));commit();}}
  return <div className="cast-framing-editor">
-  <div className="cast-framing-stage" ref={stage}>
-   {!spatial&&<CastVideo active controls={false} aspectRatio={1} onError={onError}/>}
+  <div className="cast-framing-stage" ref={stage} style={previewUrl&&view?{aspectRatio:String(view.aspect)}:undefined}>
+   {previewUrl?<img src={previewUrl} alt={t('截图取景预览')} draggable={false} className="cast-screenshot-preview-image"/>:!spatial&&<CastVideo active controls={false} aspectRatio={1} onError={onError}/>}
    {view&&<div ref={box} className="cast-crop-box" tabIndex={0} role="group" aria-label={t('取景框，使用方向键移动')} onKeyDown={keyboard} onPointerDown={down} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}>
     <div className="cast-crop-grid" aria-hidden="true"/>
     {['nw','ne','sw','se'].map(corner=><span key={corner} data-corner={corner} data-framely-interactive="" className={`cast-crop-handle ${corner}`} aria-hidden="true"/>)}

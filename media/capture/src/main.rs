@@ -9,7 +9,7 @@ mod panel_geometry;
 use anyhow::{Context, Result};
 use clap::Parser;
 use framely_capture::openvr::OpenVr;
-use std::{io::{self, Write}, os::fd::AsRawFd, path::Path, time::{Duration, Instant}};
+use std::{io::{self, Read, Write}, os::fd::AsRawFd, path::Path, time::{Duration, Instant}};
 
 #[derive(Parser)]
 struct Args {
@@ -20,6 +20,10 @@ struct Args {
     #[arg(long, default_value_t = 0)] eye: usize,
     #[arg(long)] raw: bool,
     #[arg(long)] describe_view: bool,
+    /// Emit one native-resolution RGBA frame (width, height, then pixels).
+    #[arg(long)] snapshot: bool,
+    /// Prepare the snapshot pipeline, then wait for a byte on stdin before sampling.
+    #[arg(long)] snapshot_wait: bool,
     #[arg(long, value_enum, default_value_t = encoder::Codec::H264)] codec: encoder::Codec,
     #[arg(long)] fov: Option<f64>,
     #[arg(long, default_value_t = 0.)] center_x: f64,
@@ -34,6 +38,9 @@ fn run(a: Args) -> Result<()> {
     anyhow::ensure!(a.fov.is_none_or(|v| v.is_finite() && (10.0..=150.0).contains(&v))
         && [a.center_x, a.center_y].into_iter().all(|v| v.is_finite() && (-60.0..=60.0).contains(&v)), "Invalid field of view");
     anyhow::ensure!(!a.describe_view || !a.raw, "Raw view has no single-eye region");
+    anyhow::ensure!(!a.snapshot || !a.describe_view, "Choose one capture mode");
+    anyhow::ensure!(!a.snapshot_wait || a.snapshot, "Snapshot wait requires snapshot mode");
+    if a.snapshot { return snapshot(&a); }
     let kms = if a.describe_view {None} else {Some(kms::Kms::open(Path::new("/dev/dri/card0"))?)};
     let height = if a.raw { let kms=kms.as_ref().unwrap(); ((a.width as f64 * kms.mode_size.1 as f64 / kms.mode_size.0 as f64).round() as u32 + 1) & !1 } else { a.height };
     anyhow::ensure!(height>=160&&height<=4096&&u64::from(a.width)*u64::from(height)<=8_847_360,"Raw output exceeds supported dimensions");
@@ -85,6 +92,50 @@ fn run(a: Args) -> Result<()> {
             last_status = Instant::now();
         }
     }
+}
+
+fn snapshot(a: &Args) -> Result<()> {
+    let kms = kms::Kms::open(Path::new("/dev/dri/card0"))?;
+    let (width, height, map) = if a.raw {
+        let (w, h) = kms.mode_size;
+        (w, h, lut::raw(w, h, w, h))
+    } else {
+        let aspect = a.width as f64 / a.height as f64;
+        let panel_w = kms.mode_size.0 / 2;
+        let panel_h = kms.mode_size.1;
+        let max_w = (panel_h as f64 * aspect).round().min(panel_w as f64) as u32;
+        let max_h = (max_w as f64 / aspect).round().min(panel_h as f64) as u32;
+        let base = lut::undistorted(&OpenVr::connect()?, a.eye, None, max_w, max_h, a.center_x, a.center_y)?;
+        let full_tan = base.view.context("No eye projection")?.0;
+        let selected_tan = a.fov.map(|f| (f.to_radians() / 2.0).tan()).unwrap_or(full_tan);
+        let fraction = (selected_tan / full_tan).clamp(0.01, 1.0);
+        let width = ((max_w as f64 * fraction).round() as u32).max(2);
+        let height = ((max_h as f64 * fraction).round() as u32).max(2);
+        (width, height, lut::undistorted(&OpenVr::connect()?, a.eye, a.fov, width, height, a.center_x, a.center_y)?)
+    };
+    anyhow::ensure!(width > 0 && height > 0 && u64::from(width) * u64::from(height) <= 9_331_200, "Invalid native snapshot size");
+    let mut gpu = gpu::Gpu::new_snapshot(width, height, &map)?;
+    if a.snapshot_wait {
+        let mut trigger = [0u8; 1];
+        io::stdin().read_exact(&mut trigger).context("Snapshot was cancelled")?;
+    }
+    // The editor overlay has been closed by the caller. Skip one complete
+    // scanout before choosing the frame so its pixels cannot enter the PNG.
+    kms.wait_vblank()?;
+    kms.wait_vblank()?;
+    let fb = kms.current_fb()?.context("Headset display is unavailable")?;
+    let buf = kms.export(fb)?;
+    kms::wait_idle(&buf.fd, Duration::from_millis(4));
+    let id = kms::buffer_id(&buf.fd)?;
+    gpu.add_source(buf, id)?;
+    gpu.convert(fb, id, 0)?;
+    let pixels = gpu.snapshot_pixels()?;
+    let mut output = io::BufWriter::new(io::stdout().lock());
+    output.write_all(&width.to_le_bytes())?;
+    output.write_all(&height.to_le_bytes())?;
+    output.write_all(&pixels)?;
+    output.flush()?;
+    Ok(())
 }
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();

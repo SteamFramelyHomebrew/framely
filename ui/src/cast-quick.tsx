@@ -1,5 +1,5 @@
 import React,{useEffect,useState} from 'react';
-import {IconCast,IconPlayerPlay,IconPlayerStop,IconArrowUpRight,IconDeviceVisionPro,IconCrop} from '@tabler/icons-react';
+import {IconCast,IconPlayerPlay,IconPlayerStop,IconArrowUpRight,IconDeviceVisionPro,IconCrop,IconCamera} from '@tabler/icons-react';
 import {api} from './api';
 import {t} from './i18n';
 import {Switch,SwitchRow} from './switch';
@@ -17,7 +17,7 @@ export function CastQuick({config,refresh}:{config:CastSettings;refresh:()=>Prom
   <div className={`cast-quick-stream${running?' is-live':''}`} aria-busy={!runtime}>
    <div className="cast-quick-source"><div><h2>{t('头显画面')}</h2><span className="cast-quick-state" role="status">{!runtime?t('正在连接'):running?t('正在串流'):t('未开始串流')}</span></div><IconDeviceVisionPro size={36} stroke={1.5}/></div>
    <p className={`cast-quick-specs${!runtime?' is-loading':''}`} title={t('投屏设置')}><span>{config.width} × {config.height}</span><span>{config.codec==='h265'?'H.265':'H.264'}</span><span>{config.fps} FPS</span></p>
-   <div className="cast-stream-actions"><button className={running?'':'primary'} disabled={busy||!runtime} onClick={()=>void run(()=>api(running?'cast.stop':'cast.start'))}>{running?<IconPlayerStop size={21}/>:<IconPlayerPlay size={21}/>}<span>{running?t('停止串流'):t('开始串流')}</span></button><RecordingButton recording={runtime?.recording} disabled={busy||!runtime||!!runtime.preview} onClick={()=>void run(()=>api(runtime?.recording?.active?'cast.record.stop':'cast.record.start'))}/></div>
+   <div className="cast-stream-actions"><button className={running?'':'primary'} disabled={busy||!runtime} onClick={()=>void run(()=>api(running?'cast.stop':'cast.start'))}>{running?<IconPlayerStop size={21}/>:<IconPlayerPlay size={21}/>}<span>{running?t('停止串流'):t('开始串流')}</span></button><RecordingButton recording={runtime?.recording} disabled={busy||!runtime||!!runtime.preview} onClick={()=>void run(()=>api(runtime?.recording?.active?'cast.record.stop':'cast.record.start'))}/><button disabled={busy||!runtime} onClick={()=>void run(()=>api('cast.screenshot.open'))}><IconCamera size={21}/>{t('截图')}</button></div>
   </div>
   {runtime?.recording?.error&&<p className="error" role="alert">{runtime.recording.error}</p>}
   <div className="cast-quick-framing"><div className="cast-quick-framing-row"><button disabled={busy||!runtime||!!runtime.recording?.active||!!runtime.preview||!!runtime.recordingRegion?.editing||config.source!=='screen'||config.output!=='eye'} onClick={()=>void run(()=>api('cast.framing.open'))}><IconCrop size={21}/>{t('画幅调整')}</button>

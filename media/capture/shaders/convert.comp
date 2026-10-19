@@ -43,6 +43,7 @@ const uint FLAG_PER_CHANNEL = 1u;
 const uint FLAG_SUPERSAMPLE = 2u;
 const uint FLAG_ROTATED_EYES = 4u;
 const uint FLAG_SHARP = 8u;
+const uint FLAG_SNAPSHOT = 16u;
 
 // Fringes narrower than this, in output pixels, aren't worth extra reads.
 const float FRINGE_MIN = 0.3;
@@ -210,6 +211,17 @@ void main() {
                          sample_at(green, local).g,
                          blue.valid ? sample_at(blue, local).b : 0.0);
         }
+    }
+
+    if ((p.flags & FLAG_SNAPSHOT) != 0u) {
+        for (uint k = 0u; k < 8u; k++) {
+            uint x = x0 + (k & 3u);
+            uint y = y0 + (k >> 2);
+            if (x >= p.out_size.x || y >= p.out_size.y) continue;
+            uvec3 color = uvec3(clamp(px[k] * 255.0 + 0.5, 0.0, 255.0));
+            nv12[y * p.out_size.x + x] = color.r | (color.g << 8) | (color.b << 16) | (255u << 24);
+        }
+        return;
     }
 
     uint row0 = 0u;

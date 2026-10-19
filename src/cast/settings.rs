@@ -31,6 +31,14 @@ pub enum Codec {
     H264,
     H265,
 }
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ScreenshotShortcut {
+    #[default]
+    LeftView,
+    LeftBumper,
+    RightBumper,
+}
 impl Codec {
     pub fn name(self) -> &'static str { match self { Self::H264 => "h264", Self::H265 => "h265" } }
     pub fn rtp(self) -> &'static str { match self { Self::H264 => "H264/90000", Self::H265 => "H265/90000" } }
@@ -58,6 +66,10 @@ pub struct Settings {
     pub receiver_name: String,
     pub recording_region_visible: bool,
     pub recording_indicator_visible: bool,
+    #[serde(skip_serializing)]
+    pub screenshot_shortcut_enabled: bool,
+    #[serde(skip_serializing)]
+    pub screenshot_shortcut: ScreenshotShortcut,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -80,6 +92,8 @@ impl Default for Settings {
             receiver_name: "Framely".into(),
             recording_region_visible: false,
             recording_indicator_visible: true,
+            screenshot_shortcut_enabled: false,
+            screenshot_shortcut: ScreenshotShortcut::LeftView,
         }
     }
 }
@@ -91,6 +105,8 @@ impl Settings {
         capture.receiver_name.clone_from(&other.receiver_name);
         capture.recording_region_visible = other.recording_region_visible;
         capture.recording_indicator_visible = other.recording_indicator_visible;
+        capture.screenshot_shortcut_enabled = other.screenshot_shortcut_enabled;
+        capture.screenshot_shortcut = other.screenshot_shortcut;
         capture == *other
     }
     pub fn validate(&self) -> Result<()> {

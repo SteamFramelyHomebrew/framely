@@ -1,0 +1,11 @@
+.cast-screenshot-spatial .cast-framing-stage{position:absolute;inset:0;width:100%;height:100%;max-width:none}
+.cast-screenshot-flat{min-height:100dvh;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px;align-items:center;padding:26px;background:#111315;color:#f2f5f7}
+.cast-screenshot-flat-stage{min-width:0;display:grid;place-items:center;max-height:calc(100dvh - 52px);overflow:hidden}
+.cast-screenshot-flat-stage>img{display:none}
+.cast-screenshot-flat-stage .cast-framing-editor{width:100%;max-width:min(100%,1100px)}
+.cast-screenshot-flat-stage .cast-framing-stage{max-width:100%;max-height:calc(100dvh - 180px)}
+.cast-screenshot-preview-image{width:100%;height:100%;object-fit:fill;display:block}
+.cast-screenshot-flat-controls{padding:24px;border:1px solid #333b42;border-radius:14px;background:#1d2226;box-shadow:0 20px 50px #0005}
+.cast-screenshot-flat-controls h1{font-size:24px;margin:0 0 12px}.cast-screenshot-flat-controls p{color:#b8c5cd;font-size:14px;line-height:1.6}
+.cast-screenshot-flat-controls footer{display:flex;gap:10px;margin-top:24px}.cast-screenshot-flat-controls footer button{flex:1}
+@media(max-width:760px){.cast-screenshot-flat{grid-template-columns:1fr;padding:16px;gap:8px}.cast-screenshot-flat-stage .cast-framing-stage{max-height:56dvh}.cast-screenshot-flat-controls{padding:16px}}

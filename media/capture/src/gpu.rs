@@ -93,6 +93,7 @@ pub struct Gpu {
     /// Where images handed to us by someone else get copied before converting.
     copy: Option<CopyTarget>,
     physical_device: vk::PhysicalDevice,
+    snapshot: bool,
 }
 
 /// How the shader reads the source.
@@ -157,6 +158,10 @@ struct CopyTarget {
 const COPY_SOURCE: u32 = u32::MAX;
 
 impl Gpu {
+    pub fn new_snapshot(width: u32, height: u32, lut: &Lut) -> Result<Self> {
+        let size = width.checked_mul(height).and_then(|n| n.checked_mul(4)).context("snapshot too large")?;
+        Self::new_mode(Nv12Layout { width, height, y_stride: width * 4, uv_offset: 0, size }, 1, lut, Filter::Sharp, Priority::Low, None, true)
+    }
     /// `extra` adds extensions someone else needs on our instance and device
     /// (SteamVR, to hand us its headset view).
     pub fn new(
@@ -166,6 +171,18 @@ impl Gpu {
         filter: Filter,
         priority: Priority,
         extra: Option<&Extensions>,
+    ) -> Result<Self> {
+        Self::new_mode(layout, target_count, lut, filter, priority, extra, false)
+    }
+
+    fn new_mode(
+        layout: Nv12Layout,
+        target_count: usize,
+        lut: &Lut,
+        filter: Filter,
+        priority: Priority,
+        extra: Option<&Extensions>,
+        snapshot: bool,
     ) -> Result<Self> {
         let entry = unsafe { ash::Entry::load() }.context("loading Vulkan")?;
         let app = vk::ApplicationInfo::default()
@@ -180,7 +197,7 @@ impl Gpu {
         }
         .context("creating Vulkan instance")?;
 
-        Self::with_instance(entry, instance, layout, target_count, lut, filter, priority, extra)
+        Self::with_instance(entry, instance, layout, target_count, lut, filter, priority, extra, snapshot)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -193,6 +210,7 @@ impl Gpu {
         filter: Filter,
         priority: Priority,
         extra: Option<&Extensions>,
+        snapshot: bool,
     ) -> Result<Self> {
         let pdev = unsafe { instance.enumerate_physical_devices() }?
             .into_iter()
@@ -282,7 +300,8 @@ impl Gpu {
                 flags: (lut.per_channel as u32)
                     | (((filter == Filter::Supersample) as u32) << 1)
                     | ((lut.rotated_eyes as u32) << 2)
-                    | (((filter == Filter::Sharp) as u32) << 3),
+                    | (((filter == Filter::Sharp) as u32) << 3)
+                    | ((snapshot as u32) << 4),
             },
             layout,
             targets: Vec::new(),
@@ -290,6 +309,7 @@ impl Gpu {
             tick: 0,
             copy: None,
             physical_device: pdev,
+            snapshot,
         };
         gpu.create_pipeline(target_count)?;
         gpu.upload_lut(lut)?;
@@ -441,7 +461,7 @@ impl Gpu {
             let buffer = d.create_buffer(
                 &vk::BufferCreateInfo::default()
                     .size(self.layout.size as u64)
-                    .usage(vk::BufferUsageFlags::STORAGE_BUFFER)
+                    .usage(vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC)
                     .push_next(&mut ext),
                 None,
             )?;
@@ -681,8 +701,8 @@ impl Gpu {
             .image(image)
             .subresource_range(color_range());
         let acquire_buffer = vk::BufferMemoryBarrier::default()
-            .src_queue_family_index(foreign)
-            .dst_queue_family_index(ours)
+            .src_queue_family_index(if self.snapshot { vk::QUEUE_FAMILY_IGNORED } else { foreign })
+            .dst_queue_family_index(if self.snapshot { vk::QUEUE_FAMILY_IGNORED } else { ours })
             .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
             .buffer(target.buffer)
             .size(vk::WHOLE_SIZE);
@@ -715,8 +735,8 @@ impl Gpu {
             .image(image)
             .subresource_range(color_range());
         let release_buffer = vk::BufferMemoryBarrier::default()
-            .src_queue_family_index(ours)
-            .dst_queue_family_index(foreign)
+            .src_queue_family_index(if self.snapshot { vk::QUEUE_FAMILY_IGNORED } else { ours })
+            .dst_queue_family_index(if self.snapshot { vk::QUEUE_FAMILY_IGNORED } else { foreign })
             .src_access_mask(vk::AccessFlags::SHADER_WRITE)
             .buffer(target.buffer)
             .size(vk::WHOLE_SIZE);
@@ -747,6 +767,45 @@ impl Gpu {
         src.last_used = tick;
         let cmd = src.cmds[index];
         self.submit(&[cmd])
+    }
+
+    /// Read back the one-shot RGBA target after convert has completed.
+    pub fn snapshot_pixels(&self) -> Result<Vec<u8>> {
+        anyhow::ensure!(self.snapshot, "not a snapshot target");
+        let d = &self.device;
+        let size = self.layout.size as u64;
+        unsafe {
+            let staging = d.create_buffer(&vk::BufferCreateInfo::default().size(size).usage(vk::BufferUsageFlags::TRANSFER_DST), None)?;
+            let result = (|| -> Result<Vec<u8>> {
+                let req = d.get_buffer_memory_requirements(staging);
+                let ty = self.find_memory_type(req.memory_type_bits, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT).context("no host-visible snapshot memory")?;
+                let memory = d.allocate_memory(&vk::MemoryAllocateInfo::default().allocation_size(req.size).memory_type_index(ty), None)?;
+                let result = (|| -> Result<Vec<u8>> {
+                    d.bind_buffer_memory(staging, memory, 0)?;
+                    let cmds = d.allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(self.cmd_pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(1))?;
+                    let cmd = cmds[0];
+                    let copied = (|| -> Result<Vec<u8>> {
+                        d.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())?;
+                        let barrier = vk::BufferMemoryBarrier::default().src_access_mask(vk::AccessFlags::SHADER_WRITE).dst_access_mask(vk::AccessFlags::TRANSFER_READ).buffer(self.targets[0].buffer).size(size);
+                        d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[barrier], &[]);
+                        d.cmd_copy_buffer(cmd, self.targets[0].buffer, staging, &[vk::BufferCopy::default().size(size)]);
+                        d.end_command_buffer(cmd)?;
+                        d.queue_submit(self.queue, &[vk::SubmitInfo::default().command_buffers(&[cmd])], vk::Fence::null())?;
+                        d.queue_wait_idle(self.queue)?;
+                        let ptr = d.map_memory(memory, 0, size, vk::MemoryMapFlags::empty())?;
+                        let bytes = std::slice::from_raw_parts(ptr.cast::<u8>(), size as usize).to_vec();
+                        d.unmap_memory(memory);
+                        Ok(bytes)
+                    })();
+                    d.free_command_buffers(self.cmd_pool, &cmds);
+                    copied
+                })();
+                d.free_memory(memory, None);
+                result
+            })();
+            d.destroy_buffer(staging, None);
+            result
+        }
     }
 
     /// Runs command buffers, waits for them, and returns the conversion
