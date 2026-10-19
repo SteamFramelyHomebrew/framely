@@ -27,7 +27,7 @@ Linux 用户可在安装器解压目录执行 `bash install-desktop-entry.sh`，
 以下命令在 **Frame 上** 执行。默认安装最新正式版：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install
+curl -fsSL https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash -s -- install
 ```
 
 指定 Preview 或其他标签：

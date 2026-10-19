@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Public bootstrap: curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash
+# Public bootstrap: curl -fsSL https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash
 set -euo pipefail
 repo=${FRAMELY_REPOSITORY:-SteamFramelyHomebrew/framely}
 [[ $repo =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]] || { echo 'Invalid repository.' >&2; exit 1; }

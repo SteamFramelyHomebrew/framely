@@ -27,7 +27,7 @@ Downloads are checked locally and again on the device. Passwords are not saved i
 Run these commands **on Frame**. To install the latest stable release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install
+curl -fsSL https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash -s -- install
 ```
 
 To select a Preview or another tag:

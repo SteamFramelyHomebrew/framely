@@ -36,7 +36,7 @@ Download the package for your computer from the [Framely Installer release](http
 Run the following command **in Frame's SSH terminal** to install the latest stable release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/install.sh | bash -s -- install
+curl -fsSL https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash -s -- install
 ```
 
 For a Preview release, specify an actual published tag:
