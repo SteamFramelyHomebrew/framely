@@ -7,6 +7,8 @@ import pathlib
 import tarfile
 import tempfile
 import unittest
+import errno
+import urllib.error
 from types import SimpleNamespace
 from unittest.mock import mock_open, patch
 
@@ -16,6 +18,35 @@ spec.loader.exec_module(bootstrap)
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_explicit_direct_route_overrides_saved_proxy(self):
+        with patch.dict(bootstrap.os.environ, {'FRAMELY_GITHUB_PROXY': '',
+                                               'FRAMELY_GITHUB_AUTO_FALLBACK': '0'}), \
+             patch.object(bootstrap, 'device_proxy_settings', return_value={
+                 'githubEnabled': True, 'github': 'https://proxy.example'}):
+            self.assertEqual(bootstrap.configured_github_proxy(), '')
+            self.assertFalse(bootstrap.fallback_enabled())
+
+    def test_interactive_release_selection_uses_semver_and_installable_assets(self):
+        def release(tag, prerelease=False, missing_offline=False):
+            version = tag.removeprefix('v')
+            files = ['bootstrap.py', 'SHA256SUMS',
+                     f'framely-{version}-012345abcdef-linux-arm64.tar.gz']
+            if not missing_offline:
+                files.append(f'framely-{version}-012345abcdef-offline-linux-arm64.tar.gz')
+            else:
+                files.append('framely-cef.json')
+            return {'tag_name': tag, 'draft': False, 'prerelease': prerelease,
+                    'assets': [{'name': name, 'size': 1024} for name in files]}
+        releases = [release('v0.8.9'), release('v0.9.0-preview.2', True),
+                    release('v0.9.0-preview.10', True),
+                    release('v1.0.0', missing_offline=True), release('v2.0.0', True)]
+        with patch.object(bootstrap, 'read_metadata', return_value=json.dumps(releases).encode()):
+            self.assertEqual(bootstrap.resolve_release('owner/repo', 'stable', 'install')['tag'], 'v0.8.9')
+            self.assertEqual(bootstrap.resolve_release('owner/repo', 'testing', 'install')['tag'], 'v0.9.0-preview.10')
+            self.assertEqual(bootstrap.resolve_release('owner/repo', 'stable', 'update')['tag'], 'v1.0.0')
+        self.assertGreater(bootstrap.release_version('v0.9.0-preview.10'),
+                           bootstrap.release_version('v0.9.0-preview.2'))
+
     def test_explicit_install_and_update_skip_confirmation(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive = pathlib.Path(tmp) / 'package.tar.gz'
@@ -135,6 +166,34 @@ class BootstrapTests(unittest.TestCase):
             bootstrap.emit_progress('configure')
         payload = json.loads(output.getvalue().removeprefix('FRAMELY_PROGRESS '))
         self.assertEqual(payload, {'step': 'configure'})
+
+    def test_installation_failure_explains_step_cause_and_next_action_without_url(self):
+        with self.assertRaises(bootstrap.InstallationFailure) as failure:
+            with bootstrap.installation_step('下载安装包', '更换代理后重试。'):
+                raise urllib.error.HTTPError('https://example.invalid/?token=secret', 502, '', {}, None)
+        message = str(failure.exception)
+        self.assertIn('下载安装包失败', message)
+        self.assertIn('HTTP 502', message)
+        self.assertIn('更换代理后重试', message)
+        self.assertNotIn('secret', message)
+        with self.assertRaises(bootstrap.InstallationFailure) as failure:
+            with bootstrap.installation_step('下载安装包', '释放空间后重试。'):
+                raise OSError(errno.ENOSPC, 'disk full')
+        self.assertIn('设备存储空间不足', str(failure.exception))
+        self.assertIn('errno=28', str(failure.exception))
+        with self.assertRaises(bootstrap.InstallationFailure) as failure:
+            with bootstrap.installation_step('读取发行版信息', '检查连接后重试。'):
+                raise ValueError('bad URL https://example.invalid/?token=secret')
+        self.assertNotIn('secret', str(failure.exception))
+
+    def test_terminal_download_progress_reports_bytes_and_completion(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            progress = bootstrap.terminal_download_progress(2 * 1024**2)
+            progress(0)
+            progress(2 * 1024**2)
+        self.assertIn('0.0 / 2.0 MiB', output.getvalue())
+        self.assertIn('100.0%', output.getvalue())
 
 
 if __name__ == '__main__':

@@ -24,7 +24,15 @@ Linux 用户可在安装器解压目录执行 `bash install-desktop-entry.sh`，
 
 ## 方式二：在 Frame 的 SSH 终端安装
 
-以下命令在 **Frame 上** 执行。默认安装最新正式版：
+以下命令在 **Frame 上** 执行。
+
+不带参数时会打开交互向导，自动识别安装或更新，选择正式版／测试版及下载线路；在最终确认前可返回或退出：
+
+```bash
+curl -fsSL https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash
+```
+
+需要跳过向导时，继续使用明确的命令：
 
 ```bash
 curl -fsSL https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash -s -- install --yes
@@ -38,7 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/i
 
 将示例标签换成 Releases 中实际存在的本体标签。指定标签时从该 Release 下载引擎和包，不要求已有正式版；不指定标签时使用最新正式版。终端会按需请求 sudo 密码。
 
-明确指定 `install` 或 `update` 时无需再次确认。使用交互菜单或卸载时，脚本会询问是否继续，需要输入 `y` 并回车。如果通过一条 `ssh` 远程命令执行且 sudo 需要密码，请用 `ssh -t` 分配交互终端；`--yes` 仅跳过 Framely 的确认，不会跳过 sudo 密码。
+明确指定 `install` 或 `update` 时仍按原方式执行。交互向导从终端读取选项，选择直连时本次运行不会自动切换镜像；选择镜像并将地址留空时使用 `https://gh-proxy.com`。如果通过一条 `ssh` 远程命令执行且 sudo 需要密码，请用 `ssh -t` 分配交互终端；`--yes` 仅跳过 Framely 的确认，不会跳过 sudo 密码。
 
 使用 `--github-proxy` 可通过指定的 HTTPS 地址代理入口脚本及后续所有 GitHub 下载。例如：
 
@@ -108,6 +116,8 @@ sudo journalctl -u framely -u framely-session --no-pager -n 100
 ```
 
 修复会使用已保留的发行恢复账号及服务；UID 冲突时停止。它不能找回已删除的 `/home` 数据，SteamOS 更新后的恢复仍需实机验证。
+
+命令行安装日志使用同一个追踪编号记录开始时间、版本、发行包、下载线路、阶段耗时与安全错误码。下载时会持续显示已下载量；失败时会给出原因和下一步。反馈安装问题时，请提供追踪编号、出错阶段和相关输出；发送前仍应检查并移除终端中其他程序可能打印的密码、Token 或个人信息。安装器会隐藏自定义代理地址及带参数的下载 URL。
 
 ## 卸载
 

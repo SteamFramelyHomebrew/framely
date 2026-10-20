@@ -34,11 +34,19 @@ class InstallEntryTests(unittest.TestCase):
         self.assertEqual(calls['url'], 'https://gh-proxy.com/https://github.com/TestOwner/framely/releases/latest/download/bootstrap.py')
         self.assertEqual(calls['proxy'], 'https://gh-proxy.com')
         self.assertEqual(calls['args'], ['--repo', 'TestOwner/framely', *args])
+        self.assertRegex(calls['trace'], r'^[0-9]{8}T[0-9]{6}Z-[0-9]+$')
+        self.assertIn(calls['trace'], result.stdout)
         for invalid in ['http://gh-proxy.com', 'https://gh-proxy.com/../bad', 'https://gh-proxy.com?key=1', '']:
             with self.subTest(invalid=invalid):
                 result, calls = self.run_entry(['install', '--github-proxy', invalid])
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(calls, {})
+
+    def test_proxy_path_is_not_written_to_installer_log(self):
+        result, calls = self.run_entry(['install', '--github-proxy', 'https://proxy.example/private-route'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('private-route', result.stdout + result.stderr)
+        self.assertEqual(calls['proxy'], 'https://proxy.example/private-route')
 
     def run_entry(self, args):
         with tempfile.TemporaryDirectory() as temp:
@@ -48,7 +56,7 @@ class InstallEntryTests(unittest.TestCase):
             curl.write_text('''#!/usr/bin/env python3
 import json, os, pathlib, sys
 args = sys.argv[1:]
-pathlib.Path(os.environ['FRAMELY_ENTRY_LOG']).write_text(json.dumps({'url': args[-1], 'proxy': os.environ.get('FRAMELY_GITHUB_PROXY', '')}))
+pathlib.Path(os.environ['FRAMELY_ENTRY_LOG']).write_text(json.dumps({'url': args[-1], 'proxy': os.environ.get('FRAMELY_GITHUB_PROXY', ''), 'trace': os.environ.get('FRAMELY_INSTALL_TRACE_ID', '')}))
 pathlib.Path(args[args.index('--output') + 1]).write_text("import json,os,pathlib,sys; p=pathlib.Path(os.environ['FRAMELY_ENTRY_LOG']); d=json.loads(p.read_text()); d['args']=sys.argv[1:]; p.write_text(json.dumps(d))")
 ''')
             curl.chmod(0o755)

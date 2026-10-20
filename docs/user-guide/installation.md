@@ -24,11 +24,13 @@ Downloads are checked locally and again on the device. Passwords are not saved i
 
 ## Option 2: install from Frame's SSH terminal
 
-Run these commands **on Frame**. To install the latest stable release:
+Run this command **on Frame** to open the installer:
 
 ```bash
-curl -fsSL https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash -s -- install --yes
+curl -fsSL https://github.com/SteamFramelyHomebrew/framely/releases/latest/download/install.sh | bash
 ```
+
+With no arguments, this opens a wizard that detects whether to install or update, offers stable and testing releases, and lets you choose direct GitHub access or a mirror. You can go back or quit before final confirmation. For an explicit command without the wizard, use `bash -s -- install --yes` after the pipe.
 
 To select a Preview or another tag:
 
@@ -38,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/SteamFramelyHomebrew/framely/main/i
 
 Replace the example with an existing device release tag. An explicit tag selects the engine and package from that Release and works without a stable release. Without a tag, the latest stable release is selected. Enter the sudo password when prompted.
 
-Explicit `install` and `update` commands need no second confirmation. The interactive action menu and uninstall still ask for `y` and Enter. If sudo needs a password in a single remote `ssh` command, allocate a terminal with `ssh -t`; `--yes` skips only Framely's confirmation, not sudo authentication.
+Explicit `install` and `update` commands retain their behavior. In the wizard, direct GitHub access disables automatic mirror fallback for that run; leaving the mirror address blank selects `https://gh-proxy.com`. If sudo needs a password in a single remote `ssh` command, allocate a terminal with `ssh -t`; `--yes` skips only Framely's confirmation, not sudo authentication.
 
 To route the script download and all later GitHub requests through a chosen HTTPS URL prefix, use `--github-proxy`:
 
@@ -108,6 +110,8 @@ sudo journalctl -u framely -u framely-session --no-pager -n 100
 ```
 
 Repair restores accounts and services from the retained release and stops on UID conflicts. It cannot restore deleted `/home` data. Recovery after SteamOS updates still requires device validation.
+
+Command-line installation logs use one trace ID across download and device installation. They show the release package, download route, stage duration, safe error code, and next action. When reporting a failure, include the trace ID, failing stage, and relevant output. Review the output for passwords, tokens, or personal information printed by other programs before sharing it. Framely hides custom proxy addresses and parameterized download URLs in its own logs.
 
 ## Uninstall
 

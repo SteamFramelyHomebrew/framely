@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Shared device-side installation engine, also embedded in the desktop installer."""
 import argparse
+import contextlib
+import datetime
 import errno
 import hashlib
 import json
@@ -16,12 +18,24 @@ import time
 import urllib.parse
 import urllib.request
 import urllib.error
+import uuid
 import socket
 import ssl
 import http.client
 
 DEFAULT_REPO = 'SteamFramelyHomebrew/framely'
 MAX_ARCHIVE = 2 * 1024**3
+TRACE_ID = uuid.uuid4().hex[:12]
+
+
+def log_event(message):
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    print(f'[{timestamp}] Framely[{TRACE_ID}] {message}', flush=True)
+
+
+def log_failure(message):
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    print(f'[{timestamp}] Framely[{TRACE_ID}] {message}', file=sys.stderr, flush=True)
 
 
 def emit_progress(step, completed=None, total=None):
@@ -29,6 +43,103 @@ def emit_progress(step, completed=None, total=None):
     if total is not None and total > 0:
         payload.update(completed=completed, total=total)
     print('FRAMELY_PROGRESS ' + json.dumps(payload), flush=True)
+
+
+def terminal_download_progress(total):
+    last_reported = 0.0
+
+    def report(completed):
+        nonlocal last_reported
+        now = time.monotonic()
+        if completed not in (0, total) and now - last_reported < 5:
+            return
+        last_reported = now
+        percent = completed * 100 / total
+        log_event(f'下载进度 {percent:5.1f}%  {completed / 1024**2:.1f} / {total / 1024**2:.1f} MiB')
+
+    return report
+
+
+class InstallationFailure(RuntimeError):
+    pass
+
+
+def failure_reason(error):
+    if isinstance(error, urllib.error.HTTPError):
+        if error.code == 404:
+            return 'HTTP 404：请求的版本或发布文件不存在。'
+        if error.code == 403:
+            return 'HTTP 403：下载服务拒绝访问，可能触发了访问限制。'
+        if error.code == 429:
+            return 'HTTP 429：下载服务正在限流。'
+        return f'HTTP {error.code}：下载服务返回错误。'
+    if isinstance(error, urllib.error.URLError):
+        return failure_reason(error.reason)
+    if isinstance(error, (ssl.SSLCertVerificationError, ssl.CertificateError)):
+        return 'TLS 证书验证失败；请检查设备时间、证书和代理。'
+    if isinstance(error, socket.gaierror):
+        return '域名解析失败；请检查网络和代理地址。'
+    if isinstance(error, (TimeoutError, ConnectionError, http.client.IncompleteRead,
+                          http.client.RemoteDisconnected)):
+        return '连接超时、中断或文件传输不完整。'
+    if isinstance(error, OSError):
+        if error.errno == errno.ENOSPC:
+            return '设备存储空间不足。'
+        if error.errno in (errno.EACCES, errno.EPERM):
+            return '没有写入安装文件的权限。'
+        if error.errno == errno.ENOENT:
+            return '安装暂存文件或目录不存在。'
+        if error.errno == errno.EIO:
+            return '存储设备读写失败。'
+    if isinstance(error, ValueError) and 'SHA256 mismatch' in str(error):
+        return '文件校验不通过；下载内容可能损坏或被代理修改。'
+    if isinstance(error, (KeyError, TypeError)):
+        return '发行版信息缺少必要字段或格式无效。'
+    if isinstance(error, subprocess.CalledProcessError):
+        return '安装子程序执行失败；详细错误见上方输出。'
+    # The dual-route failure already contains only sanitized error types.
+    if isinstance(error, RuntimeError) and 'GitHub primary route failed:' in str(error):
+        return str(error)
+    if isinstance(error, ValueError):
+        if str(error) == 'Cancelled':
+            return '操作已由用户取消。'
+        if str(error).startswith(('No interactive terminal', 'No confirmation input')):
+            return '缺少交互终端或确认输入。'
+        if str(error) == 'Download exceeds size limit':
+            return '下载文件超过允许大小。'
+        if str(error) == 'Download temporary file identity changed':
+            return '下载暂存文件在传输期间被替换。'
+        return '配置或下载数据格式无效。'
+    return f'{type(error).__name__}'
+
+
+def failure_diagnostic(error):
+    if isinstance(error, subprocess.CalledProcessError):
+        return f'{type(error).__name__} exit={error.returncode}'
+    if isinstance(error, urllib.error.URLError):
+        return failure_diagnostic(error.reason) if not isinstance(error, urllib.error.HTTPError) else f'HTTP {error.code}'
+    if isinstance(error, OSError) and error.errno is not None:
+        return f'{type(error).__name__} errno={error.errno}'
+    if isinstance(error, RuntimeError) and 'GitHub primary route failed:' in str(error):
+        return str(error)
+    return type(error).__name__
+
+
+@contextlib.contextmanager
+def installation_step(stage, next_action):
+    started = time.monotonic()
+    log_event(f'{stage}：开始')
+    try:
+        yield
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+        reason = failure_reason(error)
+        diagnostic = failure_diagnostic(error)
+        raise InstallationFailure(
+            f'{stage}失败（耗时 {time.monotonic() - started:.1f} 秒）。\n原因：{reason}'
+            f'\n诊断：{diagnostic}\n下一步：{next_action}'
+        ) from None
+    else:
+        log_event(f'{stage}：完成，耗时 {time.monotonic() - started:.1f} 秒')
 
 
 class HTTPSRedirect(urllib.request.HTTPRedirectHandler):
@@ -78,6 +189,14 @@ def configured_github_proxy():
     return github_proxy_url(value) if value.strip() else ''
 
 
+def download_route():
+    proxy = configured_github_proxy()
+    if proxy:
+        host = urllib.parse.urlsplit(proxy).hostname
+        return 'gh-proxy.com' if host == 'gh-proxy.com' else '自定义 GitHub 代理（地址已隐藏）'
+    return 'GitHub 直连（自动代理回退已开启）' if fallback_enabled() else 'GitHub 直连'
+
+
 def public_github(url):
     parsed = urllib.parse.urlsplit(url)
     return (parsed.scheme == 'https' and parsed.hostname in GITHUB_HOSTS
@@ -118,7 +237,7 @@ def github_attempt(url, operation, enabled=None):
     except Exception as primary:
         if configured_github_proxy() or not (fallback_enabled() if enabled is None else enabled) or not public_github(url) or not retryable(primary):
             raise
-        print('GitHub connection failed; trying gh-proxy.com once', file=sys.stderr, flush=True)
+        log_failure(f'GitHub 请求失败（{network_diagnostic(primary)}），正在尝试 gh-proxy.com')
         try:
             return operation(True)
         except Exception as secondary:
@@ -281,6 +400,76 @@ def select_package(assets, action):
     return selected[0]
 
 
+def release_version(tag):
+    """Return a SemVer precedence key, excluding build metadata."""
+    match = re.fullmatch(
+        r'v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
+        r'(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?'
+        r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?', tag)
+    if not match:
+        return None
+    identifiers = []
+    for part in (match[4] or '').split('.') if match[4] else []:
+        if part.isdigit():
+            if len(part) > 1 and part.startswith('0'):
+                return None
+            identifiers.append((0, int(part)))
+        else:
+            identifiers.append((1, part))
+    # A final release has higher precedence than its prereleases.
+    return (int(match[1]), int(match[2]), int(match[3]),
+            1 if not identifiers else 0, tuple(identifiers))
+
+
+def resolve_release(repo, channel, action):
+    """Choose an installable GitHub release for the interactive entry point."""
+    candidates = []
+    for page in range(1, 11):
+        url = f'https://api.github.com/repos/{repo}/releases?per_page=100&page={page}'
+        releases = json.loads(read_metadata(url, 4 * 1024**2))
+        if not isinstance(releases, list):
+            raise ValueError('Invalid GitHub release list')
+        for release in releases:
+            if not isinstance(release, dict) or release.get('draft'):
+                continue
+            tag = release.get('tag_name')
+            version = release_version(tag) if isinstance(tag, str) else None
+            if version is None or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9.+-]*', tag):
+                continue
+            prerelease = version[3] == 0
+            if release.get('prerelease') != prerelease or channel == 'stable' and prerelease:
+                continue
+            if not isinstance(release.get('assets'), list):
+                continue
+            assets = {asset['name']: asset for asset in release['assets']
+                      if isinstance(asset, dict) and isinstance(asset.get('name'), str)}
+            if 'bootstrap.py' not in assets:
+                continue
+            try:
+                package = select_package(assets, action)
+            except ValueError:
+                continue
+            # A release must contain a package for its own tag.
+            name = package[len('framely-'):-len('-linux-arm64.tar.gz')]
+            if name.endswith('-offline'):
+                name = name[:-len('-offline')]
+            plain_tag = tag[1:] if tag.startswith('v') else tag
+            if not re.fullmatch(re.escape(plain_tag) + r'-[a-f0-9]{12}', name):
+                continue
+            size = assets[package].get('size')
+            if not isinstance(size, int) or not 0 < size <= MAX_ARCHIVE:
+                continue
+            candidates.append((version, tag, size))
+        if len(releases) < 100:
+            break
+    else:
+        raise ValueError('Release list exceeded ten pages')
+    if not candidates:
+        raise ValueError('No installable release found for selected channel')
+    _, tag, size = max(candidates, key=lambda item: item[0])
+    return {'tag': tag, 'size': size}
+
+
 def current_release():
     state = pathlib.Path('/home/.framely/state')
     if not state.is_dir():
@@ -334,7 +523,8 @@ def root_operation(args):
                 if args.action == 'install' and (base / 'CEF_RUNTIME.json').exists() and not (base / 'lib/cef/libcef.so').is_file():
                     raise ValueError('First installation requires the complete offline package with CEF')
                 report('extract')
-                subprocess.run(['sha256sum', '--quiet', '-c', 'SHA256SUMS'], cwd=base, check=True)
+                with installation_step('校验解压文件', '重新运行安装命令；若仍失败，请保存上方校验输出供开发者排查。'):
+                    subprocess.run(['sha256sum', '--quiet', '-c', 'SHA256SUMS'], cwd=base, check=True)
             else:
                 base = current_release()
             report('configure')
@@ -346,8 +536,9 @@ def root_operation(args):
                     same = False
                 if same:
                     command.append('--repair')
-                subprocess.run(command + [args.user], check=True,
-                               env=dict(os.environ, FRAMELY_PROGRESS_JSON='1' if getattr(args, 'progress_json', False) else '0'))
+                with installation_step('执行安装脚本', '查看上方脚本输出，修复所提示的问题后重新运行安装命令。'):
+                    subprocess.run(command + [args.user], check=True,
+                                   env=dict(os.environ, FRAMELY_PROGRESS_JSON='1' if getattr(args, 'progress_json', False) else '0'))
                 report('activate')
                 # Preconfigure the official update source without requiring agreement acceptance.
                 state = pathlib.Path('/home/.framely/state')
@@ -370,7 +561,7 @@ def root_operation(args):
             elif args.action == 'rollback':
                 subprocess.run(['bash', str(base / 'rollback.sh')], check=True)
             report('activate')
-            print('Framely operation completed.', flush=True)
+            log_event('设备端操作完成')
         finally:
             if work:
                 shutil.rmtree(work)
@@ -387,13 +578,27 @@ def main(argv=None):
     parser.add_argument('--yes', action='store_true', help='Confirm the selected operation')
     parser.add_argument('--github-proxy', help='HTTPS URL prefix for GitHub downloads, such as https://gh-proxy.com')
     parser.add_argument('--progress-json', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--trace-id', help=argparse.SUPPRESS)
+    parser.add_argument('--resolve-release', choices=['stable', 'testing'], help=argparse.SUPPRESS)
+    parser.add_argument('--selection-action', choices=['install', 'update'], help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    global TRACE_ID
+    candidate = args.trace_id or os.environ.get('FRAMELY_INSTALL_TRACE_ID', '')
+    if re.fullmatch(r'[0-9]{8}T[0-9]{6}Z-[0-9]{1,10}|[0-9a-f]{12}', candidate):
+        TRACE_ID = candidate
     if args.github_proxy:
         os.environ['FRAMELY_GITHUB_PROXY'] = github_proxy_url(args.github_proxy)
     if not re.fullmatch(r'[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+', args.repo):
         parser.error('Invalid repository')
     if not re.fullmatch(r'[a-z_][a-zA-Z0-9_-]*', args.user) or args.user == 'root':
         parser.error('Invalid Steam user')
+    if args.version and not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9.+-]*', args.version):
+        parser.error('Invalid release version')
+    if args.resolve_release:
+        if not args.selection_action:
+            parser.error('--selection-action is required with --resolve-release')
+        print(json.dumps(resolve_release(args.repo, args.resolve_release, args.selection_action)))
+        return
     if sys.platform != 'linux' or os.uname().machine != 'aarch64':
         parser.error('This installation engine requires Linux ARM64 Steam Frame')
     explicit_action = args.action is not None
@@ -407,6 +612,8 @@ def main(argv=None):
             parser.error('Invalid action')
     if not args.yes and not (explicit_action and args.action in ('install', 'update')) and not confirm(f'{args.action}: ' + ('disable and uninstall ALL plugins, then remove Framely (saved data retained)' if args.action == 'uninstall' else 'continue with Framely maintenance')):
         raise ValueError('Cancelled')
+    log_event(f'开始：操作={args.action}，版本={args.version or "latest stable"}，来源={"official" if args.repo == DEFAULT_REPO else "custom"}，'
+              f'架构={os.uname().machine}，Python={sys.version_info.major}.{sys.version_info.minor}，下载线路={download_route()}')
     cache = pathlib.Path.home() / '.cache' / 'framely-installer' if args.action in ('install', 'update') and not args.archive else None
     if cache is not None:
         cache.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -416,19 +623,31 @@ def main(argv=None):
                 parser.error('--archive and --checksums must be provided together')
             if not args.archive:
                 endpoint = 'latest' if not args.version else 'tags/' + urllib.parse.quote(args.version, safe='')
-                metadata = read_metadata(f'https://api.github.com/repos/{args.repo}/releases/{endpoint}', 4 * 1024**2)
-                release = json.loads(metadata)
-                assets = {asset['name']: asset for asset in release['assets']}
-                package = select_package(assets, args.action)
+                with installation_step('读取发行版信息', '确认版本已发布，检查 GitHub 或代理连接后重试。'):
+                    metadata = read_metadata(f'https://api.github.com/repos/{args.repo}/releases/{endpoint}', 4 * 1024**2)
+                    release = json.loads(metadata)
+                    assets = {asset['name']: asset for asset in release['assets']}
+                    package = select_package(assets, args.action)
+                    size = assets[package]['size']
+                    if not isinstance(size, int) or size <= 0 or size > MAX_ARCHIVE:
+                        raise ValueError('发布包大小无效')
+                tag = release.get('tag_name', '')
+                log_event(f'发行版：{tag if isinstance(tag, str) and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.+-]*", tag) else "unknown"}，文件={package}')
                 args.archive = pathlib.Path(folder) / package
                 args.checksums = pathlib.Path(folder) / 'SHA256SUMS'
-                print('Downloading ' + package, flush=True)
-                download(assets[package]['browser_download_url'], args.archive, MAX_ARCHIVE)
-                download(assets['SHA256SUMS']['browser_download_url'], args.checksums, 1024**2)
+                log_event(f'安装包大小：{size / 1024**2:.1f} MiB，下载线路：{download_route()}')
+                with installation_step('下载安装包', '检查网络或更换 GitHub 代理后重新运行安装命令。'):
+                    download(assets[package]['browser_download_url'], args.archive, MAX_ARCHIVE,
+                             terminal_download_progress(size), expected_size=size)
+                print('正在下载校验文件…', flush=True)
+                with installation_step('下载校验文件', '检查网络或更换 GitHub 代理后重新运行安装命令。'):
+                    download(assets['SHA256SUMS']['browser_download_url'], args.checksums, 1024**2)
             args.archive, args.checksums = args.archive.resolve(), args.checksums.resolve()
             if args.progress_json:
                 emit_progress('verify')
-            verify_archive(args.archive, args.checksums)
+            print('正在校验安装包…', flush=True)
+            with installation_step('校验安装包', '重新运行安装命令；若仍失败，换用可信的下载线路并向开发者提供诊断信息。'):
+                verify_archive(args.archive, args.checksums)
             print('Archive SHA256 verified.', flush=True)
         if os.geteuid() == 0:
             root_operation(args)
@@ -438,13 +657,29 @@ def main(argv=None):
                 command += ['--archive', str(args.archive), '--checksums', str(args.checksums)]
             if args.progress_json:
                 command += ['--progress-json']
+            if args.github_proxy:
+                command += ['--github-proxy', args.github_proxy]
+            command += ['--trace-id', TRACE_ID]
             # stdin belongs to curl | bash; sudo reads its password from the terminal.
-            subprocess.run(command, check=True)
+            try:
+                subprocess.run(command, check=True)
+            except subprocess.CalledProcessError as error:
+                raise InstallationFailure('设备端安装失败。\n原因：sudo 安装步骤退出，详细错误见上方输出。'
+                                          '\n下一步：按上方提示修复后，重新运行安装命令。') from error
+    log_event(f'操作完成：{args.action}')
 
 
 if __name__ == '__main__':
     try:
         main()
-    except (ValueError, OSError, subprocess.CalledProcessError) as error:
-        print('Framely: ' + str(error), file=sys.stderr)
+    except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        if '--resolve-release' in sys.argv:
+            log_failure('Release lookup failed. Diagnostic: '
+                        + failure_diagnostic(error)
+                        + '. Check the network, mirror, and release assets, then retry.')
+        elif isinstance(error, InstallationFailure):
+            log_failure(str(error))
+        else:
+            log_failure(f'安装操作失败。\n原因：{failure_reason(error)}\n诊断：{failure_diagnostic(error)}'
+                        '\n下一步：检查上方日志和运行环境，修复问题后重试；若仍失败，请提供追踪编号及完整安装输出。')
         sys.exit(1)

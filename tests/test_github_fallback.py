@@ -142,8 +142,11 @@ exit {code}
                 python = root / 'python3'; python.write_text('#!/bin/sh\nexit 0\n')
                 curl.chmod(0o755); python.chmod(0o755)
                 env = dict(os.environ, PATH=temp + os.pathsep + os.environ['PATH'], FRAMELY_GITHUB_AUTO_FALLBACK=enabled)
-                subprocess.run(['bash', str(ROOT / 'install.sh')], env=env, capture_output=True)
+                result = subprocess.run(['bash', str(ROOT / 'install.sh'), 'install'], env=env, capture_output=True, text=True)
                 self.assertEqual(len(log.read_text().splitlines()), attempts)
+                if attempts == 1:
+                    self.assertIn('Failed to download the installer engine', result.stderr)
+                    self.assertIn('then retry', result.stderr)
 
 
 if __name__ == '__main__':
