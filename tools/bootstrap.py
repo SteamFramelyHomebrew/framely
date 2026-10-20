@@ -131,7 +131,8 @@ def installation_step(stage, next_action):
     log_event(f'{stage}：开始')
     try:
         yield
-    except (OSError, ValueError, RuntimeError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError,
+            subprocess.CalledProcessError, http.client.IncompleteRead) as error:
         reason = failure_reason(error)
         diagnostic = failure_diagnostic(error)
         raise InstallationFailure(
@@ -426,7 +427,16 @@ def resolve_release(repo, channel, action):
     candidates = []
     for page in range(1, 11):
         url = f'https://api.github.com/repos/{repo}/releases?per_page=100&page={page}'
-        releases = json.loads(read_metadata(url, 4 * 1024**2))
+        for attempt in range(3):
+            try:
+                metadata = read_metadata(url, 4 * 1024**2)
+                break
+            except Exception as error:
+                if attempt == 2 or not retryable(error):
+                    raise
+                log_failure('Release metadata transfer was interrupted; retrying the same route.')
+                time.sleep(0.5 * (attempt + 1))
+        releases = json.loads(metadata)
         if not isinstance(releases, list):
             raise ValueError('Invalid GitHub release list')
         for release in releases:
@@ -672,7 +682,8 @@ def main(argv=None):
 if __name__ == '__main__':
     try:
         main()
-    except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
+    except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError,
+            http.client.IncompleteRead) as error:
         if '--resolve-release' in sys.argv:
             log_failure('Release lookup failed. Diagnostic: '
                         + failure_diagnostic(error)

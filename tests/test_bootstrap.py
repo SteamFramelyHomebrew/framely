@@ -8,6 +8,7 @@ import tarfile
 import tempfile
 import unittest
 import errno
+import http.client
 import urllib.error
 from types import SimpleNamespace
 from unittest.mock import mock_open, patch
@@ -18,6 +19,23 @@ spec.loader.exec_module(bootstrap)
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_incomplete_metadata_has_actionable_error(self):
+        with self.assertRaises(bootstrap.InstallationFailure) as failure:
+            with bootstrap.installation_step('Read release metadata', 'Retry or choose another mirror.'):
+                raise http.client.IncompleteRead(b'partial', 10)
+        self.assertIn('Retry or choose another mirror.', str(failure.exception))
+
+    def test_interactive_release_lookup_retries_partial_transfer(self):
+        releases = [{'tag_name': 'v0.8.3', 'draft': False, 'prerelease': False,
+                     'assets': [{'name': name, 'size': 1024} for name in (
+                         'bootstrap.py', 'SHA256SUMS',
+                         'framely-0.8.3-012345abcdef-linux-arm64.tar.gz')]}]
+        with patch.object(bootstrap, 'read_metadata', side_effect=[
+                http.client.IncompleteRead(b'partial', 10), json.dumps(releases).encode()]) as read, \
+             patch.object(bootstrap.time, 'sleep'):
+            self.assertEqual(bootstrap.resolve_release('owner/repo', 'stable', 'update')['tag'], 'v0.8.3')
+            self.assertEqual(read.call_count, 2)
+
     def test_explicit_direct_route_overrides_saved_proxy(self):
         with patch.dict(bootstrap.os.environ, {'FRAMELY_GITHUB_PROXY': '',
                                                'FRAMELY_GITHUB_AUTO_FALLBACK': '0'}), \
