@@ -66,6 +66,8 @@ python3 bootstrap.py install --archive "./framely-<版本及构建号>-offline-l
 
 尖括号是占位符，执行前替换为真实文件名。引擎校验后在 `/home` 暂存、解压并检查包内哈希，避免耗尽设备的 `/tmp`。
 
+若要用已暂存的完整安装包测试交互向导，将 `install.sh`、`bootstrap.py`、安装包和对应的 `SHA256SUMS` 放在同一目录，运行 `bash install.sh --local-bundle /目录的绝对路径`。向导仍会查询所选渠道的最新标签，本地包必须属于该标签；最终确认后由正常安装引擎校验并安装整包。
+
 ## 发行包与 CEF
 
 每个本体 Release 提供三种压缩包：

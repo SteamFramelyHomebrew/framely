@@ -10,7 +10,20 @@ trap 'rm -rf -- "$work"' EXIT
 release_path=latest/download
 args=("$@")
 github_proxy=${FRAMELY_GITHUB_PROXY:-}
+local_bundle=''
+if (( $# == 2 )) && [[ $1 == --local-bundle ]]; then
+  local_bundle=$2
+  [[ $local_bundle == /* && -f $local_bundle/bootstrap.py && -f $local_bundle/SHA256SUMS ]] || {
+    echo 'Framely: --local-bundle needs an absolute directory containing bootstrap.py and SHA256SUMS.' >&2
+    exit 1
+  }
+  args=()
+fi
 fetch_engine() {
+  if [[ -n $local_bundle ]]; then
+    cp -- "$local_bundle/bootstrap.py" "$work/bootstrap.py"
+    return
+  fi
   local bootstrap_url="https://github.com/$repo/releases/$release_path/bootstrap.py"
 if [[ -n $github_proxy ]]; then
   echo "Framely[$FRAMELY_INSTALL_TRACE_ID]: Fetching installer engine through configured GitHub proxy (address hidden)."
@@ -44,7 +57,7 @@ else
   fi
 fi
 }
-if (( $# == 0 )); then
+if (( ${#args[@]} == 0 )); then
   if ! exec 3<>/dev/tty; then
     echo 'Framely: The interactive installer needs a terminal. Run it in a Frame terminal, use an explicit command such as install --yes, or add -t to SSH.' >&2
     exit 1
@@ -74,6 +87,7 @@ if (( $# == 0 )); then
   echo '  FRAMELY  INSTALL & MAINTAIN' >&3
   echo '  ──────────────────────────────' >&3
   echo "  Current version: $installed_version" >&3
+  [[ -z $local_bundle ]] || echo '  Package source: local bundle' >&3
   echo >&3
   step=menu
   while :; do
@@ -167,6 +181,31 @@ if (( $# == 0 )); then
         fi
         selected_tag=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["tag"])' "$selection")
         selected_size=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["size"])' "$selection")
+        if [[ -n $local_bundle ]]; then
+          local_archives=()
+          for candidate in "$local_bundle"/framely-*-linux-arm64.tar.gz; do
+            [[ -f $candidate ]] || continue
+            if [[ $wizard_action == install && $candidate == *-offline-linux-arm64.tar.gz ]] ||
+               [[ $wizard_action == update && $candidate != *-offline-linux-arm64.tar.gz ]]; then
+              local_archives+=("$candidate")
+            fi
+          done
+          if (( ${#local_archives[@]} != 1 )); then
+            echo '  The local bundle must contain exactly one archive for this operation.' >&3
+            step=lookup_error
+            continue
+          fi
+          local_archive=${local_archives[0]}
+          local_name=${local_archive##*/}
+          local_suffix='-linux-arm64.tar.gz'
+          [[ $wizard_action != install ]] || local_suffix='-offline-linux-arm64.tar.gz'
+          if [[ ! $local_name =~ ^framely-${selected_tag#v}-[a-f0-9]{12}${local_suffix//./\.}$ ]]; then
+            echo '  The local archive does not match the selected release tag.' >&3
+            step=lookup_error
+            continue
+          fi
+          selected_size=$(stat -c %s -- "$local_archive")
+        fi
         step=confirm ;;
       lookup_error)
         printf '  r) Retry   b) Back to download route   q) Quit: ' >&3
@@ -183,11 +222,16 @@ if (( $# == 0 )); then
         echo "  Current version: $installed_version" >&3
         echo "  Target release: $selected_tag" >&3
         echo "  Package size: about $(( (selected_size + 1048575) / 1048576 )) MiB" >&3
-        echo "  Download route: $([[ -n $github_proxy ]] && echo 'GitHub mirror (address hidden)' || echo 'Direct from GitHub')" >&3
+        if [[ -n $local_bundle ]]; then
+          echo '  Package source: Local staged archive (SHA256 checked before installation)' >&3
+          echo "  Release lookup: $([[ -n $github_proxy ]] && echo 'GitHub mirror (address hidden)' || echo 'Direct from GitHub')" >&3
+        else
+          echo "  Download route: $([[ -n $github_proxy ]] && echo 'GitHub mirror (address hidden)' || echo 'Direct from GitHub')" >&3
+        fi
         printf '  1) Start   b) Back   q) Quit: ' >&3
         IFS= read -r choice <&3 || exit 1
         case $choice in
-          1) args=("$wizard_action" --version "$selected_tag" --yes); [[ -n $github_proxy ]] && args+=(--github-proxy "$github_proxy"); release_path="download/$selected_tag"; break ;;
+          1) args=("$wizard_action" --version "$selected_tag" --yes); [[ -n $github_proxy ]] && args+=(--github-proxy "$github_proxy"); [[ -z $local_bundle ]] || args+=(--archive "$local_archive" --checksums "$local_bundle/SHA256SUMS"); release_path="download/$selected_tag"; break ;;
           b|B) [[ -n $github_proxy ]] && step=mirror_address || step=mirror ;;
           q|Q) exit 0 ;;
         esac ;;

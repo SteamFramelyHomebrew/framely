@@ -21,7 +21,7 @@ class InstallWizardTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('interactive installer needs a terminal', result.stderr)
 
-    def run_wizard(self, answers, installed=False, damaged=False):
+    def run_wizard(self, answers, installed=False, damaged=False, local_bundle=False):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
             state = root / 'state'
@@ -44,14 +44,7 @@ class InstallWizardTests(unittest.TestCase):
                               .replace('/home/.framely/releases', str(releases))
                               .replace('/home/.framely/repair.sh', str(root / 'repair.sh'))
                               .replace('/var/lib/framely/current', str(legacy)))
-            curl = root / 'curl'
-            curl.write_text('''#!/usr/bin/env python3
-import json, os, pathlib, sys
-args=sys.argv[1:]
-with open(os.environ['WIZARD_LOG'], 'a') as out:
-    out.write(json.dumps({'url':args[-1], 'proxy':os.environ.get('FRAMELY_GITHUB_PROXY',''),
-                          'fallback':os.environ.get('FRAMELY_GITHUB_AUTO_FALLBACK','')})+'\\n')
-pathlib.Path(args[args.index('--output')+1]).write_text(''' + repr('''
+            engine_source = '''
 import json, os, pathlib, sys
 args=sys.argv[1:]
 with open(os.environ['WIZARD_LOG'], 'a') as out:
@@ -59,9 +52,24 @@ with open(os.environ['WIZARD_LOG'], 'a') as out:
                           'fallback':os.environ.get('FRAMELY_GITHUB_AUTO_FALLBACK','')})+'\\n')
 if '--resolve-release' in args:
     print(json.dumps({'tag':'v0.9.0-preview.10','size':1048576}))
-''') + ''')
+'''
+            curl = root / 'curl'
+            curl.write_text('''#!/usr/bin/env python3
+import json, os, pathlib, sys
+args=sys.argv[1:]
+with open(os.environ['WIZARD_LOG'], 'a') as out:
+    out.write(json.dumps({'url':args[-1], 'proxy':os.environ.get('FRAMELY_GITHUB_PROXY',''),
+                          'fallback':os.environ.get('FRAMELY_GITHUB_AUTO_FALLBACK','')})+'\\n')
+pathlib.Path(args[args.index('--output')+1]).write_text(''' + repr(engine_source) + ''')
 ''')
             curl.chmod(0o755)
+            bundle = root / 'bundle'
+            if local_bundle:
+                bundle.mkdir()
+                (bundle / 'bootstrap.py').write_text(engine_source)
+                (bundle / 'SHA256SUMS').write_text('test\n')
+                suffix = '-linux-arm64.tar.gz' if installed else '-offline-linux-arm64.tar.gz'
+                (bundle / ('framely-0.9.0-preview.10-012345abcdef' + suffix)).write_bytes(b'archive')
             sudo = root / 'sudo'
             sudo.write_text('#!/bin/sh\nexec "$@"\n')
             sudo.chmod(0o755)
@@ -76,7 +84,10 @@ if '--resolve-release' in args:
                 fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
 
             try:
-                process = subprocess.Popen(['bash', str(script)], stdin=slave, stdout=slave,
+                command = ['bash', str(script)]
+                if local_bundle:
+                    command += ['--local-bundle', str(bundle)]
+                process = subprocess.Popen(command, stdin=slave, stdout=slave,
                                            stderr=slave, env=env, preexec_fn=controlling_terminal)
                 os.close(slave)
                 os.write(master, answers.encode())
@@ -134,6 +145,20 @@ if '--resolve-release' in args:
         self.assertEqual(code, 0, output)
         self.assertIn('Invalid address', output)
         self.assertTrue(all(call['fallback'] == '0' for call in calls))
+
+    def test_local_bundle_runs_full_interactive_flow_without_fetching_engine(self):
+        code, output, calls = self.run_wizard('1\n2\n1\n1\n', installed=True, local_bundle=True)
+        self.assertEqual(code, 0, output)
+        self.assertIn('Package source: Local staged archive', output)
+        self.assertFalse(any('url' in call for call in calls))
+        self.assertIn('--archive', calls[-1]['engine_args'])
+        self.assertIn('--checksums', calls[-1]['engine_args'])
+        self.assertIn('update', calls[-1]['engine_args'])
+
+    def test_local_bundle_first_install_selects_offline_archive(self):
+        code, output, calls = self.run_wizard('1\n1\n1\n1\n', local_bundle=True)
+        self.assertEqual(code, 0, output)
+        self.assertIn('-offline-linux-arm64.tar.gz', calls[-1]['engine_args'][calls[-1]['engine_args'].index('--archive') + 1])
 
 
 if __name__ == '__main__':

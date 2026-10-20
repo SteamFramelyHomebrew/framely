@@ -60,6 +60,8 @@ python3 bootstrap.py install --archive "./framely-<version-and-build>-offline-li
 
 Angle brackets are placeholders; substitute the actual filename. The engine verifies, stages and extracts under `/home`, then checks internal hashes, avoiding the device's limited `/tmp`.
 
+To walk through the interactive installer with a staged archive, place `install.sh`, `bootstrap.py`, the archive, and its `SHA256SUMS` in one directory, then run `bash install.sh --local-bundle /absolute/path/to/directory`. The wizard still checks the selected channel's latest release tag; the local archive must belong to that tag. After confirmation, the normal engine verifies and installs the complete archive.
+
 ## Release packages and CEF
 
 Each device release provides three archives:
