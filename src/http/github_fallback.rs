@@ -154,6 +154,18 @@ pub fn retryable(error: &anyhow::Error) -> bool {
         })
     })
 }
+// A configured GitHub mirror can exhaust a shared API quota. In that case,
+// retry the original public URL once, but do not bypass a deliberate HTTP
+// error such as 404 or 500 from the selected mirror.
+pub fn mirror_retryable(error: &anyhow::Error) -> bool {
+    retryable(error)
+        && !error.chain().any(|cause| {
+            matches!(
+                cause.downcast_ref::<ureq::Error>(),
+                Some(ureq::Error::Status(code, _)) if !matches!(code, 403 | 429)
+            )
+        })
+}
 // Error display from HTTP clients can contain signed redirect URLs. Do not
 // surface those URLs when reporting both routes' errors.
 pub fn diagnostic(error: &anyhow::Error) -> String {

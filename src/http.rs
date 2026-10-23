@@ -3,6 +3,29 @@ use std::time::Duration;
 pub(crate) mod github_fallback;
 
 pub(crate) fn with_github_fallback<T>(initial: &str, headers: &[(&str, &str)], proxy: &crate::model::ProxySettings, mut attempt: impl FnMut(&crate::model::ProxySettings) -> Result<T>) -> Result<T> {
+    if proxy.github_enabled {
+        let mut selected = proxy.clone();
+        selected.github_auto_fallback = false;
+        return match attempt(&selected) {
+            Err(first)
+                if proxy.github_auto_fallback
+                    && github_fallback::eligible(initial, headers)
+                    && github_fallback::mirror_retryable(&first) =>
+            {
+                let mut original = selected;
+                original.github_enabled = false;
+                eprintln!("Configured GitHub mirror failed; trying the original URL once");
+                attempt(&original).map_err(|second| {
+                    anyhow::anyhow!(
+                        "Configured GitHub mirror failed: {}; original GitHub route failed: {}",
+                        github_fallback::diagnostic(&first),
+                        github_fallback::diagnostic(&second)
+                    )
+                })
+            }
+            result => result,
+        };
+    }
     github_fallback::run(proxy.github_auto_fallback, initial, headers, |fallback| {
         let mut route=proxy.clone();route.github_auto_fallback=false;
         if fallback {route.github_enabled=true;route.github=github_fallback::PREFIX.into();route.github_fallback_attempt=true;}
@@ -467,6 +490,75 @@ mod conditional_tests {
 mod proxy_tests {
     use super::*;
     use crate::model::ProxySettings;
+    #[test]
+    fn configured_github_mirror_retries_rate_limit_at_original_url_once() {
+        let source = "https://api.github.com/repos/SteamFramelyHomebrew/framely/releases?per_page=100&page=1";
+        let proxy = ProxySettings {
+            github_enabled: true,
+            github: "https://gh-proxy.com".into(),
+            github_auto_fallback: true,
+            ..Default::default()
+        };
+        for (code, headers, retry) in [
+            (403, "X-RateLimit-Remaining: 0\r\n", true),
+            (429, "", true),
+            (403, "", false),
+            (503, "", false),
+        ] {
+            let mut routes = Vec::new();
+            let result = with_github_fallback(source, &[], &proxy, |route| {
+                routes.push(routed_url(&url::Url::parse(source).unwrap(), route));
+                if !route.github_enabled {
+                    return Ok(7);
+                }
+                let response: ureq::Response =
+                    format!("HTTP/1.1 {code} Test\r\n{headers}\r\n").parse().unwrap();
+                Err(ureq::Error::Status(code, response).into())
+            });
+            assert_eq!(result.is_ok(), retry, "HTTP {code} with {headers:?}");
+            assert_eq!(routes[0], format!("https://gh-proxy.com/{source}"));
+            assert_eq!(routes.len(), if retry { 2 } else { 1 });
+            if retry {
+                assert_eq!(routes[1], source);
+            }
+        }
+        let mut calls = 0;
+        let mut disabled = proxy.clone();
+        disabled.github_auto_fallback = false;
+        assert!(with_github_fallback::<()>(source, &[], &disabled, |_| {
+            calls += 1;
+            let response: ureq::Response =
+                "HTTP/1.1 403 Test\r\nX-RateLimit-Remaining: 0\r\n\r\n".parse().unwrap();
+            Err(ureq::Error::Status(403, response).into())
+        }).is_err());
+        assert_eq!(calls, 1);
+    }
+    #[test]
+    fn configured_github_mirror_retries_network_error_only_for_public_requests() {
+        let proxy = ProxySettings {
+            github_enabled: true,
+            github: "https://gh-proxy.com".into(),
+            github_auto_fallback: true,
+            ..Default::default()
+        };
+        for (source, headers, retry) in [
+            ("https://api.github.com/repos/a/b/releases?page=1", vec![], true),
+            ("https://api.github.com/repos/a/b/releases?token=secret", vec![], false),
+            ("https://api.github.com/repos/a/b/releases?page=1", vec![("Authorization", "secret")], false),
+        ] {
+            let mut calls = 0;
+            let result = with_github_fallback(source, &headers, &proxy, |route| {
+                calls += 1;
+                if route.github_enabled {
+                    Err(std::io::Error::from(std::io::ErrorKind::ConnectionReset).into())
+                } else {
+                    Ok(7)
+                }
+            });
+            assert_eq!(result.is_ok(), retry);
+            assert_eq!(calls, if retry { 2 } else { 1 });
+        }
+    }
     #[test]
     fn proxy_routing_and_validation() {
         let proxy = ProxySettings {
