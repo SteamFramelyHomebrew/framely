@@ -51,11 +51,14 @@ def terminal_download_progress(total):
     def report(completed):
         nonlocal last_reported
         now = time.monotonic()
-        if completed not in (0, total) and now - last_reported < 5:
+        if completed != 0 and completed != total and now - last_reported < 5:
             return
         last_reported = now
-        percent = completed * 100 / total
-        log_event(f'下载进度 {percent:5.1f}%  {completed / 1024**2:.1f} / {total / 1024**2:.1f} MiB')
+        if total is None:
+            log_event(f'下载进度 {completed / 1024**2:.1f} MiB（总大小待确认）')
+        else:
+            percent = completed * 100 / total
+            log_event(f'下载进度 {percent:5.1f}%  {completed / 1024**2:.1f} / {total / 1024**2:.1f} MiB')
 
     return report
 
@@ -401,6 +404,23 @@ def select_package(assets, action):
     return selected[0]
 
 
+def package_from_checksums(checksums, tag, action):
+    """Find a tagged release package without relying on the GitHub Releases API."""
+    plain_tag = tag[1:] if tag.startswith('v') else tag
+    package_name = re.compile(r'framely-' + re.escape(plain_tag)
+                              + r'-[a-f0-9]{12}(?:-offline)?-linux-arm64\.tar\.gz')
+    names = set()
+    for line in pathlib.Path(checksums).read_text(encoding='utf-8').splitlines():
+        match = re.fullmatch(r'([a-fA-F0-9]{64}) [ *]([a-zA-Z0-9._+-]+)', line)
+        if not match or match[2] in names:
+            raise ValueError('Invalid or duplicate SHA256SUMS entry')
+        names.add(match[2])
+    assets = {name: {} for name in names
+              if package_name.fullmatch(name) or name == 'framely-cef.json'}
+    assets['SHA256SUMS'] = {}
+    return select_package(assets, action)
+
+
 def release_version(tag):
     """Return a SemVer precedence key, excluding build metadata."""
     match = re.fullmatch(
@@ -632,26 +652,42 @@ def main(argv=None):
             if bool(args.archive) != bool(args.checksums):
                 parser.error('--archive and --checksums must be provided together')
             if not args.archive:
-                endpoint = 'latest' if not args.version else 'tags/' + urllib.parse.quote(args.version, safe='')
-                with installation_step('读取发行版信息', '确认版本已发布，检查 GitHub 或代理连接后重试。'):
-                    metadata = read_metadata(f'https://api.github.com/repos/{args.repo}/releases/{endpoint}', 4 * 1024**2)
-                    release = json.loads(metadata)
-                    assets = {asset['name']: asset for asset in release['assets']}
-                    package = select_package(assets, args.action)
-                    size = assets[package]['size']
-                    if not isinstance(size, int) or size <= 0 or size > MAX_ARCHIVE:
-                        raise ValueError('发布包大小无效')
-                tag = release.get('tag_name', '')
-                log_event(f'发行版：{tag if isinstance(tag, str) and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.+-]*", tag) else "unknown"}，文件={package}')
-                args.archive = pathlib.Path(folder) / package
                 args.checksums = pathlib.Path(folder) / 'SHA256SUMS'
-                log_event(f'安装包大小：{size / 1024**2:.1f} MiB，下载线路：{download_route()}')
-                with installation_step('下载安装包', '检查网络或更换 GitHub 代理后重新运行安装命令。'):
-                    download(assets[package]['browser_download_url'], args.archive, MAX_ARCHIVE,
-                             terminal_download_progress(size), expected_size=size)
-                print('正在下载校验文件…', flush=True)
-                with installation_step('下载校验文件', '检查网络或更换 GitHub 代理后重新运行安装命令。'):
-                    download(assets['SHA256SUMS']['browser_download_url'], args.checksums, 1024**2)
+                if args.version:
+                    # A known tag has stable asset URLs. The proxy may serve release
+                    # downloads while rejecting GitHub's API with HTTP 403.
+                    base = (f'https://github.com/{args.repo}/releases/download/'
+                            + urllib.parse.quote(args.version, safe=''))
+                    print('正在下载校验文件…', flush=True)
+                    with installation_step('下载校验文件', '确认版本已发布，检查网络或更换 GitHub 代理后重试。'):
+                        download(base + '/SHA256SUMS', args.checksums, 1024**2)
+                    with installation_step('读取发行版信息', '确认此版本包含适用的 ARM64 安装包。'):
+                        package = package_from_checksums(args.checksums, args.version, args.action)
+                    args.archive = pathlib.Path(folder) / package
+                    log_event(f'发行版：{args.version}，文件={package}，下载线路={download_route()}')
+                    with installation_step('下载安装包', '检查网络或更换 GitHub 代理后重新运行安装命令。'):
+                        download(base + '/' + package, args.archive, MAX_ARCHIVE,
+                                 terminal_download_progress(None))
+                    log_event(f'安装包大小：{args.archive.stat().st_size / 1024**2:.1f} MiB')
+                else:
+                    with installation_step('读取发行版信息', '确认版本已发布，检查 GitHub 或代理连接后重试。'):
+                        metadata = read_metadata(f'https://api.github.com/repos/{args.repo}/releases/latest', 4 * 1024**2)
+                        release = json.loads(metadata)
+                        assets = {asset['name']: asset for asset in release['assets']}
+                        package = select_package(assets, args.action)
+                        size = assets[package]['size']
+                        if not isinstance(size, int) or size <= 0 or size > MAX_ARCHIVE:
+                            raise ValueError('发布包大小无效')
+                    tag = release.get('tag_name', '')
+                    log_event(f'发行版：{tag if isinstance(tag, str) and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.+-]*", tag) else "unknown"}，文件={package}')
+                    args.archive = pathlib.Path(folder) / package
+                    log_event(f'安装包大小：{size / 1024**2:.1f} MiB，下载线路：{download_route()}')
+                    with installation_step('下载安装包', '检查网络或更换 GitHub 代理后重新运行安装命令。'):
+                        download(assets[package]['browser_download_url'], args.archive, MAX_ARCHIVE,
+                                 terminal_download_progress(size), expected_size=size)
+                    print('正在下载校验文件…', flush=True)
+                    with installation_step('下载校验文件', '检查网络或更换 GitHub 代理后重新运行安装命令。'):
+                        download(assets['SHA256SUMS']['browser_download_url'], args.checksums, 1024**2)
             args.archive, args.checksums = args.archive.resolve(), args.checksums.resolve()
             if args.progress_json:
                 emit_progress('verify')

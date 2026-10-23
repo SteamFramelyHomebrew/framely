@@ -44,6 +44,46 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(bootstrap.configured_github_proxy(), '')
             self.assertFalse(bootstrap.fallback_enabled())
 
+    def test_explicit_preview_uses_release_assets_without_api(self):
+        tag = 'v0.8.4-preview.1'
+        package = 'framely-0.8.4-preview.1-012345abcdef-linux-arm64.tar.gz'
+        checksums = hashlib.sha256(b'archive').hexdigest() + '  ' + package + '\n'
+        urls = []
+
+        def download(url, destination, _limit, _progress=None, expected_size=None):
+            urls.append(url)
+            pathlib.Path(destination).write_bytes(checksums.encode() if url.endswith('SHA256SUMS') else b'archive')
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.dict(bootstrap.os.environ, {}, clear=True), \
+             patch.object(bootstrap.pathlib.Path, 'home', return_value=pathlib.Path(tmp)), \
+             patch.object(bootstrap.os, 'uname', return_value=SimpleNamespace(machine='aarch64')), \
+             patch.object(bootstrap.os, 'geteuid', return_value=0), \
+             patch.object(bootstrap, 'read_metadata', side_effect=AssertionError('API must not be used')), \
+             patch.object(bootstrap, 'download', side_effect=download), \
+             patch.object(bootstrap, 'root_operation') as operation:
+            bootstrap.main(['update', '--version', tag, '--github-proxy', 'https://gh-proxy.com', '--yes'])
+            operation.assert_called_once()
+        self.assertEqual(urls, [
+            f'https://github.com/{bootstrap.DEFAULT_REPO}/releases/download/{tag}/SHA256SUMS',
+            f'https://github.com/{bootstrap.DEFAULT_REPO}/releases/download/{tag}/{package}',
+        ])
+
+    def test_explicit_tag_requires_one_matching_package(self):
+        package = 'framely-0.8.4-preview.1-012345abcdef-linux-arm64.tar.gz'
+        offline = 'framely-0.8.4-preview.1-012345abcdef-offline-linux-arm64.tar.gz'
+        with tempfile.TemporaryDirectory() as tmp:
+            sums = pathlib.Path(tmp) / 'SHA256SUMS'
+            sums.write_text('0' * 64 + '  framely-0.8.3-012345abcdef-linux-arm64.tar.gz\n')
+            with self.assertRaisesRegex(ValueError, 'one matching ARM64 package'):
+                bootstrap.package_from_checksums(sums, 'v0.8.4-preview.1', 'update')
+            sums.write_text('0' * 64 + '  ' + package + '\n' + '1' * 64 + '  ' + package + '\n')
+            with self.assertRaisesRegex(ValueError, 'duplicate SHA256SUMS'):
+                bootstrap.package_from_checksums(sums, 'v0.8.4-preview.1', 'update')
+            sums.write_text('0' * 64 + '  ' + package + '\n' + '1' * 64 + '  ' + offline + '\n')
+            self.assertEqual(bootstrap.package_from_checksums(sums, 'v0.8.4-preview.1', 'update'), package)
+            self.assertEqual(bootstrap.package_from_checksums(sums, 'v0.8.4-preview.1', 'install'), offline)
+
     def test_interactive_release_selection_uses_semver_and_installable_assets(self):
         def release(tag, prerelease=False, missing_offline=False):
             version = tag.removeprefix('v')
@@ -212,6 +252,13 @@ class BootstrapTests(unittest.TestCase):
             progress(2 * 1024**2)
         self.assertIn('0.0 / 2.0 MiB', output.getvalue())
         self.assertIn('100.0%', output.getvalue())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            progress = bootstrap.terminal_download_progress(None)
+            progress(0)
+            progress(2 * 1024**2)
+        self.assertIn('总大小待确认', output.getvalue())
+        self.assertNotIn('100.0%', output.getvalue())
 
 
 if __name__ == '__main__':
