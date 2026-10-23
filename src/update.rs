@@ -49,6 +49,8 @@ pub fn verify_descriptor(bytes: &[u8]) -> Result<Release> {
                 .all(|c| c.is_ascii_alphanumeric() || b".+-".contains(&c)),
         "无效版本号"
     );
+    descriptor_version(&release.version)
+        .with_context(|| format!("更新清单版本号无效：{}", release.version))?;
     crate::model::validate_url(&release.url, false)?;
     ensure!(
         hex::decode(&release.sha256)?.len() == 32
@@ -885,5 +887,21 @@ mod tests {
         value["size"] = json!(7);
         value["sha256"] = json!("invalid");
         assert!(verify_descriptor(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+    #[test]
+    fn q2f_archive_cannot_be_used_as_core_update_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("framely-q2f-overport-1.2.3-linux-arm64.tar.gz");
+        fs::write(&archive, b"q2f payload").unwrap();
+        let output = dir.path().join("framely-release.json");
+        let error = create_descriptor(
+            &archive,
+            "https://example.org/framely-q2f-overport-1.2.3-linux-arm64.tar.gz",
+            &output,
+            "Notes",
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("更新清单版本号无效：q2f-overport-1.2.3"));
+        assert!(!output.exists());
     }
 }

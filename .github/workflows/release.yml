@@ -135,7 +135,12 @@ jobs:
         run: |
           bash tools/package-release.sh target/cef
           mkdir -p release-assets
-          archive=$(find release -maxdepth 1 -name 'framely-*-linux-arm64.tar.gz' ! -name '*-offline-linux-arm64.tar.gz' ! -name 'framely-cef-*' -print -quit)
+          mapfile -t core_archives < <(find release -maxdepth 1 -type f -name 'framely-[0-9]*-linux-arm64.tar.gz' ! -name '*-offline-linux-arm64.tar.gz' -print)
+          if [[ ${#core_archives[@]} != 1 ]]; then
+            printf 'Expected exactly one Framely core archive, found %s\n' "${#core_archives[@]}" >&2
+            exit 1
+          fi
+          archive=${core_archives[0]}
           cp release/*.tar.gz release/framely-cef.json release/framely-q2f.json release-assets/
           cp tools/bootstrap.py release-assets/bootstrap.py
           cp install.sh release-assets/install.sh
