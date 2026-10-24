@@ -1398,6 +1398,15 @@
     "工具包已缓存": "Converter cached",
     "首次使用需下载 {0} 工具包": "First use downloads the {0} converter",
     "Quest 转换": "Quest conversion",
-    "要使用新版转换运行包，请重新选择原始 Quest APK 安装。": "To use an updated converter, select the original Quest APK and install it again."
+    "要使用新版转换运行包，请重新选择原始 Quest APK 安装。": "To use an updated converter, select the original Quest APK and install it again.",
+    "应用内更新": "In-app updates",
+    "应用下载的更新已保留。审核确认后，由 Framely 备份并安装。": "Downloaded updates are retained. Review and confirm to back up and install with Framely.",
+    "更新提取失败": "Update extraction failed",
+    "审核更新": "Review update",
+    "请刷新应用列表后重试。": "Refresh the application list and try again.",
+    "更新请求已结束，请从应用重试。": "The update request has ended. Retry from the application.",
+    "更新完成": "Update complete",
+    "无法打开更新": "Cannot open update",
+    "正在读取更新": "Reading update"
   }
 }

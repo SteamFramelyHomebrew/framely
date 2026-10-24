@@ -184,6 +184,10 @@ pub(super) fn prepare(
         "APP_WANTS_FLATSCREEN":if flat {"true"}else{"false"},
         "LEPTON_NO_CLEANUP":"true", "TERM":"dumb"
     });
+    for key in ["FRAMELY_UPDATE_DIR","FRAMELY_UPDATE_PIPE","FRAMELY_UPDATE_DEX","FRAMELY_UPDATE_SCRIPT","FRAMELY_UPDATE_PACKAGES"] {env[key]=json!("");}
+    if let Some(update_env) = updates::prepare(home, &c)? {
+        env.as_object_mut().unwrap().extend(update_env.as_object().unwrap().clone());
+    }
     graphics::configure_environment(&mut env, a.framebuffer_compatibility, &a.metadata.package)?;
     let installed_dir = c
         .baked

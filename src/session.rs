@@ -48,6 +48,7 @@ struct Agent {
     web_key: String,
     network_key: Mutex<String>,
     network_status: Mutex<Value>,
+    apk_updates: Mutex<crate::apk::updates::Windows>,
     frame_access: Mutex<std::collections::BTreeMap<String, FrameAccess>>,
     native_key: String,
     commands: Arc<Mutex<VecDeque<Value>>>,
@@ -533,6 +534,9 @@ impl Agent {
                 if let Some(id)=views["framingClosed"].as_str().filter(|id|!id.is_empty()) {
                     self.casting.lock().unwrap().region.acknowledge_editor_closed(id);
                 }
+                if let Some(id)=views["apkUpdateClosed"].as_str().filter(|id|!id.is_empty()) {
+                    self.apk_updates.lock().unwrap().close(id);
+                }
                 if let Some(id)=views["screenshotClosed"].as_str().filter(|id|!id.is_empty()) {
                     self.screenshot.lock().unwrap().acknowledge(id);
                 }
@@ -844,6 +848,12 @@ impl Agent {
         }
         if let Some(key) = path.strip_prefix("/boot/") {
             ensure!(key == self.web_key, "Invalid boot token");
+            let query:std::collections::BTreeMap<_,_>=url::form_urlencoded::parse(r.url().split_once('?').map(|(_,q)|q).unwrap_or("").as_bytes()).into_owned().collect();
+            let update_target=if query.get("view").map(String::as_str)==Some("apk-update") {
+                let id=query.get("id").context("Missing APK update request")?;
+                ensure!(id.len()==32&&id.bytes().all(|b|b.is_ascii_hexdigit()),"Invalid APK update request");
+                Some(format!("/apk/update?id={id}"))
+            } else { None };
             let response = Response::empty(StatusCode(302))
                 .with_header(header("Cache-Control", "no-store"))
                 .with_header(header(
@@ -855,7 +865,9 @@ impl Agent {
                 ))
                 .with_header(header(
                     "Location",
-                    if r.url().ends_with("?view=radial") {
+                    if let Some(target)=update_target.as_deref() {
+                        target
+                    } else if r.url().ends_with("?view=radial") {
                         "/system/radial"
                     } else if r.url().ends_with("?view=radial-progress") {
                         "/system/radial/progress"
@@ -1247,6 +1259,7 @@ impl Agent {
             || path == "/cast/screenshot"
             || path.starts_with("/cast/window/")
             || path == "/apk/permission"
+            || path == "/apk/update"
             || path == "/manager"
             || path == "/notifications"
             || path == "/launcher"
@@ -1649,6 +1662,45 @@ impl Agent {
             }
             "apk.cleanup.list" => crate::apk::cleanup_list(&crate::steam::home()?),
             "apk.storage.status" => crate::apk::storage_status(&crate::steam::home()?),
+            "apk.updates.window.ready" => {
+                let id=p["id"].as_str().context("Missing APK update request")?;
+                crate::apk::updates::presented(&crate::steam::home()?,id)?;
+                Ok(json!(true))
+            },
+            "apk.updates.window.close" => {
+                let id=p["id"].as_str().context("Missing APK update request")?;
+                let home=crate::steam::home()?;
+                if crate::apk::updates::list(&home)?.as_array().is_some_and(|requests|requests.iter().any(|r|r["id"]==id)) {
+                    crate::apk::updates::presented(&home,id)?;
+                }
+                self.apk_updates.lock().unwrap().close(id);
+                push(&self.commands,json!({"kind":"apk.update.close","id":id}));
+                Ok(json!(true))
+            },
+            "apk.updates.list" => crate::apk::updates::list(&crate::steam::home()?),
+            "apk.updates.review" => {
+                let home=crate::steam::home()?;
+                let id=p["id"].as_str().context("Missing APK update request")?.to_owned();
+                self.jobs.task_progress("apk:inspect", move |cancel, _| crate::apk::updates::review_request(&home,&id,&cancel))
+            },
+            "apk.updates.dismiss" => {
+                let id=p["id"].as_str().context("Missing APK update request")?;
+                let result=crate::apk::updates::dismiss(&crate::steam::home()?,id)?;
+                self.core("notification.remove",json!({"plugin":"","id":format!("apk.update.{id}")}))?;
+                Ok(result)
+            },
+            "notification.action" if p["plugin"]=="" && p["id"].as_str().is_some_and(|id|id.starts_with("apk.update.")) => {
+                let notices=self.core("status",json!({}))?;
+                ensure!(notices["notifications"].as_array().into_iter().flatten().chain(notices["inbox"].as_array().into_iter().flatten()).any(|n|n["plugin"]==""&&n["notification"]["id"]==p["id"]&&n["createdAt"]==p["createdAt"]),"APK update notification has expired");
+                let id=p["id"].as_str().unwrap().strip_prefix("apk.update.").unwrap();
+                match p["action"].as_str() {
+                    Some("review") => {self.apk_updates.lock().unwrap().reopen(id)?;push(&self.commands,json!({"kind":"apk.update.open","id":id}));},
+                    Some("dismiss") => {crate::apk::updates::dismiss(&crate::steam::home()?,id)?;},
+                    _=>anyhow::bail!("Unknown APK update action"),
+                }
+                self.core("notification.remove",json!({"plugin":"","id":p["id"]}))?;
+                Ok(json!(true))
+            },
             "apk.permission.pending" => Ok(json!(crate::apk::permissions::pending(&crate::steam::home()?)?)),
             "apk.permission.frame" => crate::apk::permissions::frame(
                 &crate::steam::home()?, p["id"].as_str().context("Missing permission request")?
@@ -2009,7 +2061,7 @@ impl Agent {
                     view.len() <= 160
                         && (matches!(
                             view,
-                            "menu" | "launcher" | "framely.manager" | "notifications" | "framely.framing"
+                            "menu" | "launcher" | "framely.manager" | "notifications" | "framely.framing" | "framely.apk.update"
                         ) || view.starts_with("framely.window.") || view.starts_with("framely.cast.")),
                     "Invalid haptic view"
                 );
@@ -2563,6 +2615,7 @@ pub fn serve(
         web_key: web_key.clone(),
         network_key: Mutex::new(random_key()),
         network_status: Mutex::new(json!({"enabled":false})),
+        apk_updates: Mutex::default(),
         frame_access: Mutex::default(),
         native_key: native_key.clone(),
         commands: Arc::default(),
@@ -2581,6 +2634,44 @@ pub fn serve(
         }
         cast_agent.maintain_cast();std::thread::sleep(Duration::from_millis(100));
     }});
+    let update_agent=agent.clone();
+    std::thread::spawn(move || {
+      let mut announced=std::collections::BTreeSet::new();
+      loop {
+        if let Ok(home)=crate::steam::home() {
+            match crate::apk::updates::poll(&home) {
+                Ok(requests)=>{
+                  let current:std::collections::BTreeSet<_>=requests.iter().map(|r|r.id.clone()).collect();
+                  for id in announced.difference(&current) {
+                      let _=update_agent.core("notification.remove",json!({"plugin":"","id":format!("apk.update.{id}")}));
+                  }
+                  announced.retain(|id|current.contains(id));
+                  let (open,failed)={let mut windows=update_agent.apk_updates.lock().unwrap();(windows.next(&requests),windows.take_failure())};
+                  if let Some(id)=open {
+                      eprintln!("APK update request={id} confirmation dispatched");
+                      push(&update_agent.commands,json!({"kind":"apk.update.open","id":id}));
+                  }
+                  if let Some(id)=failed {
+                      eprintln!("APK update request={id} confirmation receipt timed out after three attempts; retained for manual review");
+                      let _=update_agent.core("apk.update.notification",json!({"notification":{"id":format!("apk.update.{id}"),"title":"无法显示应用更新确认","body":"已重试三次，仍未收到确认窗口的展示回执。请查看待更新项目，或从应用重新发起更新。","durationMs":15000,"inbox":true,"actions":[{"id":"review","label":"查看更新"},{"id":"dismiss","label":"忽略"}]}}));
+                  }
+                  for r in requests {
+                    if announced.contains(&r.id) {continue;}
+                    if r.error.is_none() {announced.insert(r.id);continue;}
+                    let (title,body,actions)=if let Some(error)=r.error {
+                        ("应用更新提取失败".to_owned(),error.chars().take(1000).collect::<String>(),json!([{"id":"dismiss","label":"忽略"}]))
+                    } else {
+                        (format!("{} 有应用更新",r.name.chars().take(60).collect::<String>()),format!("{} → {}，请审核后更新。",r.previous,r.version),json!([{"id":"review","label":"查看更新"},{"id":"dismiss","label":"忽略"}]))
+                    };
+                    if update_agent.core("apk.update.notification",json!({"notification":{"id":format!("apk.update.{}",r.id),"title":title,"body":body,"durationMs":15000,"inbox":true,"actions":actions}})).is_ok() {announced.insert(r.id);}
+                  }
+                },
+                Err(error)=>eprintln!("APK update queue check failed: {error:#}"),
+            }
+        }
+        std::thread::sleep(Duration::from_secs(3));
+      }
+    });
     let permission_agent = agent.clone();
     std::thread::spawn(move || {
         let mut shown = String::new();
@@ -3121,6 +3212,7 @@ mod tests {
             web_key: random_key(),
             network_key: Mutex::new(random_key()),
             network_status: Mutex::new(json!({"enabled":false})),
+            apk_updates: Mutex::default(),
             frame_access: Mutex::default(),
             native_key: random_key(),
             commands: Arc::default(),
@@ -3144,6 +3236,27 @@ mod tests {
                 }
             }
         })
+    }
+    #[test]
+    fn apk_update_boot_authenticates_before_opening_pending_confirmation() {
+        let root=tempfile::tempdir().unwrap();
+        let server=Server::http("127.0.0.1:0").unwrap();
+        let agent=agent(&server,root.path());
+        let stop=Arc::new(AtomicBool::new(false));
+        let worker=http_server(server,agent.clone(),stop.clone());
+        let client=ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(3)).build();
+        let id="0123456789abcdef0123456789abcdef";
+        let response=client.get(&format!("{}/boot/{}?view=apk-update&id={id}",agent.origin,agent.web_key)).call().unwrap();
+        assert_eq!(response.status(),302);
+        assert_eq!(response.header("Location"),Some(format!("/apk/update?id={id}").as_str()));
+        let cookie=response.header("Set-Cookie").unwrap().split(';').next().unwrap();
+        let page=client.get(&format!("{}/apk/update?id={id}",agent.origin)).set("Cookie",cookie).call().unwrap();
+        assert_eq!(page.status(),200);
+        assert!(page.into_string().unwrap().contains("/assets/app.js"));
+        for invalid in ["bad","%2F%2Fevil.example","%0d%0aLocation%3Aevil"] {
+            assert!(client.get(&format!("{}/boot/{}?view=apk-update&id={invalid}",agent.origin,agent.web_key)).call().is_err());
+        }
+        stop.store(true,Ordering::Relaxed);worker.join().unwrap();
     }
     #[test]
     fn framing_apply_restarts_live_stream_and_closes_even_when_restart_fails() {

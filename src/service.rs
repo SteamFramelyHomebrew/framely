@@ -1463,6 +1463,14 @@ impl Service {
                 self.insert_notification("", "Framely", notification, None)?;
                 Ok(json!(true))
             },
+            "apk.update.notification" => {
+                ensure!(id.is_empty(), "Core notification only");
+                let notification: Notification=serde_json::from_value(p["notification"].clone())?;
+                notification.validate()?;
+                ensure!(notification.id.starts_with("apk.update."), "Invalid APK update notification");
+                self.insert_notification("", "Framely", notification, None)?;
+                Ok(json!(true))
+            },
             "notification.send" => self.notify(&id, p["notification"].clone()),
             "notification.remove" | "notification.dismiss" => {
                 if !id.is_empty() {

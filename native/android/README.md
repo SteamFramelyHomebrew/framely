@@ -28,3 +28,22 @@ Binder 调用编号。
 
 执行 `bash tools/build-android-window.sh` 可重新生成，需要 JDK 和 curl。
 构建使用 Google D8 8.3.37，并校验固定 SHA-256；安装包不包含 D8。
+
+## APK update interception
+
+`FramelyUpdates.java` runs as Android root inside Framely-launched Lepton containers.
+The private launch adapter mounts the helper and a package allowlist read-only,
+redirects Lepton's VIEW pipe to a bounded reader, and retains the original pipe
+for unrelated links. Android's activity controller intercepts installer intents
+and pending PackageInstaller confirmations. Complete, single-package APKs are
+retained in a private host queue; review and installation use Framely's existing
+APK manager. No system image, host root daemon or runtime JDK is required.
+
+The helper targets Android 11's Binder APIs. If startup fails, its supervisor
+forwards URI requests through the original Steam pipe. Split APK, multi-package
+and staged sessions are reported as unsupported rather than partially installed.
+The controller does not intercept privileged silent package-manager installations.
+Source URIs, credentials and tokens are never written to the queue or its logs.
+
+Rebuild the embedded DEX with `bash tools/build-android-updates.sh`. Android SDK
+platform 30 and D8 are downloaded with pinned SHA-256 checksums at build time only.

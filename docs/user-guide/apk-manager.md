@@ -218,3 +218,9 @@ L2/R2 digital button activation is adjustable in **APK Manager → Settings**, f
 ## Per-app graphics compatibility
 
 Under **Manage app → Advanced settings**, **Framebuffer compatibility fix** is off by default. Enable it only for games that play sound but show a black screen (tested with Rock Kingdom on the current Mesa/Zink driver). Restart the app after changing it. The GLES layer validates framebuffer status after texture attachment, only in the selected application; other apps, system drivers, game files and saved data remain unchanged. Turning it off restores the normal rendering path on the next app launch. It is a targeted workaround, not a general graphics or performance enhancement.
+
+## In-app updates
+
+When an application downloads an APK and requests installation, Framely retains the update and automatically opens a separate installation confirmation window. Verify the versions, display mode and Quest conversion option, then confirm; opening the management panel first is unnecessary. Cancelled updates remain available under **In-app updates** in the APK manager. Updates use the existing review, container backup and installation flow. Signature failures and downgrades never cause an automatic uninstall. Cancelling review retains the download; **Ignore** removes its queued copy.
+
+Insufficient space leaves the existing application unchanged and reports required and available space. Free space or change storage locations, then retry. Interception becomes available on the next container startup. Complete single-APK updates are supported; split APK, multi-package and staged sessions are reported as unsupported rather than partially installed. Privileged silent package-manager installations are outside this interception path.

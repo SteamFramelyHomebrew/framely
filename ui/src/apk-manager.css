@@ -26,3 +26,8 @@
 .apk-steam-names{width:100%;margin-bottom:24px}.apk-steam-names>p{color:var(--muted);line-height:1.55}.apk-steam-name{display:flex;align-items:center;gap:24px;padding:18px 0;border-bottom:1px solid var(--line);width:100%}.apk-steam-name .apk-copy code{display:block;margin-top:6px;color:var(--muted)}.apk-steam-name-controls{display:flex;align-items:center;gap:12px;flex:0 1 50%;min-width:0}.apk-steam-name-controls input{flex:1;min-width:0;margin:0}.apk-steam-name-controls button{flex:none;margin:0}@media(max-width:700px){.apk-steam-name{flex-wrap:wrap;gap:12px}.apk-steam-name-controls{flex-basis:100%}}
 
 .apk-meta dd small{display:block;margin-top:6px;color:var(--muted);line-height:1.5}
+
+.apk-update-view body{padding:0;background:transparent}.apk-update-view .apk-modal-backdrop{background:transparent}.apk-update-view .apk-dialog{inset:0;transform:none;margin:0;max-width:none;max-height:100%;width:100%;border:0;border-radius:0;box-shadow:none;padding:28px;box-sizing:border-box}.apk-update-status{min-height:100vh;padding:32px;display:flex;flex-direction:column;gap:18px;background:var(--panel,#202020);box-sizing:border-box}.apk-update-status footer{margin-top:auto;display:flex;justify-content:flex-end;gap:12px}
+
+.apk-update-view,.apk-update-view *{cursor:none!important}
+.apk-update-pointer{position:fixed;z-index:2147483647;display:block;width:12px;height:12px;box-sizing:border-box;border:1px solid #0009;border-radius:50%;background:#fff;box-shadow:0 0 0 2px #0003;transform:translate(-50%,-50%);pointer-events:none}

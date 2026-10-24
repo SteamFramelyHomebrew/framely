@@ -22,6 +22,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 mod cleanup;
+pub(crate) mod updates;
 mod graphics;
 mod install_rollback;
 mod lifecycle;
@@ -1276,7 +1277,9 @@ fn space(p: &Path, needed: u64) -> Result<()> {
     let free = (s.f_bavail as u64).saturating_mul(s.f_frsize as u64);
     ensure!(
         free > needed.saturating_add(128 * 1024 * 1024),
-        "Not enough disk space for APK, installation and backup"
+        "Not enough disk space for APK, installation and backup: need {:.2} GiB, available {:.2} GiB. Free space or move APK/container storage, then retry; existing data has not been replaced",
+        needed.saturating_add(128*1024*1024) as f64 / (1024.0*1024.0*1024.0),
+        free as f64 / (1024.0*1024.0*1024.0)
     );
     Ok(())
 }
@@ -1668,7 +1671,7 @@ function setup_props() {
             &format!(
                 "{include}\n{}\n{hooks}\n{}",
                 storage::HOOKS,
-                graphics::HOOKS
+                format!("{}\n{}",graphics::HOOKS, updates::hooks())
             ),
         ))
 }
@@ -1929,6 +1932,7 @@ fn start_oriented_container_for(
     let (window_dex, window_script) = window_runtime(home)?;
     cmd.env("FRAMELY_WINDOW_DEX", window_dex)
         .env("FRAMELY_WINDOW_SCRIPT", window_script);
+    updates::configure(&mut cmd, home, c)?;
     graphics::configure_command(&mut cmd, false, "")?;
     cmd.env_remove("SteamAppId");
     storage::configure(
@@ -2835,7 +2839,9 @@ pub fn operate(
             }
         }
     }
+    if kind == "install" { updates::validate_install(home, p)?; }
     let result = operate_internal(home, kind, p, cancel, progress, None);
+    if kind == "install" && result.is_ok() { updates::installed(home, p); }
     if matches!(kind, "install" | "steam.retention.settings" | "settings") && result.is_ok() {
         steam_shortcuts::wake_registration();
     }
@@ -3076,7 +3082,7 @@ fn operate_internal(
                 };
                 let app_id = format!("{context}/{}", metadata.package);
                 let existing = cs.iter().find(|c| c.id == context).cloned();
-                let c = existing.unwrap_or_else(|| Container {
+                let mut c = existing.unwrap_or_else(|| Container {
                     id: context.clone(),
                     name: context.clone(),
                     baked: contexts_root(home)
@@ -3097,7 +3103,14 @@ fn operate_internal(
                     "Unknown target container"
                 );
                 ensure!(
-                    safe(&c.name) && !c.name.starts_with("steamlaunch-"),
+                    safe(&c.name) && (!c.name.starts_with("steamlaunch-") || (
+                        // Framely's Steam shortcut changes only the runtime name.
+                        // Accept that exact recorded binding, never an unrelated Steam container.
+                        safe(&c.id) && !c.id.starts_with("steamlaunch-")
+                        && cs.iter().any(|existing| existing.id == c.id && existing.baked == c.baked)
+                        && db.records.values().any(|record| record.context == c.id
+                            && native::runtime_name(record).as_deref() == Some(c.name.as_str()))
+                    )),
                     "Invalid side-loaded container name"
                 );
                 if !cs.iter().any(|x| x.id == context) {
@@ -3170,6 +3183,12 @@ fn operate_internal(
                 cancel.commit(||{
  progress(json!({"cancellable":false}));
  if fresh.is_none() && c.baked.exists(){progress(json!({"phase":"backing-up"}));stop(&c,&log)?;backup_id=Some(backup(home,&c,&db,&log)?);}
+// Steam runtime names require Steam's APK launch arguments. The installer
+ // instead boots the same baked data under its stable Framely context name.
+ if c.name.starts_with("steamlaunch-") {
+  let _=fs::OpenOptions::new().append(true).open(&log).and_then(|mut file|writeln!(file,"Installer runtime: {} -> {}; data location retained",c.name,c.id));
+  c.name=c.id.clone();c.running=false;
+ }
 progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log).with_context(||format!("Cannot initialize Android container {}",c.baked.display()))?;
  let sdk=podman(&["exec",&format!("lepton-{}",c.name),"getprop","ro.build.version.sdk"],Some(&log))?.trim().parse::<u32>()?;ensure!(metadata.min_sdk<=sdk,"APK requires Android SDK {}, container provides {}",metadata.min_sdk,sdk);
  progress(json!({"phase":"installing","cancellable":false}));install_package(&c,&review.join("base.apk"),&log)?;
@@ -6719,4 +6738,106 @@ esac
         std::os::unix::fs::symlink(f.dir.path(), r.join("reviews")).unwrap();
         assert!(upload_dir(&f.home, 100).is_err());
     }
+    #[test]
+    fn updating_running_native_steam_shortcut_uses_its_owned_container() {
+        let f=Fixture::new();
+        list(&f.home).unwrap();
+        let id="test/com.example.app";
+        let mut db=load(&f.home).unwrap();
+        let record=db.records.get_mut(id).unwrap();
+        record.steam_app_id=Some(0x92345678);
+        record.steam_binding=Some(steam_shortcuts::Binding {game_id:steam_shortcuts::game_id(id),native:true,revision:String::new()});
+        save(&f.home,&db).unwrap();
+        let tool=f.dir.path().join("tools/podman");
+        let compat=f.home.join(".local/share/lepton/contexts/test");
+        let source=fs::read_to_string(&tool).unwrap()
+            .replace("lepton-test|", "lepton-steamlaunch-2452903544|")
+            .replace("echo lepton-test", "echo lepton-steamlaunch-2452903544")
+            .replace(&format!("fixture|{}|[]",compat.display()),&compat.to_string_lossy());
+        fs::write(&tool,source).unwrap();
+        let cs=containers(&f.home,&db);
+        let c=cs.iter().find(|c|c.id=="test").unwrap();
+        assert_eq!(c.name,"steamlaunch-2452903544");
+        assert!(!c.steam);
+        assert!(c.running);
+        // Model Lepton's reserved-name behaviour instead of accepting every start.
+        let lepton=runner(&f.home).unwrap();
+        let source=fs::read_to_string(&lepton).unwrap().replace("setup_props\necho true",&format!("if [[ \"${{2:-}}\" == steamlaunch-* ]]; then echo 'No package id found' >&2; exit 97; fi\nprintf '%s\\n' \"$2\" > '{}'\nsetup_props\necho true",f.dir.path().join("installer-context").display()));
+        fs::write(&lepton,source).unwrap();
+        let incoming=f.dir.path().join("update.apk");
+        crate::apk_metadata::fixture(&incoming,true,43);
+        let review=inspect_local(&f.home,&incoming,&Cancellation::default()).unwrap();
+        let result=f.operation("install",json!({"app":id,"context":"test","ticket":review["ticket"],"approve":true})).unwrap();
+        assert!(result["backup"].is_string());
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(),"saved progress");
+        let baked=compat.join("baked");
+        assert_eq!(cached_metadata(&baked.join("app_overlay/base.apk")).unwrap().version_code,43);
+        let commands=fs::read_to_string(f.dir.path().join("commands")).unwrap();
+        assert!(commands.contains("stop --time 10 lepton-steamlaunch-2452903544"));
+        assert_eq!(fs::read_to_string(f.dir.path().join("installer-context")).unwrap().trim(),"test");
+        assert!(commands.contains("exec lepton-test getprop ro.build.version.sdk"));
+        // Without a matching Framely binding the same runtime remains Steam-owned.
+        let mut db=load(&f.home).unwrap();
+        db.records.get_mut(id).unwrap().steam_binding=None;
+        save(&f.home,&db).unwrap();
+        fs::write(f.dir.path().join("running"),"true").unwrap();
+        assert!(containers(&f.home,&db).iter().find(|c|c.id=="test").unwrap().steam);
+    }
+    #[test]
+    fn captured_update_requires_review_keeps_backup_and_preserves_data() {
+        let f=Fixture::new();
+        let mut db=load(&f.home).unwrap();
+        let (a,c)=app(&f.home,&db,"test/com.example.app").unwrap();
+        record_app(&mut db,&a);save(&f.home,&db).unwrap();
+        let env=updates::prepare(&f.home,&c).unwrap().unwrap();
+        let dir=PathBuf::from(env["FRAMELY_UPDATE_DIR"].as_str().unwrap());
+        let id="0123456789abcdef0123456789abcdef";
+        let duplicate="abcdef0123456789abcdef0123456789";
+        let downgrade="1123456789abcdef0123456789abcdef";
+        for (key,version) in [(id,43),(duplicate,43),(downgrade,41)] {
+            let path=dir.join(format!("{key}.apk"));
+            crate::apk_metadata::fixture(&path,true,version);
+            fs::write(dir.join(format!("{key}.json")),serde_json::to_vec(&json!({"package":"com.example.app","bytes":fs::metadata(path).unwrap().len()})).unwrap()).unwrap();
+        }
+        let queue=updates::poll(&f.home).unwrap();
+        assert_eq!(queue.len(),2);
+        let id=queue.iter().find(|r|r.error.is_none()).unwrap().id.as_str();
+        assert_eq!(cached_metadata(&c.baked.join("app_overlay/base.apk")).unwrap().version_code,42);
+        let mut windows=updates::Windows::default();
+        assert_eq!(windows.next(&queue),Some(id.to_owned()));
+        windows.close(id);
+        assert_eq!(windows.next(&queue),None);
+        // All three Android request paths stage the same APK in this format.
+        // Each fresh request must reopen the retained confirmation, even in the same second.
+        for repeated in ["2123456789abcdef0123456789abcdef", "3123456789abcdef0123456789abcdef", "4123456789abcdef0123456789abcdef"] {
+            fs::copy(dir.join(format!("{id}.apk")),dir.join(format!("{repeated}.apk"))).unwrap();
+            fs::write(dir.join(format!("{repeated}.json")),serde_json::to_vec(&json!({"package":"com.example.app","bytes":fs::metadata(dir.join(format!("{repeated}.apk"))).unwrap().len()})).unwrap()).unwrap();
+            let repeated_queue=updates::poll(&f.home).unwrap();
+            assert_eq!(repeated_queue.len(),2);
+            assert!(!dir.join(format!("{repeated}.apk")).exists());
+            assert_eq!(windows.next(&repeated_queue),Some(id.to_owned()));
+            windows.close(id);
+            assert_eq!(windows.next(&repeated_queue),None);
+            updates::presented(&f.home,id).unwrap();
+            let after_receipt=updates::poll(&f.home).unwrap();
+            assert_eq!(updates::Windows::default().next(&after_receipt),None);
+        }
+        let review=updates::review_request(&f.home,id,&Cancellation::default()).unwrap();
+        let invalid=json!({"app":"other/com.example.app","context":"other","updateRequest":id});
+        assert!(updates::validate_install(&f.home,&invalid).is_err());
+        let p=json!({"ticket":review["ticket"],"approve":true,"app":a.id,"context":c.id,"updateRequest":id});
+        updates::validate_install(&f.home,&p).unwrap();
+        let result=f.operation("install",p.clone()).unwrap();
+        assert!(result["backup"].is_string());
+        updates::installed(&f.home,&p);
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(),"saved progress");
+        assert_eq!(cached_metadata(&c.baked.join("app_overlay/base.apk")).unwrap().version_code,43);
+        assert!(!dir.join(format!("{id}.apk")).exists());
+        assert_eq!(updates::list(&f.home).unwrap().as_array().unwrap().len(),1);
+        // The FIFO lives outside persistent APK storage and cannot break migration.
+        let fifo=PathBuf::from(env["FRAMELY_UPDATE_PIPE"].as_str().unwrap());
+        assert!(!fifo.starts_with(root(&f.home)));
+        fs::remove_file(fifo).unwrap();
+    }
+
 }
