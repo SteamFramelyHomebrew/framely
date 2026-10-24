@@ -2526,7 +2526,7 @@ pub fn serve(
         "UI session must not run as root"
     );
     crate::gamepad::session_started();
-    crate::apk::steam_session_started()?;
+    crate::apk::steam_session_started().context("Initialize Steam APK session bridge")?;
     crate::apk::lifecycle_started();
     let server = Server::http("127.0.0.1:0").map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let port = server
@@ -2542,9 +2542,10 @@ pub fn serve(
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
     let runtime = runtime.join(format!("framely-session-{}", std::process::id()));
-    fs::create_dir(&runtime)?;
+    fs::create_dir(&runtime).with_context(|| format!("Create UI runtime directory {}", runtime.display()))?;
     use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("Protect UI runtime directory {}", runtime.display()))?;
     let agent = Arc::new(Agent {
         watch_access: Mutex::new(crate::cast::watch_access::Access {
             token: ipc::call(&socket, "cast.watchAccess.get", json!({}))?["token"].as_str().map(str::to_owned),

@@ -52,13 +52,14 @@ fn runtime() -> Result<PathBuf> {
     let uid = unsafe { libc::geteuid() };
     ensure!(uid != 0, "Steam APK wrapper must run as the session user");
     let p = PathBuf::from(format!("/run/user/{uid}/framely-apk-steam"));
-    fs::create_dir_all(&p)?;
-    let m = fs::symlink_metadata(&p)?;
+    fs::create_dir_all(&p).with_context(|| format!("Create Steam APK runtime directory {}", p.display()))?;
+    let m = fs::symlink_metadata(&p).with_context(|| format!("Inspect Steam APK runtime directory {}", p.display()))?;
     ensure!(
         m.is_dir() && m.uid() == uid,
         "Invalid Steam wrapper runtime directory"
     );
-    fs::set_permissions(&p, fs::Permissions::from_mode(0o700))?;
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("Protect Steam APK runtime directory {}", p.display()))?;
     Ok(p)
 }
 fn socket() -> Result<PathBuf> {
@@ -503,7 +504,8 @@ pub(super) fn start_session() -> Result<()> {
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .open(dir.join("server.lock"))?;
+        .open(dir.join("server.lock"))
+        .with_context(|| format!("Open Steam APK bridge lock {}", dir.join("server.lock").display()))?;
     ensure!(
         unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
         "Steam APK bridge is already running"
@@ -516,8 +518,10 @@ pub(super) fn start_session() -> Result<()> {
         );
         fs::remove_file(&path)?;
     }
-    let listener = UnixListener::bind(&path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    let listener = UnixListener::bind(&path)
+        .with_context(|| format!("Bind Steam APK bridge socket {}", path.display()))?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("Protect Steam APK bridge socket {}", path.display()))?;
     std::thread::spawn(move || {
         let _lock = lock;
         let workers = Arc::new(std::sync::atomic::AtomicUsize::new(0));

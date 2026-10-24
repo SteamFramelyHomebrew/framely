@@ -221,7 +221,7 @@ cat > /etc/systemd/system/framely-session.service <<EOF
 [Unit]
 Description=Framely SteamVR UI session
 After=framely.service user@$steam_uid.service
-Requires=framely.service
+Requires=framely.service user@$steam_uid.service
 [Service]
 User=$steam_user
 Environment=HOME=$steam_home
