@@ -2276,9 +2276,33 @@ fn backup(home: &Path, c: &Container, db: &Database, log: &Path) -> Result<Strin
     fs::create_dir(&d)?;
     let dest = d.join("baked");
     fs::create_dir(&dest)?;
-    for entry in fs::read_dir(&c.baked)?.flatten() {
+    for entry in fs::read_dir(&c.baked)? {
+        let entry = entry?;
         let name = entry.file_name();
         if name.to_string_lossy().ends_with("_workdir") {
+            continue;
+        }
+        // Native launches keep their OverlayFS upper/work pair here. The
+        // kernel-owned work/work can be unreadable even after stopping.
+        let native_overlay = name.to_str().and_then(|n| n.strip_prefix("native-apk-"))
+            .is_some_and(|id| id.len() == 24 && id.bytes().all(|b| b.is_ascii_hexdigit()));
+        if native_overlay && entry.file_type()?.is_dir() {
+            let target = dest.join(&name);
+            fs::create_dir(&target)?;
+            for child in fs::read_dir(entry.path())? {
+                let child = child?;
+                if child.file_name() == "work" {
+                    ensure!(child.file_type()?.is_dir(), "Invalid native OverlayFS work directory");
+                    // Include a fresh work directory in the verified snapshot,
+                    // preserving all persistent data (including upper).
+                    let work = target.join("work");
+                    fs::create_dir(&work)?;
+                    fs::set_permissions(work, fs::Permissions::from_mode(0o700))?;
+                } else {
+                    copy(&child.path(), &target.join(child.file_name()), log)?;
+                }
+            }
+            fs::set_permissions(&target, fs::metadata(entry.path())?.permissions())?;
             continue;
         }
         copy(&entry.path(), &dest.join(name), log)?;
@@ -6558,7 +6582,22 @@ esac
             c.baked.join("data_overlay/media/0"),
         )
         .unwrap();
+        let native_name = format!("native-apk-{}", hash("com.example.app"));
+        let native = c.baked.join(&native_name);
+        fs::create_dir_all(native.join("upper/files/work")).unwrap();
+        fs::write(native.join("upper/files/work/save"), b"native progress").unwrap();
+        std::os::unix::fs::symlink("files/work/save", native.join("upper/save-link")).unwrap();
+        fs::create_dir_all(native.join("work/work")).unwrap();
+        fs::write(native.join("work/work/transient"), b"kernel scratch").unwrap();
+        fs::set_permissions(native.join("work/work"), fs::Permissions::from_mode(0)).unwrap();
+        fs::create_dir_all(c.baked.join("app_workdir/work")).unwrap();
+        fs::set_permissions(c.baked.join("app_workdir/work"), fs::Permissions::from_mode(0)).unwrap();
         let id = backup(&f.home, &c, &db, &f.dir.path().join("test.log")).unwrap();
+        let saved = root(&f.home).join("backups").join(&id).join("baked");
+        assert_eq!(fs::read_dir(saved.join(&native_name).join("work")).unwrap().count(), 0);
+        assert!(!saved.join("app_workdir").exists());
+        assert_eq!(fs::read(saved.join(&native_name).join("upper/save-link")).unwrap(), b"native progress");
+        verified_snapshot(saved.parent().unwrap()).unwrap();
         assert!(clean_candidates(&f.home, &db)
             .unwrap()
             .iter()
@@ -6566,6 +6605,7 @@ esac
         fs::write(f.save_file(), "changed progress").unwrap();
         fs::write(&resource, b"changed download").unwrap();
         fs::write(&shader, b"changed shader").unwrap();
+        fs::write(native.join("upper/files/work/save"), b"changed native progress").unwrap();
         let scratch = c.baked.join("data_workdir/work");
         fs::create_dir_all(&scratch).unwrap();
         fs::set_permissions(&scratch, fs::Permissions::from_mode(0)).unwrap();
@@ -6579,6 +6619,9 @@ esac
         assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
         assert_eq!(fs::read(&resource).unwrap(), b"unfinished download");
         assert_eq!(fs::read(&shader).unwrap(), b"compiled shader");
+        assert_eq!(fs::read(native.join("upper/save-link")).unwrap(), b"native progress");
+        assert_eq!(fs::read_dir(native.join("work")).unwrap().count(), 0);
+        assert_eq!(fs::metadata(native.join("work")).unwrap().permissions().mode() & 0o777, 0o700);
         assert_eq!(
             fs::read(
                 c.baked
