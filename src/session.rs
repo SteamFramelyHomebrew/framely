@@ -536,10 +536,16 @@ impl Agent {
                 if let Some(id)=views["screenshotClosed"].as_str().filter(|id|!id.is_empty()) {
                     self.screenshot.lock().unwrap().acknowledge(id);
                 }
-                if views["views"].is_object() {
-                    self.core("host.ui.visibility",views["views"].clone())?;
+                if views.get("views").is_some() {
+                    // Null is the startup state before the first VR frame:
+                    // leave visibility unknown rather than reporting hidden.
+                    ensure!(views["views"].is_null() || views["views"].is_object(), "Invalid native visibility snapshot");
+                    if views["views"].is_object() {
+                        self.core("host.ui.visibility",views["views"].clone())?;
+                    }
                     if let Some(ids)=views["closedCasts"].as_array(){ensure!(ids.len()<=32,"Too many closed casts");for id in ids{if let Some(id)=id.as_str(){let _=self.receivers.lock().unwrap().control(id,"stop",json!({}));}}}
                 } else if views.is_object() {
+                    ensure!(views.as_object().unwrap().values().all(Value::is_boolean), "Invalid legacy visibility report");
                     self.core("host.ui.visibility", views)?;
                 }
             }
@@ -4036,6 +4042,9 @@ mod tests {
         let socket_worker = std::thread::spawn(move || {
             let mut core = crate::service::Service::load(&root.path().join("state"), 1000).unwrap();
             for expected in [
+                "host.notification.badge",
+                "status",
+                "launcher.gaze.calibration.get",
                 "host.ui.visibility",
                 "host.notification.badge",
                 "status",
@@ -4074,6 +4083,18 @@ mod tests {
             .set("Cookie", &format!("framely={}", agent.web_key))
             .send_json(json!({"menu":true}))
             .is_err());
+        // The first native poll precedes the first VR visibility snapshot.
+        // It must succeed without treating envelope fields as boolean views.
+        let startup: Value = ureq::post(&url)
+            .set("X-Framely-Native", &agent.native_key)
+            .send_json(json!({"views":null,"closedCasts":[],"stopRecording":"","framingClosed":"","screenshotClosed":"","screenshotHotkey":"","radialAction":""}))
+            .unwrap().into_json().unwrap();
+        assert_eq!(startup["commands"],json!([framing]));
+        agent.commands.lock().unwrap().push_back(framing.clone());
+        for invalid in [json!({"views":[],"closedCasts":[]}),json!({"menu":[],"closedCasts":[]})] {
+            assert!(ureq::post(&url).set("X-Framely-Native", &agent.native_key)
+                .send_json(invalid).is_err());
+        }
         let response = ureq::post(&url)
             .set("X-Framely-Native", &agent.native_key)
             .send_json(json!({"menu":true}))
