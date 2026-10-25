@@ -196,8 +196,19 @@ def collect(state, commands=True, runtime=pathlib.Path('/run/user'), installer_l
     try:
         for path in sorted((state / 'logs').glob('*.log'))[:64]:
             tail(path, 'logs/' + path.name)
-        for path in sorted(runtime.glob('*/framely-session-*/cef.log'))[-8:]:
-            tail(path, 'renderer/' + path.parent.parent.name + '-' + path.parent.name + '-cef.log')
+        sessions = [p for p in runtime.glob('*/framely-session-*')
+                    if p.is_dir() and not p.is_symlink() and not p.parent.is_symlink()]
+        sessions.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for session in sessions[:8]:
+            tail(session / 'cef.log', 'renderer/' + session.parent.name + '-' + session.name + '-cef.log')
+            # Explicit allowlist: never collect frames, media, consent or access files.
+            for area, names in [('receive', ('airplay', 'receiver')), ('cast', ('stream',))]:
+                directory = session / area
+                if directory.is_symlink():
+                    continue
+                for name in names:
+                    for suffix in ('.log', '.failed.log'):
+                        tail(directory / (name + suffix), 'casting/' + session.parent.name + '/' + session.name + '/' + area + '/' + name + suffix)
     except OSError as error:
         report['warnings'].append('logs: ' + str(error))
     # Record GPU evidence without copying command lines or authentication tokens.

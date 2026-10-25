@@ -302,6 +302,7 @@ impl Receivers {
             .as_mut()
             .and_then(|w| w.child.try_wait().ok().flatten())
         {
+            super::retain_failed_log(&self.directory, "receiver");
             self.error = Some(format!("DLNA 接收程序已退出：{code}"));
             self.worker = None;
             self.end_protocol("DLNA");
@@ -311,6 +312,7 @@ impl Receivers {
             .as_mut()
             .and_then(|w| w.try_wait().ok().flatten())
         {
+            super::retain_failed_log(&self.directory, "airplay");
             let details = fs::read_to_string(self.directory.join("airplay.log")).unwrap_or_default();
             let tail = details.lines().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
             self.error = Some(format!("AirPlay 接收程序已退出：{code}\n{tail}"));
@@ -559,6 +561,27 @@ mod tests {
         assert!(r.control("0123", "accept", json!({})).is_err());
         r.airplay_id = "4567".into();
         assert!(r.control("0123", "volume", json!({"volume":0.5})).is_err());
+    }
+    #[test]
+    fn airplay_failure_log_survives_receiver_restart() {
+        let root=tempfile::tempdir().unwrap();
+        let bin=root.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let executable=bin.join("uxplay");
+        fs::write(&executable,"#!/bin/sh\necho \"Required gstreamer plugin 'autodetect' not found\" >&2\nexit 1\n").unwrap();
+        fs::set_permissions(&executable,fs::Permissions::from_mode(0o700)).unwrap();
+        let mut receiver=Receivers::new(root.path().to_owned(),bin);
+        receiver.start_airplay("test").unwrap();
+        receiver.airplay.as_mut().unwrap().wait().unwrap();
+        receiver.poll();
+        let saved=fs::read_to_string(root.path().join("airplay.failed.log")).unwrap();
+        assert!(saved.contains("autodetect"));
+        fs::write(&executable,"#!/bin/sh\nexit 0\n").unwrap();
+        receiver.start_airplay("test").unwrap();
+        receiver.airplay.as_mut().unwrap().wait().unwrap();
+        assert_eq!(fs::read_to_string(root.path().join("airplay.failed.log")).unwrap(),saved);
+        assert!(fs::metadata(root.path().join("airplay.log")).unwrap().len()==0);
+        receiver.stop();
     }
     #[test]
     fn session_updates_preserve_consent_and_disconnect_cleans_only_its_protocol() {

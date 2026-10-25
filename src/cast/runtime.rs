@@ -92,6 +92,7 @@ impl Casting {
         if let Some(code) = exited {
             self.error = Some(format!("串流进程已退出：{code}"));
             self.stop_workers();
+            super::retain_failed_log(&self.directory, "stream");
         }
     }
     pub fn recording_status(&self) -> Value {
@@ -467,6 +468,7 @@ impl Casting {
             }
             self.error = Some(format!("{e:#}\n{}", detail.trim()));
             self.stop_workers();
+            super::retain_failed_log(&self.directory, "stream");
             return Err(anyhow::anyhow!(self.error.clone().unwrap()));
         }
         result

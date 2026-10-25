@@ -20,6 +20,42 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertTrue(result['name'].endswith('.zip'))
         return zipfile.ZipFile(io.BytesIO(base64.b64decode(result['data'])))
 
+    def test_casting_logs_include_failure_tails_but_exclude_media_and_access_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            session = root/'runtime/1000/framely-session-12'
+            for area, names in [('receive', ('airplay','receiver')), ('cast', ('stream',))]:
+                directory=session/area
+                directory.mkdir(parents=True)
+                for name in names:
+                    (directory/(name+'.log')).write_text(name+' current')
+                    (directory/(name+'.failed.log')).write_text(name+' previous failure token=PRIVATE_TOKEN')
+                for name in ['frame.bin','video.mp4','events.sock','session.accept','access.json','unknown.log']:
+                    (directory/name).write_text('DO_NOT_EXPORT')
+            (session/'receive/symlink.log').symlink_to(session/'receive/access.json')
+            archive=self.archive(root)
+            for area,names in [('receive',('airplay','receiver')),('cast',('stream',))]:
+                for name in names:
+                    prefix='casting/1000/framely-session-12/'+area+'/'+name
+                    self.assertIn(prefix+'.log',archive.namelist())
+                    self.assertIn('previous failure',archive.read(prefix+'.failed.log').decode())
+            text='\n'.join(archive.read(name).decode() for name in archive.namelist())
+            self.assertNotIn('DO_NOT_EXPORT',text)
+            self.assertNotIn('PRIVATE_TOKEN',text)
+
+    def test_casting_export_selects_recent_sessions_by_time_not_pid(self):
+        import os
+        with tempfile.TemporaryDirectory() as temp:
+            root=pathlib.Path(temp)
+            for index in range(9):
+                session=root/'runtime/1000'/('framely-session-'+str(9000-index*1000))
+                (session/'receive').mkdir(parents=True)
+                (session/'receive/airplay.log').write_text(str(index))
+                os.utime(session,(index+1,index+1))
+            archive=self.archive(root)
+            self.assertNotIn('casting/1000/framely-session-9000/receive/airplay.log',archive.namelist())
+            self.assertIn('casting/1000/framely-session-1000/receive/airplay.log',archive.namelist())
+
     def test_stopped_service_partial_logs_and_credentials(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
