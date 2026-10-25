@@ -30,7 +30,7 @@ Framecorder 原插件的名称是“面板画面”和“SteamVR 备用画面”
 
 ## 接收与发送
 
-AirPlay 由固定版本 UxPlay 处理 RAOP 音频和屏幕镜像；只允许一个发送设备，不实现 AirPlay 发送。自定义 GStreamer sink 在用户确认前丢弃音频和画面。断开、拒绝或停止后清除同意状态，新连接重新询问。
+AirPlay 由固定版本 UxPlay 处理 RAOP 音频和屏幕镜像；只允许一个发送设备，不实现 AirPlay 发送。接收进程使用系统 Avahi core 库独立发布 AirPlay/RAOP 服务，不依赖系统 Avahi daemon 的发布权限，也不修改其全局配置。自定义 GStreamer sink 在用户确认前丢弃音频和画面。断开、拒绝或停止后清除同意状态，新连接重新询问。
 
 DLNA 使用 GUPnP 的标准发现、SOAP 和事件订阅，接收 HTTP(S) 媒体地址。每个新请求先显示通知，接受后才下载、解码和播放。接收的音频打开内置控制窗口；视频采用旋转及像素比例校正后的实际画幅，控件浮在视频上并自动收起，不改变窗口画幅。不同 DLNA 请求可以保持多个空间窗口。播放器支持暂停、音量、停止以及媒体支持时的跳转；关闭空间窗口会停止该投屏。未处理请求 60 秒后过期。
 
@@ -42,7 +42,7 @@ DLNA 发送需要开启网络管理面板并启动串流。GUPnP 发现设备后
 
 头显运行依赖现有 FFmpeg（libx264、libvpx、libopus、AAC、V4L2、PulseAudio）、GStreamer 1.24+、FFmpeg 7 共享库与随包的 gst-libav 插件、GUPnP 1.6、Avahi、OpenVR、Vulkan/DRM、Qualcomm Iris。设备上已确认 FFmpeg、GStreamer 1.24.2、GUPnP 1.6.6 和上述编码器可用。
 
-构建需要 Rust、C/C++ 编译器、CMake、Meson、Ninja、pkg-config、glslc，以及 DRM/Vulkan、GStreamer app/video、GUPnP 1.6、Avahi、OpenSSL/libplist 开发文件。`tools/build-media.sh` 构建采集助手、接收器、gst-libav 插件和 UxPlay，并下载校验固定版本的 MediaMTX。可用 `FRAMELY_SYSROOT` 为采集 crate 指定 ARM64 sysroot；gst-libav 链接 FFmpeg 7 ABI，其余组件使用目标系统的开发库。
+构建需要 Rust、C/C++ 编译器、CMake、Meson、Ninja、pkg-config、glslc，以及 DRM/Vulkan、GStreamer app/video、GUPnP 1.6、Avahi、PulseAudio、libsoup、OpenSSL/libplist 开发文件。`tools/build-media.sh` 构建采集助手、接收器、gst-libav、接收管线必需的 gst-plugins-good 插件和 UxPlay，并下载校验固定版本的 MediaMTX。可用 `FRAMELY_SYSROOT` 为采集 crate 指定 ARM64 sysroot；gst-libav 链接 FFmpeg 7 ABI，其余组件使用目标系统的开发库。
 
 `tools/package-release.sh <CEF目录>` 同时构建媒体能力；助手放入 `bin`，其他媒体程序放入 `lib/media`。第三方许可证和媒体改动源码随包提供，版本和 SHA-256 位于 `media/dependencies.json`。
 

@@ -18,11 +18,17 @@
   Its version and checksum are pinned; releases include its source and license.
   CI links against the FFmpeg 7 development API to match SteamOS; that build
   dependency is pinned but its FFmpeg libraries are not distributed.
+- [gst-plugins-good](https://gstreamer.freedesktop.org/modules/gst-plugins-good.html),
+  LGPL-2.1-or-later, supplies the bundled level, PulseAudio, video filter,
+  ISO MP4 and HTTP source plugins required by the receive pipelines.
+  The version and checksum are pinned; source, build recipe and license ship with releases.
+- Avahi core (LGPL) is linked as a system library to publish only the receiver’s
+  AirPlay/RAOP records without changing system Avahi publishing settings.
 - GStreamer and GUPnP are linked as system libraries (LGPL). GStreamer performs
   decoding, audio playback, rotation and pixel aspect correction; GUPnP provides
   UPnP discovery, SOAP and event subscriptions. FFmpeg is invoked as the installed
   system executable for SteamVR capture, software encoding and audio muxing.
-  These system components are not copied into Framely packages.
+  The GStreamer core, GUPnP and their system libraries are not copied into Framely packages.
 - `native/json.hpp` is the existing nlohmann/json dependency (MIT), included with
   the main Framely release notices.
 

@@ -16,7 +16,7 @@ if [[ ${FRAMELY_USE_PREBUILT_MEDIA:-0} == 1 ]]; then
   else
     [[ -z $(git status --porcelain -- media) ]] || { echo 'Media sources changed; rebuild media.' >&2; exit 1; }
   fi
-  for file in media/bin/framely-panel-grab media/bin/framely-capture media/bin/mediamtx media/bin/uxplay media/bin/framely-receiver media/bin/libgstframely.so media/bin/libgstlibav.so media/bin/LICENSE media/bin/LICENSE.uxplay media/bin/LICENSE.gst-libav media/bin/LICENSE.llhttp; do
+  for file in media/bin/framely-panel-grab media/bin/framely-capture media/bin/mediamtx media/bin/uxplay media/bin/framely-receiver media/bin/libgstframely.so media/bin/libgstlibav.so media/bin/LICENSE media/bin/LICENSE.uxplay media/bin/LICENSE.gst-libav media/bin/LICENSE.llhttp media/bin/LICENSE.gst-good media/bin/libgstlevel.so media/bin/libgstpulseaudio.so media/bin/libgstvideofilter.so media/bin/libgstisomp4.so media/bin/libgstsoup.so; do
     [[ -s $file ]] || { echo "Missing prebuilt media: $file" >&2; exit 1; }
   done
 else
@@ -39,18 +39,21 @@ mkdir -p "$stage"/{bin,lib/cef,lib/openvr,lib/media,share/ui,share/licenses,tool
 cp "$binary" "$stage/bin/"
 cp media/bin/framely-panel-grab "$stage/bin/"
 cp media/bin/framely-capture media/bin/mediamtx media/bin/uxplay media/bin/framely-receiver media/bin/libgstframely.so media/bin/libgstlibav.so "$stage/lib/media/"
+cp media/bin/libgst{level,pulseaudio,videofilter,isomp4,soup}.so "$stage/lib/media/"
 cp -a media/bin/upnp "$stage/lib/media/"
 cp media/bin/LICENSE "$stage/share/licenses/mediamtx.txt"
 cp media/bin/LICENSE.uxplay "$stage/share/licenses/uxplay.txt"
 cp media/bin/LICENSE.gst-libav "$stage/share/licenses/gst-libav.txt"
+cp media/bin/LICENSE.gst-good "$stage/share/licenses/gst-plugins-good.txt"
 cp media/bin/LICENSE.llhttp "$stage/share/licenses/uxplay-llhttp.txt"
 cp media/capture/LICENSE.framecorder "$stage/share/licenses/panel-capture.txt"
 cp media/THIRD_PARTY_NOTICES.md "$stage/share/licenses/media-notices.md"
 mkdir -p "$stage/share/source/media/capture" "$stage/share/source/tools" "$stage/share/source/native/vendor"
 cp -a media/native media/upnp media/patch-uxplay.py media/dependencies.json "$stage/share/source/media/"
 cp -a media/capture/src media/capture/shaders media/capture/Cargo.toml media/capture/Cargo.lock media/capture/build.rs media/capture/LICENSE.framecorder "$stage/share/source/media/capture/"
-cp tools/build-media.sh tools/build-gst-libav.sh tools/fetch-media.py "$stage/share/source/tools/"
+cp tools/build-media.sh tools/build-gst-libav.sh tools/build-gst-good.sh tools/fetch-media.py "$stage/share/source/tools/"
 cp native/vendor/json.hpp "$stage/share/source/native/vendor/"
+tar -cJf "$stage/share/source/media/gst-plugins-good.tar.xz" -C media/source gst-plugins-good-1.24.13
 tar -cJf "$stage/share/source/media/gst-libav.tar.xz" -C media/source gst-libav-1.24.13
 tar -czf "$stage/share/source/media/uxplay.tar.gz" -C media/source UxPlay-1.73.7
 

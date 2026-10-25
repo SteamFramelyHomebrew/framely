@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add only lifecycle events to UxPlay; protocol/decoder code remains upstream."""
+"""Adapt UxPlay lifecycle events and explicit sinks; protocol/decoder code remains upstream."""
 from pathlib import Path
 import sys
 p=Path(sys.argv[1])/'uxplay.cpp'
@@ -123,3 +123,43 @@ if 'Framely HLS consent' not in s:
                     }
 ''',1)
     renderer.write_text(s)
+
+# Framely supplies both sinks explicitly; autodetect is not part of its pipeline.
+# Keep upstream checks unchanged for all other UxPlay output modes.
+audio=p.parent/'renderers/audio_renderer.c'
+s=audio.read_text()
+if 'framely_explicit_sinks' not in s:
+    assert 'static gboolean check_plugins (void)' in s
+    s=s.replace('static gboolean check_plugins (void)', 'static gboolean check_plugins (bool needs_autodetect)',1)
+    marker='        GstPlugin *plugin = NULL;'
+    assert marker in s
+    s=s.replace(marker, '        /* framely_explicit_sinks: no automatic device selection needed. */\n        if (!needs_autodetect && !strcmp(needed[i], "autodetect")) continue;\n'+marker,1)
+    s=s.replace('bool gstreamer_init(){','bool gstreamer_init(bool needs_autodetect){',1)
+    s=s.replace('return (bool) check_plugins ();','return (bool) check_plugins (needs_autodetect);',1)
+    audio.write_text(s)
+header=p.parent/'renderers/audio_renderer.h'
+s=header.read_text()
+if 'bool gstreamer_init();' in s:
+    header.write_text(s.replace('bool gstreamer_init();','bool gstreamer_init(bool needs_autodetect);',1))
+s=p.read_text()
+if 'if (!gstreamer_init())' in s:
+    s=s.replace('if (!gstreamer_init())', 'if (!gstreamer_init(!(videosink == "framelyvideosink" && audiosink == "framelyaudiosink")))',1)
+    p.write_text(s)
+
+# SteamOS can disable publication in the system Avahi daemon. Use its existing
+# Avahi core library inside the receiver instead; leave system policy untouched.
+for name in ('airplay_mdns.h', 'airplay_mdns.cpp'):
+    copyfile(Path(__file__).parent/'native'/name, p.parent/'framely'/name)
+dns=p.parent/'lib/dnssd.c'
+s=dns.read_text()
+if 'framely_mdns_register' not in s:
+    s=s.replace('#include <dns_sd.h>', '#include <dns_sd.h>\n#include "../framely/airplay_mdns.h"', 1)
+    marker='    dnssd->name_len = name_len;'
+    assert marker in s
+    s=s.replace(marker, '    if (getenv("FRAMELY_CAST_DIR")) {\n        dnssd->DNSServiceRegister = &framely_mdns_register;\n        dnssd->DNSServiceRefDeallocate = &framely_mdns_deallocate;\n    }\n\n'+marker, 1)
+    dns.write_text(s)
+cmake=p.parent/'lib/CMakeLists.txt'
+s=cmake.read_text()
+if 'framely/airplay_mdns.cpp' not in s:
+    s+='\ntarget_sources(airplay PRIVATE ../framely/airplay_mdns.cpp)\npkg_check_modules(FRAMELY_AVAHI REQUIRED IMPORTED_TARGET avahi-core)\ntarget_link_libraries(airplay PUBLIC PkgConfig::FRAMELY_AVAHI)\n'
+    cmake.write_text(s)

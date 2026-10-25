@@ -9,10 +9,41 @@ binaries=Path(args.binaries).resolve()
 with tempfile.TemporaryDirectory(prefix='framely-media-test-') as directory:
     root=Path(directory);events=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM);events.bind(str(root/'events.sock'));events.settimeout(5)
     token='0123456789abcdef0123456789abcdef';env=dict(os.environ,GST_PLUGIN_PATH=str(binaries),FRAMELY_CAST_DIR=directory,FRAMELY_CAST_ID=token)
-    airplay=subprocess.Popen([str(binaries/'uxplay'),'-n','Framely test','-avdec','-hls','-vs','framelyvideosink','-as','framelyaudiosink'],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    # Check the actual receive elements, including plugins absent on stock Frame.
+    for element in ['framelyvideosink','framelyaudiosink','level','pulsesink','videoflip','souphttpsrc','qtdemux']:
+        result=subprocess.run(['gst-inspect-1.0','--exists',element],env=env,capture_output=True)
+        assert result.returncode==0,f'Required receive element unavailable: {element}'
+    test_name=f'Framely test {os.getpid()}'
+    airplay=subprocess.Popen([str(binaries/'uxplay'),'-n',test_name,'-nh','-m','-avdec','-hls','-vs','framelyvideosink','-as','framelyaudiosink'],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
     try:
         time.sleep(2);assert airplay.poll() is None,airplay.stdout.read().decode()
         print('PASS: UxPlay starts with bundled decoders and consent sinks')
+        # Use the system daemon only to browse. Publication must also work when
+        # that daemon's disable-publishing policy is enabled (Frame's default).
+        import shutil
+        if shutil.which('avahi-browse'):
+            for service_type in ['_airplay._tcp','_raop._tcp']:
+                browser=subprocess.Popen(['avahi-browse','--resolve','--parsable',
+                    '--no-db-lookup',service_type],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
+                from queue import Queue,Empty
+                discovered=Queue()
+                def browse_lines():
+                    for line in browser.stdout:discovered.put(line)
+                Thread(target=browse_lines,daemon=True).start()
+                try:
+                    deadline=time.monotonic()+15
+                    while True:
+                        try:line=discovered.get(timeout=max(.01,deadline-time.monotonic()))
+                        except Empty:raise AssertionError(f'No resolved {service_type} advertisement')
+                        if line.startswith('=;') and test_name in line.replace('\\032',' '):
+                            assert 'features=' in line or 'cn=' in line,line
+                            break
+                        assert time.monotonic()<deadline,f'No resolved {service_type} advertisement'
+                finally:
+                    browser.terminate();browser.wait(timeout=3)
+            print('PASS: AirPlay and RAOP multicast discovery, address resolution and TXT records')
+        else:
+            print('SKIP: multicast discovery test requires avahi-browse')
     finally:
         airplay.terminate();airplay.wait(timeout=3)
     p=subprocess.Popen(['gst-launch-1.0','-q','videotestsrc','is-live=true','!','video/x-raw,width=320,height=240,framerate=10/1','!','framelyvideosink'],env=env,stderr=subprocess.PIPE)

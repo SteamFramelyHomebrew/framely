@@ -18,5 +18,10 @@
     "version": "7.0",
     "url": "https://ffmpeg.org/releases/ffmpeg-7.0.tar.xz",
     "sha256": "4426a94dd2c814945456600c8adfc402bee65ec14a70e8c531ec9a2cd651da7b"
+  },
+  "gst-plugins-good": {
+    "version": "1.24.13",
+    "url": "https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.24.13.tar.xz",
+    "sha256": "574ac6f9fd84b32eb04e80572391d6762df6f9802a47bc0386cd6cc48c14d08b"
   }
 }
