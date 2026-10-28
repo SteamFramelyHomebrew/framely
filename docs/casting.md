@@ -56,6 +56,19 @@ bash tools/test-native.sh
 python3 tools/test-casting-media.py --binaries media/bin --upnp media/upnp
 ```
 
+静止首帧与确认门控回归测试（不需要手机发送端）：
+
+```bash
+g++ -std=c++17 -O2 tests/airplay_consent.cpp -o target/tests/airplay-consent $(pkg-config --cflags --libs gstreamer-app-1.0)
+GST_PLUGIN_PATH="$PWD/media/bin" target/tests/airplay-consent
+python3 tools/test-airplay-timing.py
+python3 tools/test-airplay-protocol.py media/source/UxPlay-1.73.7 /路径/UxPlay构建目录
+```
+
+协议测试使用已配置的 CMake Makefile 构建，覆盖二进制 plist 普通 HTTP(S) 视频地址、可选应用名称、起播位置、暂停／恢复／跳转／停止回调，并核对 FCUP 路径保留及 URL 日志隐私。它不代表真实手机兼容性已验收。
+
+此测试覆盖接受前不发布画面、接受后立即发布缓存帧、暂停与恢复，以及定时器清理；可额外传入本地测试 HLS 地址，验证独立视频播放与暂停、恢复、停止。
+
 `test-casting-media.py` 使用生成的测试媒体与临时音频 sink，不改变系统音频设置；验证 UxPlay 启动、确认门控、DLNA SOAP、已知色条的解码像素、暂停、音量、精确跳转、并发请求及超过会话上限次数的释放。测试结束回收进程和临时设备。
 
 实机采集与实际 CEF WebRTC 测试：

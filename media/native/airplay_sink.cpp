@@ -26,7 +26,18 @@ static void get_property(GObject* p,guint property,GValue* value,GParamSpec* spe
  auto* s=(FramelySink*)p;if(property==1 && s->output){gboolean sync=true;g_object_get(s->output,"sync",&sync,nullptr);g_value_set_boolean(value,sync);}else G_OBJECT_WARN_INVALID_PROPERTY_ID(p,property,spec);
 }
 static void install_properties(GObjectClass* c){c->set_property=set_property;c->get_property=get_property;g_object_class_install_property(c,1,g_param_spec_boolean("sync","Sync","Synchronize playback to the pipeline clock",true,G_PARAM_READWRITE));}
-static void framely_sink_class_init(FramelySinkClass* c){G_OBJECT_CLASS(c)->finalize=finalize;install_properties(G_OBJECT_CLASS(c));gst_element_class_set_static_metadata(GST_ELEMENT_CLASS(c),"Framely video consent sink","Sink/Video","Gated AirPlay receiver","Framely");}
+// A stationary mirror may send nothing after its initial frame. Re-evaluate
+// consent independently of new buffers, including resume after a pause.
+static gboolean video_consent_tick(gpointer p){static_cast<FramelySink*>(p)->frame->refresh_consent();return G_SOURCE_CONTINUE;}
+static GstStateChangeReturn video_state_changed(GstElement* element,GstStateChange transition){
+ auto* s=reinterpret_cast<FramelySink*>(element);
+ if((transition==GST_STATE_CHANGE_PAUSED_TO_READY||transition==GST_STATE_CHANGE_READY_TO_NULL)&&s->timer){g_source_remove(s->timer);s->timer=0;}
+ auto result=GST_ELEMENT_CLASS(framely_sink_parent_class)->change_state(element,transition);
+ if(result!=GST_STATE_CHANGE_FAILURE&&transition==GST_STATE_CHANGE_READY_TO_PAUSED&&!s->timer)
+  s->timer=g_timeout_add_full(G_PRIORITY_DEFAULT,25,video_consent_tick,gst_object_ref(s),reinterpret_cast<GDestroyNotify>(gst_object_unref));
+ return result;
+}
+static void framely_sink_class_init(FramelySinkClass* c){GST_ELEMENT_CLASS(c)->change_state=video_state_changed;G_OBJECT_CLASS(c)->finalize=finalize;install_properties(G_OBJECT_CLASS(c));gst_element_class_set_static_metadata(GST_ELEMENT_CLASS(c),"Framely video consent sink","Sink/Video","Gated AirPlay receiver","Framely");}
 static void initialize(FramelySink* s,bool audio){const char* d=getenv("FRAMELY_CAST_DIR"),*i=getenv("FRAMELY_CAST_ID");s->frame=new FrameSink(d?d:"/tmp",i?i:"airplay","AirPlay");GST_OBJECT_FLAG_SET(s,GST_ELEMENT_FLAG_SINK);setup(s,audio);}
 static void framely_sink_init(FramelySink* s){initialize(s,false);}
 static void framely_audio_class_init(FramelyAudioClass* c){G_OBJECT_CLASS(c)->finalize=finalize;install_properties(G_OBJECT_CLASS(c));gst_element_class_set_static_metadata(GST_ELEMENT_CLASS(c),"Framely audio consent sink","Sink/Audio","Gated AirPlay receiver","Framely");}

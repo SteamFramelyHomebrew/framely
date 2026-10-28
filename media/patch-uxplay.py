@@ -163,3 +163,75 @@ s=cmake.read_text()
 if 'framely/airplay_mdns.cpp' not in s:
     s+='\ntarget_sources(airplay PRIVATE ../framely/airplay_mdns.cpp)\npkg_check_modules(FRAMELY_AVAHI REQUIRED IMPORTED_TARGET avahi-core)\ntarget_link_libraries(airplay PUBLIC PkgConfig::FRAMELY_AVAHI)\n'
     cmake.write_text(s)
+
+# Keep actionable protocol transitions without logging signed media URLs.
+s=p.read_text()
+s=s.replace('LOGI("********************on_video_play: location = %s*** start position %f ********************", url.c_str(), start_position);',
+            'LOGI("AirPlay video playback requested; start position %f (source URL omitted)", start_position);')
+p.write_text(s)
+router=p.parent/'lib/raop.c'
+s=router.read_text()
+if 'framely_media_control_trace' not in s:
+    marker='    logger_log(raop->logger, LOGGER_DEBUG, "Handling request %s with URL %s", method, url);'
+    assert marker in s
+    s=s.replace(marker, marker+'''
+    /* framely_media_control_trace: no query strings, credentials or bodies. */
+    if (getenv("FRAMELY_CAST_DIR")) {
+        const char *control = NULL;
+        if (!strcmp(url, "/play")) control = "play";
+        else if (!strcmp(url, "/stop")) control = "stop";
+        else if (!strcmp(url, "/server-info")) control = "server-info";
+        else if (!strncmp(url, "/rate?", 6)) control = "rate";
+        else if (!strncmp(url, "/scrub?", 7)) control = "scrub";
+        else if (!strcmp(method, "TEARDOWN")) control = "teardown";
+        if (control) logger_log(raop->logger, LOGGER_INFO, "AirPlay media control received: %s", control);
+    }
+''',1)
+    router.write_text(s)
+
+# Retrying a frame older than the pipeline base must recompute from the original
+# remote timestamp. Adding the wall-clock offset twice schedules video decades
+# into the future when the sender's clock is based on uptime.
+s=p.read_text()
+if 'framely_retry_original_timestamp' not in s:
+    marker='''        do {
+            data->ntp_time_remote = data->ntp_time_remote + remote_clock_offset;
+            pts_mismatch = video_renderer_render_buffer(data->data, &(data->data_len), &(data->nal_count), &(data->ntp_time_remote));'''
+    assert marker in s
+    s=s.replace(marker,'''        // framely_retry_original_timestamp: retries must not accumulate offsets.
+        const uint64_t remote_timestamp = data->ntp_time_remote;
+        do {
+            uint64_t frame_timestamp = remote_timestamp + remote_clock_offset;
+            pts_mismatch = video_renderer_render_buffer(data->data, &(data->data_len), &(data->nal_count), &frame_timestamp);''',1)
+    p.write_text(s)
+
+# Backport direct HTTP(S) Content-Location support from upstream UxPlay
+# 82ad05ce34ec862851fa6ab1240f50f58fb7fa5a (lib/http_handlers.h). Keep the
+# existing FCUP reverse-proxy path for non-HTTP master.m3u8 sources.
+http_handlers=p.parent/'lib/http_handlers.h'
+s=http_handlers.read_text()
+if 'framely_direct_video_source' not in s:
+    required='''    if (!req_client_proc_name_node) {
+        goto play_error;
+    } else {'''
+    assert required in s
+    s=s.replace(required, '    if (req_client_proc_name_node) {', 1)
+    s=s.replace('if (!strstr(supported_hls_proc_names, client_proc_name)){',
+                'if (client_proc_name && !strstr(supported_hls_proc_names, client_proc_name)){', 1)
+    marker='''    /* we only support HLS if the playback location is terminated by "/master.m3u8" */'''
+    assert marker in s
+    s=s.replace(marker, '''    /* framely_direct_video_source: regular URLs do not use the FCUP proxy. */
+    if (!strncmp(playback_location, "http://", 7) || !strncmp(playback_location, "https://", 8)) {
+        set_playback_location(airplay_video, playback_location, strlen(playback_location));
+        raop->callbacks.on_video_play(raop->callbacks.cls,
+                                      get_playback_location(airplay_video),
+                                      start_position_seconds);
+        plist_mem_free(playback_location);
+        plist_free(req_root_node);
+        return;
+    }
+
+'''+marker, 1)
+    s=s.replace('"Content-Location has unsupported form:\\n%s\\n", playback_location',
+                '"Unsupported AirPlay video source format (URL omitted)"')
+    http_handlers.write_text(s)

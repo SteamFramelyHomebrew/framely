@@ -186,6 +186,9 @@ impl Receivers {
                 "framelyaudiosink",
             ])
             .env("GST_PLUGIN_PATH", &self.binaries)
+            // -avdec selects the mirror decoder; playbin's external-video
+            // path needs the same software policy independently.
+            .env("GST_PLUGIN_FEATURE_RANK", "avdec_h264:356,avdec_h265:356,avdec_aac:356,v4l2h264dec:0,v4l2h265dec:0,vulkanh264dec:0,vulkanh265dec:0")
             .env("FRAMELY_CAST_DIR", &self.directory)
             .env("FRAMELY_CAST_ID", &self.airplay_id)
             .stdin(Stdio::null())

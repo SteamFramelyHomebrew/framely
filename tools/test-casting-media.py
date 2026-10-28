@@ -10,7 +10,7 @@ with tempfile.TemporaryDirectory(prefix='framely-media-test-') as directory:
     root=Path(directory);events=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM);events.bind(str(root/'events.sock'));events.settimeout(5)
     token='0123456789abcdef0123456789abcdef';env=dict(os.environ,GST_PLUGIN_PATH=str(binaries),FRAMELY_CAST_DIR=directory,FRAMELY_CAST_ID=token)
     # Check the actual receive elements, including plugins absent on stock Frame.
-    for element in ['framelyvideosink','framelyaudiosink','level','pulsesink','videoflip','souphttpsrc','qtdemux']:
+    for element in ['framelyvideosink','framelyaudiosink','level','pulsesink','videoflip','souphttpsrc','qtdemux','hlsdemux2','aacparse']:
         result=subprocess.run(['gst-inspect-1.0','--exists',element],env=env,capture_output=True)
         assert result.returncode==0,f'Required receive element unavailable: {element}'
     test_name=f'Framely test {os.getpid()}'

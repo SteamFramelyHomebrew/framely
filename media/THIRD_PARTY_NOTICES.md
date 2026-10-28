@@ -20,7 +20,7 @@
   dependency is pinned but its FFmpeg libraries are not distributed.
 - [gst-plugins-good](https://gstreamer.freedesktop.org/modules/gst-plugins-good.html),
   LGPL-2.1-or-later, supplies the bundled level, PulseAudio, video filter,
-  ISO MP4 and HTTP source plugins required by the receive pipelines.
+  ISO MP4, HTTP source, HLS and audio parser plugins required by the receive pipelines.
   The version and checksum are pinned; source, build recipe and license ship with releases.
 - Avahi core (LGPL) is linked as a system library to publish only the receiver’s
   AirPlay/RAOP records without changing system Avahi publishing settings.

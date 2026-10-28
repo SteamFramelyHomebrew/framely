@@ -16,7 +16,7 @@ if [[ ${FRAMELY_USE_PREBUILT_MEDIA:-0} == 1 ]]; then
   else
     [[ -z $(git status --porcelain -- media) ]] || { echo 'Media sources changed; rebuild media.' >&2; exit 1; }
   fi
-  for file in media/bin/framely-panel-grab media/bin/framely-capture media/bin/mediamtx media/bin/uxplay media/bin/framely-receiver media/bin/libgstframely.so media/bin/libgstlibav.so media/bin/LICENSE media/bin/LICENSE.uxplay media/bin/LICENSE.gst-libav media/bin/LICENSE.llhttp media/bin/LICENSE.gst-good media/bin/libgstlevel.so media/bin/libgstpulseaudio.so media/bin/libgstvideofilter.so media/bin/libgstisomp4.so media/bin/libgstsoup.so; do
+  for file in media/bin/framely-panel-grab media/bin/framely-capture media/bin/mediamtx media/bin/uxplay media/bin/framely-receiver media/bin/libgstframely.so media/bin/libgstlibav.so media/bin/LICENSE media/bin/LICENSE.uxplay media/bin/LICENSE.gst-libav media/bin/LICENSE.llhttp media/bin/LICENSE.gst-good media/bin/libgstlevel.so media/bin/libgstpulseaudio.so media/bin/libgstvideofilter.so media/bin/libgstisomp4.so media/bin/libgstsoup.so media/bin/libgstadaptivedemux2.so media/bin/libgstaudioparsers.so; do
     [[ -s $file ]] || { echo "Missing prebuilt media: $file" >&2; exit 1; }
   done
 else
@@ -39,7 +39,7 @@ mkdir -p "$stage"/{bin,lib/cef,lib/openvr,lib/media,share/ui,share/licenses,tool
 cp "$binary" "$stage/bin/"
 cp media/bin/framely-panel-grab "$stage/bin/"
 cp media/bin/framely-capture media/bin/mediamtx media/bin/uxplay media/bin/framely-receiver media/bin/libgstframely.so media/bin/libgstlibav.so "$stage/lib/media/"
-cp media/bin/libgst{level,pulseaudio,videofilter,isomp4,soup}.so "$stage/lib/media/"
+cp media/bin/libgst{level,pulseaudio,videofilter,isomp4,soup,adaptivedemux2,audioparsers}.so "$stage/lib/media/"
 cp -a media/bin/upnp "$stage/lib/media/"
 cp media/bin/LICENSE "$stage/share/licenses/mediamtx.txt"
 cp media/bin/LICENSE.uxplay "$stage/share/licenses/uxplay.txt"
