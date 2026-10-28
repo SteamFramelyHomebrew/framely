@@ -81,6 +81,58 @@ fn remove_owned(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+fn data_mount_owned(mounts: &[Value], baked: &Path) -> bool {
+    if mounts
+        .iter()
+        .filter(|m| m["Destination"] == "/data")
+        .count()
+        != 1
+    {
+        return false;
+    }
+    let Ok(baked) = fs::canonicalize(baked) else {
+        return false;
+    };
+    let exact = |value: &str, relative: &str| {
+        let expected = baked.join(relative);
+        fs::canonicalize(value).is_ok_and(|path| path == expected)
+            && fs::canonicalize(&expected).is_ok_and(|path| path == expected)
+    };
+    mounts.iter().any(|mount| {
+        if mount["Destination"] != "/data" {
+            return false;
+        }
+        // Normal Lepton uses a shared sysbake as the read-only lower layer.
+        // Ownership comes from BOTH private writable OverlayFS directories,
+        // never from the shared Source or the runtime name alone.
+        let overlay_options = mount["Options"].as_array().is_some_and(|options| {
+            options
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|s| s.starts_with("upperdir=") || s.starts_with("workdir="))
+        });
+        if mount["Type"] == "overlay" || overlay_options {
+            let Some(options) = mount["Options"].as_array() else {
+                return false;
+            };
+            let option = |name: &str| -> Option<&str> {
+                let values: Vec<_> = options
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter_map(|s| s.strip_prefix(name))
+                    .collect();
+                (values.len() == 1).then(|| values[0])
+            };
+            option("upperdir=").is_some_and(|p| exact(p, "data_overlay"))
+                && option("workdir=").is_some_and(|p| exact(p, "data_workdir"))
+        } else {
+            mount["Source"]
+                .as_str()
+                .is_some_and(|p| exact(p, "data_overlay") || exact(p, ""))
+        }
+    })
+}
+
 fn runtime(name: &str, baked: &Path, original: bool) -> Result<Option<String>> {
     ensure!(safe(name), "Invalid container name");
     let result = crate::process::command_output_timeout(
@@ -114,13 +166,9 @@ fn runtime(name: &str, baked: &Path, original: bool) -> Result<Option<String>> {
         // Android data mount as well as the unambiguous original name.
         ensure!(original, "Cannot verify Steam container storage");
         let mounts: Vec<Value> = serde_json::from_str(mounts)?;
-        ensure!(
-            mounts.iter().any(|m| m["Destination"] == "/data"
-                && m["Source"]
-                    .as_str()
-                    .is_some_and(|p| fs::canonicalize(p).is_ok_and(|p| p.starts_with(baked)))),
-            "Container data mount belongs to another location"
-        );
+        ensure!(data_mount_owned(&mounts, baked),
+            "Container data mount belongs to another location; expected private data under {}; observed /data mounts: {}",
+            baked.display(), json!(mounts.iter().filter(|mount| mount["Destination"] == "/data").collect::<Vec<_>>()));
     } else {
         ensure!(
             fs::canonicalize(Path::new(location).join("baked"))? == baked,
@@ -282,4 +330,54 @@ fn delete_internal(
     save(home, db)?;
     // Keep the context lock inode: unlinking it can split mutual exclusion.
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn overlay_ownership_uses_private_upper_and_work_dirs_not_shared_sysbake() {
+        let dir = tempfile::tempdir().unwrap();
+        let baked = dir.path().join("baked");
+        for path in ["data_overlay", "data_workdir"] {
+            fs::create_dir_all(baked.join(path)).unwrap();
+        }
+        let mount = json!({"Type":"overlay", "Source":"/shared/lepton/sysbake", "Destination":"/data",
+            "Options":[format!("upperdir={}", baked.join("data_overlay").display()), format!("workdir={}", baked.join("data_workdir").display())]});
+        assert!(data_mount_owned(&[mount.clone()], &baked));
+        assert!(!data_mount_owned(&[mount.clone(), mount.clone()], &baked));
+        // Podman inspect serializes OCI OverlayFS mounts as Type=bind.
+        let mut inspected = mount.clone();
+        inspected["Type"] = json!("bind");
+        inspected["Source"] = json!("/podman/overlay/merged");
+        assert!(data_mount_owned(&[inspected], &baked));
+        for (key, value) in [
+            ("Destination", json!("/other")),
+            (
+                "Options",
+                json!([
+                    "upperdir=/other/data_overlay",
+                    "workdir=/other/data_workdir"
+                ]),
+            ),
+        ] {
+            let mut other = mount.clone();
+            other[key] = value;
+            assert!(!data_mount_owned(&[other], &baked));
+        }
+        let mut other = mount.clone();
+        other["Options"][1] = json!("workdir=/other/data_workdir");
+        assert!(!data_mount_owned(&[other], &baked));
+        let mut duplicate = mount.clone();
+        duplicate["Options"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("upperdir=/other"));
+        assert!(!data_mount_owned(&[duplicate], &baked));
+        let outside = dir.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::remove_dir(baked.join("data_overlay")).unwrap();
+        std::os::unix::fs::symlink(&outside, baked.join("data_overlay")).unwrap();
+        assert!(!data_mount_owned(&[mount], &baked));
+    }
 }

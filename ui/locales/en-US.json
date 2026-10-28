@@ -58,6 +58,8 @@
     "直连失败时尝试 gh-proxy.com；已启用 GitHub 代理时，代理遇到限额或网络错误则尝试直连。只重试一次，下载仍会校验。": "If direct GitHub access fails, try gh-proxy.com. If a configured GitHub proxy hits a rate limit or network error, try direct access. Retry once; downloads remain verified.",
     "显示录制指示器": "Show recording indicator",
     "关闭后仅隐藏右上角录制提示，不会停止录制。": "Hides only the recording indicator in the upper-right corner; recording continues.",
+    "安装失败，已有容器和数据已保留。备份：{0}。详情：{1}": "Installation failed; the existing container and data were retained. Backup: {0}. Details: {1}",
+    "APK 架构（{0}）与当前 Android 支持的架构（{1}）不兼容。请使用匹配架构的 APK；32 位 ARM 应用需要额外的兼容运行环境。": "APK architectures ({0}) do not match this Android runtime ({1}). Use a compatible APK; 32-bit ARM apps require an additional compatibility runtime.",
     "安装失败，本次新建的容器已清理：{0}": "Installation failed; the newly created container was cleaned up: {0}",
     "安装失败，安全清理未完成，容器已保留：{0}": "Installation failed; safe cleanup failed, so the container was retained: {0}",
     "更新失败，原容器和数据已保留。备份：{0}。详情：{1}": "Update failed; the existing container and data were retained. Backup: {0}. Details: {1}",

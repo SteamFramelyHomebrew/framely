@@ -51,3 +51,49 @@ impl NewContext {
         cleanup::delete_failed_install(home, db, c, log)
     }
 }
+
+// A caught failure is not an interrupted transaction. Restore the record before
+// submission, or reconcile the actual package after an uncertain submission.
+pub(super) fn reconcile_failed(
+    home: &Path,
+    db: &mut Database,
+    c: &Container,
+    app_id: &str,
+    original: Option<Record>,
+    submitted: bool,
+    stopped: bool,
+    error: &anyhow::Error,
+) -> Result<()> {
+    if !submitted {
+        if let Some(record) = original {
+            db.records.insert(app_id.into(), record);
+        } else {
+            db.records.remove(app_id);
+        }
+    } else {
+        let mut actual = c.clone();
+        actual.running = !stopped;
+        match installed(home, &actual) {
+            Ok(packages) => {
+                if let Some(record) = db.records.get_mut(app_id) {
+                    if let Some((metadata, _)) = packages
+                        .into_iter()
+                        .find(|(m, _)| m.package == record.metadata.package)
+                    {
+                        record.metadata = metadata;
+                        record.removed = false;
+                    } else {
+                        record.removed = true;
+                    }
+                    record.pending = None;
+                }
+            }
+            Err(_) => {
+                if let Some(record) = db.records.get_mut(app_id) {
+                    record.pending = Some(format!("Installation failed; actual package state could not be verified; reconcile before changing the application: {error:#}"));
+                }
+            }
+        }
+    }
+    save(home, db)
+}

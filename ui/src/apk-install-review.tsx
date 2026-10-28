@@ -20,7 +20,7 @@ export function ApkInstallReview({metadata,size,previous,updating,containerName,
   {updating&&<div className="apk-install-update-note"><IconInfoCircle size={21} aria-hidden="true"/><div><p>{t('同包名更新保留数据；签名不匹配或降级不会自动卸载重装。')}</p><small>{t('共享容器的备份需手动恢复；独立侧载容器支持一键恢复。')}</small></div></div>}
   {running&&<div className="apk-notice"><p>{t('安装前需要关闭容器，以安全备份应用数据。关闭会中断其中正在运行的应用，保留存档和设置。')}</p><button disabled={busy} onClick={onStop}>{t('关闭容器')}</button></div>}
   {mismatch&&<p className="error" role="alert">{t('APK 包名与原应用不一致，请选择同一应用的更新文件。')}</p>}
-  {error&&<div className="error" role="alert"><p>{error}</p>{updating&&!running&&/container|backup|容器|备份/i.test(error)&&<button disabled={busy} onClick={onStop}>{t('关闭容器')}</button>}</div>}
+  {error&&<div className="error" role="alert"><p>{error}</p></div>}
   <footer><button disabled={busy} onClick={onCancel}>{t('取消')}</button><button className="primary" disabled={busy||mismatch} onClick={onConfirm}>{t(updating?'确认更新':'确认安装')}</button></footer>
  </div>;
 }

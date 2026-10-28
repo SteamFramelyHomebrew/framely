@@ -22,6 +22,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 mod cleanup;
+mod compatibility;
 pub(crate) mod updates;
 mod graphics;
 mod install_rollback;
@@ -1320,7 +1321,9 @@ pub fn inspect(home: &Path, staged: &Path, cancel: &Cancellation) -> Result<Valu
     let metadata = match (|| -> Result<Metadata> {
         fs::copy(staged, &snapshot)?;
         cancel.check()?;
-        apk_metadata::read(&snapshot)
+        let metadata = apk_metadata::read(&snapshot)?;
+        compatibility::image(home, &metadata)?;
+        Ok(metadata)
     })() {
         Ok(metadata) => metadata,
         Err(error) => {
@@ -3073,6 +3076,7 @@ fn operate_internal(
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                     Err(error) => return Err(error.into()),
                 };
+                compatibility::image(home, &metadata)?;
                 let requested = p["context"].as_str().unwrap_or("");
                 let cs = containers(home, &db);
                 let context = if requested.is_empty() {
@@ -3162,6 +3166,9 @@ fn operate_internal(
                     && !db.records.values().any(|record|record.context==c.id) {
                     Some(install_rollback::NewContext::reserve(home,&db,&c)?)
                 } else {None};
+                let original_record = db.records.get(&app_id).cloned();
+                let mut installer_started = false;
+                let mut submitted = false;
                 let mut backup_id=None;
                 let attempt=(|| -> Result<Value> {
                 let rec = db.records.entry(app_id.clone()).or_insert_with(|| Record {
@@ -3189,9 +3196,10 @@ fn operate_internal(
   let _=fs::OpenOptions::new().append(true).open(&log).and_then(|mut file|writeln!(file,"Installer runtime: {} -> {}; data location retained",c.name,c.id));
   c.name=c.id.clone();c.running=false;
  }
-progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log).with_context(||format!("Cannot initialize Android container {}",c.baked.display()))?;
+progress(json!({"phase":"starting"}));installer_started=true;start(home,&c,Some(false),&log).with_context(||format!("Cannot initialize Android container {}",c.baked.display()))?;
  let sdk=podman(&["exec",&format!("lepton-{}",c.name),"getprop","ro.build.version.sdk"],Some(&log))?.trim().parse::<u32>()?;ensure!(metadata.min_sdk<=sdk,"APK requires Android SDK {}, container provides {}",metadata.min_sdk,sdk);
- progress(json!({"phase":"installing","cancellable":false}));install_package(&c,&review.join("base.apk"),&log)?;
+ compatibility::live(&c,&metadata,&log)?;
+ progress(json!({"phase":"installing","cancellable":false}));submitted=true;install_package(&c,&review.join("base.apk"),&log)?;
  progress(json!({"phase":"verifying"}));let path=podman(&["exec",&format!("lepton-{}",c.name),"pm","path",&metadata.package],Some(&log))?;ensure!(path.contains("package:"),"Android did not report the installed APK");let dest=r.join("apks").join(hash(&app_id));store_apk(&review.join("base.apk"),&dest)?;
  // Installation boots a headless container solely for the package manager.
  // Finish that runtime before Steam takes ownership of the first app launch.
@@ -3207,6 +3215,19 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log).with_conte
                     Ok(value)=>Ok(value),
                     Err(error)=>{
                         let _=fs::OpenOptions::new().append(true).create(true).open(&log).and_then(|mut f|writeln!(f,"APK installation failed: {error:#}"));
+                        // Every installer-owned runtime is headless and must stop on
+                        // failure too, including when ownership checks refuse deletion.
+                        let stopped = !installer_started || match stop(&c, &log) {
+                            Ok(()) => true,
+                            Err(stop_error) => {
+                                let _ = fs::OpenOptions::new().append(true).open(&log).and_then(|mut file| writeln!(file, "Installer container stop failed: {stop_error:#}"));
+                                false
+                            }
+                        };
+                        let reconciled = install_rollback::reconcile_failed(home, &mut db, &c, &app_id, original_record, submitted, stopped, &error);
+                        if let Err(state_error) = &reconciled {
+                            let _ = fs::OpenOptions::new().append(true).open(&log).and_then(|mut file| writeln!(file, "Failed to save reconciled installation state: {state_error:#}"));
+                        }
                         if let Some(fresh)=fresh {
                             progress(json!({"phase":"rolling-back","cancellable":false}));
                             match fresh.rollback(home,&mut db,&c,&log) {
@@ -3217,7 +3238,12 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log).with_conte
                                 }
                             }
                         } else {
-                            bail!("Installation failed; existing container and data retained (backup: {}): {error:#}",backup_id.as_deref().unwrap_or("not created"));
+                            if let Err(state_error) = reconciled {
+                                bail!("Installation failed: {error:#}; package state could not be saved: {state_error:#}");
+                            }
+                            let outcome = if previous.is_some() { "Update failed" } else { "Installation failed" };
+                            let stop_detail = if stopped { "" } else { "; installer container could not be stopped; inspect its log" };
+                            bail!("{outcome}; existing container and data retained (backup: {}): {error:#}{stop_detail}",backup_id.as_deref().unwrap_or("not created"));
                         }
                     }
                 }
@@ -3716,12 +3742,6 @@ progress(json!({"phase":"starting"}));start(home,&c,Some(false),&log).with_conte
     if let Err(e) = &result {
         if let Ok(mut f) = fs::OpenOptions::new().append(true).open(&log) {
             let _ = writeln!(f, "ERROR: {e:#}");
-        }
-        if let Some(rec) = db.records.get_mut(id) {
-            if kind == "install" {
-                rec.pending = Some(format!("Update failed; refresh installed state: {e:#}"));
-                let _ = save(home, &db);
-            }
         }
     }
     if kind == "install" {
@@ -4594,6 +4614,7 @@ case "$1" in
   elif [ "$3" = getprop ]; then
     case "$4" in
       waydroid.active_apps) if [ -f '{closed}' ]; then echo none; else echo Waydroid; fi;;
+      ro.product.cpu.abilist) if [ -f "{abi_override}" ]; then cat "{abi_override}"; else echo arm64-v8a; fi;;
       lepton.headless) echo false;;
       framely.window_orientation) echo auto;;
       *) echo 30;;
@@ -4604,6 +4625,7 @@ case "$1" in
 esac
 "#,
                 pid = std::process::id(),
+                abi_override = dir.path().join("abi-override").display(),
                 compat = baked.parent().unwrap().display(),
                 baked_path = baked.display(),
                 bad_probe = dir.path().join("bad-probe").display(),
@@ -4679,6 +4701,65 @@ echo true > '{}'
             self.home.join(".local/share/lepton/contexts/test/baked/data_overlay/data/com.example.app/files/save")
         }
     }
+    fn add_arm32_library(path: &Path) {
+        let file = fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
+        let mut zip = zip::ZipWriter::new_append(file).unwrap();
+        zip.start_file("lib/armeabi-v7a/libexample.so", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(b"native ARM32 fixture").unwrap();
+        zip.finish().unwrap();
+    }
+    #[test]
+    fn incompatible_apk_is_rejected_before_review_or_context_creation() {
+        let f = Fixture::new();
+        let image = runner(&f.home).unwrap().parent().unwrap().join("images/rootfs/system");
+        fs::create_dir_all(&image).unwrap();
+        fs::write(image.join("build.prop"), "ro.product.cpu.abilist=arm64-v8a\n").unwrap();
+        let apk = f.dir.path().join("arm32.apk");
+        crate::apk_metadata::fixture(&apk, true, 43);
+        add_arm32_library(&apk);
+        let error = inspect(&f.home, &apk, &Cancellation::default()).unwrap_err();
+        assert!(error.to_string().contains("APK architectures (armeabi-v7a)"));
+        assert_eq!(fs::read_dir(root(&f.home).join("reviews")).unwrap().count(), 0);
+        assert!(!f.dir.path().join("commands").exists());
+        assert!(!contexts_root(&f.home).join("framely-arm32").exists());
+        // A future dual-ABI image must accept the same APK, not be hardcoded arm64.
+        fs::write(image.join("build.prop"), "ro.product.cpu.abilist=arm64-v8a,armeabi-v7a\n").unwrap();
+        assert!(inspect(&f.home, &apk, &Cancellation::default()).is_ok());
+    }
+    #[test]
+    fn live_abi_rejection_stops_installer_and_restores_record_without_submitting() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        let apk = f.dir.path().join("arm32.apk");
+        crate::apk_metadata::fixture(&apk, true, 43);
+        add_arm32_library(&apk);
+        let ticket = inspect(&f.home, &apk, &Cancellation::default()).unwrap()["ticket"].as_str().unwrap().to_owned();
+        let error = f.operation("install", json!({"context":"test", "ticket":ticket, "approve":true})).unwrap_err();
+        assert!(format!("{error:#}").contains("not supported by this Android runtime"), "{error:#}");
+        assert!(format!("{error:#}").starts_with("Update failed;"));
+        assert_eq!(fs::read_to_string(f.dir.path().join("running")).unwrap().trim(), "false");
+        let db = load(&f.home).unwrap();
+        assert!(db.records["test/com.example.app"].pending.is_none());
+        assert_eq!(db.records["test/com.example.app"].metadata.version_code, 42);
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        let commands = fs::read_to_string(f.dir.path().join("commands")).unwrap();
+        assert!(!commands.lines().any(|line| line.starts_with(&format!("cp {}/reviews/", root(&f.home).display()))));
+    }
+    #[test]
+    fn failed_install_into_retained_context_is_not_an_update_and_clears_pending() {
+        let f = Fixture::new();
+        list(&f.home).unwrap();
+        f.operation("uninstall", json!({"app":"test/com.example.app", "approve":true})).unwrap();
+        let ticket = f.review(43);
+        fs::write(f.dir.path().join("fail"), "").unwrap();
+        let error = f.operation("install", json!({"context":"test", "ticket":ticket, "approve":true})).unwrap_err();
+        assert!(error.to_string().starts_with("Installation failed; existing container"), "{error:#}");
+        let record = load(&f.home).unwrap().records["test/com.example.app"].clone();
+        assert!(record.removed);
+        assert!(record.pending.is_none());
+        assert_eq!(fs::read_to_string(f.dir.path().join("running")).unwrap().trim(), "false");
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+    }
     #[test]
     fn failed_install_new_context_is_rolled_back_and_logs_retained() {
         let f = Fixture::new();
@@ -4702,6 +4783,34 @@ echo true > '{}'
         assert_eq!(fs::read_to_string(old_log).unwrap(), "previous failure");
         assert!(fs::read_dir(root(&f.home).join("logs")).unwrap().any(|entry|
             fs::read_to_string(entry.unwrap().path()).unwrap().contains("APK installation failed")));
+    }
+    #[test]
+    fn failed_install_native_overlay_is_cleaned_without_touching_shared_sysbake() {
+        let f = Fixture::new();
+        let mut db = load(&f.home).unwrap();
+        let c = Container { id:"new-test".into(), name:"new-test".into(), baked:contexts_root(&f.home).join("new-test/baked"), running:false, managed:true, steam:false };
+        db.owned_contexts.push(c.id.clone());
+        fs::write(f.dir.path().join("running"), "missing").unwrap();
+        let reservation = install_rollback::NewContext::reserve(&f.home, &db, &c).unwrap();
+        for path in ["data_overlay/system", "data_workdir"] { fs::create_dir_all(c.baked.join(path)).unwrap(); }
+        fs::write(c.baked.join("data_overlay/system/packages.xml"), "<packages/>").unwrap();
+        let shared = f.dir.path().join("sysbake"); fs::create_dir(&shared).unwrap();
+        fs::write(shared.join("keep"), "shared system data").unwrap();
+        let mounts = json!([{"Type":"bind", "Source":"/podman/overlay/merged", "Destination":"/data", "Options":[
+            format!("lowerdir={}",shared.display()), format!("upperdir={}",c.baked.join("data_overlay").display()), format!("workdir={}",c.baked.join("data_workdir").display())]}]);
+        let podman = f.dir.path().join("tools/podman");
+        let script = fs::read_to_string(&podman).unwrap();
+        let old = format!("[{{\"Source\":\"{}\",\"Destination\":\"/data\"}}]",contexts_root(&f.home).join("test/baked").display());
+        assert!(script.contains(&old));
+        fs::write(&podman, script.replace(&old, &mounts.to_string())).unwrap();
+        fs::write(f.dir.path().join("running"), "false").unwrap();
+        let log = init(&f.home).unwrap().join("logs/overlay-rollback.log");fs::write(&log, "original install failed").unwrap();
+        reservation.rollback(&f.home,&mut db,&c,&log).unwrap();
+        assert!(!c.baked.parent().unwrap().exists());
+        assert_eq!(fs::read_to_string(shared.join("keep")).unwrap(), "shared system data");
+        assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        assert!(log.exists());
+        assert!(!db.owned_contexts.contains(&c.id));
     }
     #[test]
     fn failed_install_unsafe_rollback_retains_container_and_record() {
@@ -6240,6 +6349,9 @@ esac
         fs::write(f.dir.path().join("fail"), "").unwrap();
         assert!(f.operation("install",json!({"context":"test","app":"test/com.example.app","ticket":ticket,"approve":true})).is_err());
         assert_eq!(fs::read_to_string(f.save_file()).unwrap(), "saved progress");
+        assert_eq!(fs::read_to_string(f.dir.path().join("running")).unwrap().trim(), "false");
+        assert!(load(&f.home).unwrap().records["test/com.example.app"].pending.is_none(), "{:?}", load(&f.home).unwrap().records["test/com.example.app"].pending);
+        assert!(!load(&f.home).unwrap().records["test/com.example.app"].removed);
         assert_eq!(
             cached_metadata(
                 &f.home

@@ -22,6 +22,8 @@ Applications are identified by context plus package name. The same package in tw
 
 ## Install and update
 
+Framely checks the ABIs declared by the Lepton image, then checks the running Android ABI list before submitting the APK. ARM32-only APKs require a matching runtime or a separate compatibility layer; the Quest conversion option does not provide general ARM32 compatibility. APKs without native libraries are exempt from this check.
+
 During APK installation, choose **Display mode → Flat window / VR app**. The initial selection follows APK detection; updates keep your previous window override. Flat mode displays the Android window, while VR mode hides it and requires the app itself to support VR. A successful installation saves the choice; failed installations preserve the previous setting.
 
 Choose **Install APK**, select an individual `.apk`, and review its name, package, version, minimum Android SDK and target container. Inside Frame, the selected APK is inspected directly on the device without a browser upload. A private local snapshot is retained for the confirmation step; the original file is not changed. Uploads from the network panel are staged on Frame's persistent filesystem, not its limited `/tmp`. Transfer shows actual bytes; subsequent work shows named stages instead of invented percentages.
@@ -205,7 +207,7 @@ Container list headings show installed application names; the data path identifi
 
 ### Failed installs and damaged containers
 
-A failed first install rolls back only the container, runtime and installation records created by that attempt, retaining operation logs. A failed update keeps the existing container, application data and any backup already created. If safe cleanup fails, the pending state is retained and both installation and cleanup errors are reported.
+A failed first install rolls back only the container, runtime and installation records created by that attempt, retaining operation logs. A failed update keeps the existing container, application data and any backup already created. Installer-started background containers are also stopped on failure. Handled failures reconcile the actual package state instead of always reporting an interrupted installation; an unresolved-state notice remains only when verification fails. Safe cleanup failures retain data and report the original and cleanup errors without bypassing ownership checks. Retrying a retained container without an installed application is still an installation, not an update.
 
 For older, incomplete Framely-owned containers without an Android package database, choose **Clean damaged container** in application details or delete the container from the container page. Explicit confirmation permanently deletes its application data, associated APK cache and Steam entries; historical backups remain. Ownership, storage paths and runtime ownership must pass validation. Unreadable old data is never automatically deleted. After confirming that the data is no longer needed, clean the damaged container and select the APK again. Diagnose the original installation failure using its logs.
 
