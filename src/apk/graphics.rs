@@ -59,7 +59,15 @@ pub(super) fn configure_environment(env: &mut Value, enabled: bool, package: &st
         "Invalid APK package"
     );
     env["FRAMELY_FBO_PACKAGE"] = json!(if enabled { package } else { "" });
-    env["FRAMELY_AFME_COMMAND"] = json!(afme_command(package));
+    // Native launches boot a fresh container, so there is no prior managed
+    // property to clear. Do not embed getprop's $(...) in an init exec command:
+    // Android init expands '$' before sh sees it. Reused direct containers use
+    // apply() below to clear our marker when switching packages.
+    env["FRAMELY_AFME_COMMAND"] = json!(if package == "com.hottagames.yh.laohu" {
+        afme_command(package)
+    } else {
+        ":"
+    });
     Ok(())
 }
 pub(super) fn mounted(c: &Container, log: &Path) -> Result<bool> {
@@ -159,7 +167,8 @@ if {game}; then exit 1; fi
         configure_environment(&mut env, false, "com.hottagames.yh.laohu").unwrap();
         assert_eq!(env["FRAMELY_AFME_COMMAND"], afme_command("com.hottagames.yh.laohu"));
         configure_environment(&mut env, false, "com.example.other").unwrap();
-        assert_eq!(env["FRAMELY_AFME_COMMAND"], afme_command("com.example.other"));
+        assert_eq!(env["FRAMELY_AFME_COMMAND"], ":");
+        assert!(!env["FRAMELY_AFME_COMMAND"].as_str().unwrap().contains('$'));
         assert_eq!(env["FRAMELY_FBO_PACKAGE"], "");
     }
     #[test]

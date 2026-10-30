@@ -23,6 +23,24 @@ function run_app_commands() {
 function get_app_hash() { extract_app_hash; }
 function get_app_last_depot_version() { extract_app_last_depot_version; }
 function clear_baked_app_data() { println 'Framely: keeping installed application data'; }
+# Lepton's onexit file follows one process name. Apps such as Kugou replace
+# their main process with a separately named privacy activity, so that file
+# does not mean the package has exited. Keep Steam's wrapper alive until the
+# container stops. Framely's package-aware lifecycle watcher owns automatic
+# shutdown, including its grace period and the user's close/auto-stop settings.
+function wait_for_container() {
+    local CONTEXT="${1:-${LEPTON_CONTEXT}}"
+    unlock_lepton
+    println "Waiting for ${CONTEXT} container to exit (Framely package lifecycle)..."
+    (
+        uninherit_lepton_lock
+        podman wait "lepton-${CONTEXT}" 2>/dev/null >/dev/null || true
+    ) &
+    WAIT_PID="$!"
+    wait "${WAIT_PID}" 2>/dev/null >/dev/null
+    lock_lepton
+    println "Exited!"
+}
 # Separate native APK overlays in older shared contexts. Keep the installed
 # directory (including extracted libraries/splits), rather than hiding it with
 # a directory containing only the staged base APK.
@@ -342,6 +360,51 @@ pub(super) fn run(app: &str, token: &str, command: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_wait_ignores_main_process_exit_until_container_stops() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("wait.sh");
+        fs::write(&script, format!(r#"set -euo pipefail
+function print() {{ printf '%s\n' "$*"; }}
+function println() {{ print "$@"; }}
+function is_app() {{ return 0; }}
+function unlock_lepton() {{ echo unlocked; }}
+function lock_lepton() {{ echo locked; }}
+function uninherit_lepton_lock() {{ :; }}
+function onexit_path() {{ echo "$TEST_EXIT"; }}
+function wait_for_file() {{ test -f "$1"; }}
+function wait_for_container() {{ wait_for_file "$(onexit_path)"; }}
+function podman() {{
+    [[ "$1 $2" == 'wait lepton-test' ]] || return 1
+    touch "$TEST_READY"
+    while [[ ! -f "$TEST_STOP" ]]; do sleep 0.02; done
+}}
+{NATIVE_HOOKS}
+wait_for_container test
+is_app
+"#)).unwrap();
+        let ready = dir.path().join("ready");
+        let stop = dir.path().join("stop");
+        // This is the marker Lepton receives when the *main* process exits.
+        fs::write(dir.path().join("lepton-on-app-exit"), "").unwrap();
+        let mut child = Command::new("bash").arg(script)
+            .env("TEST_READY", &ready).env("TEST_STOP", &stop)
+            .env("TEST_EXIT", dir.path().join("lepton-on-app-exit"))
+            .env_remove("FRAMELY_NATIVE_APK_DIR")
+            .stdout(Stdio::piped()).spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let waiting = ready.exists() && child.try_wait().unwrap().is_none();
+        fs::write(stop, "").unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(waiting, "Native launcher must wait for the container, not the main PID");
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.starts_with("unlocked\n"));
+        assert!(text.ends_with("locked\nExited!\n"));
+    }
     #[test]
     fn native_shared_context_uses_complete_installed_directory_and_separate_overlay() {
         let source = format!(

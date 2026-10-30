@@ -178,6 +178,13 @@ fn command(m: &Manifest, payload: &Path, manager: u32, _logs: &Path, storage: &P
     match b.run_as {
         RunAs::Steamos => {
             cmd.arg(format!("--setenv=HOME={}", user_home(manager)?));
+            // These system services do not inherit the Steam login session.
+            // Explicitly target its bus/audio runtime rather than root's or an
+            // unset environment. Order after an already queued user-manager
+            // startup without creating a login session on the user's behalf.
+            cmd.arg(format!("--property=After=user@{manager}.service"))
+                .arg(format!("--setenv=XDG_RUNTIME_DIR=/run/user/{manager}"))
+                .arg(format!("--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{manager}/bus"));
         }
         RunAs::Root => {
             cmd.arg("--setenv=HOME=/root");
@@ -549,6 +556,31 @@ pub fn user_home(uid: u32) -> Result<String> {
 #[cfg(test)]
 mod launch_tests {
     use super::*;
+    #[test]
+    fn user_backends_and_hooks_target_the_manager_session_bus() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest: Manifest = serde_json::from_value(json!({
+            "schemaVersion":1,"apiVersion":1,"id":"test.session","name":"Session",
+            "author":"Test","version":"1.0.0","files":{},
+            "backend":{"entry":"backend","runAs":"steamos"}
+        })).unwrap();
+        for (run_as, folder, expected) in [
+            (RunAs::Steamos, "steamos", true), (RunAs::Root, "root", false)
+        ] {
+            manifest.backend.as_mut().unwrap().run_as = run_as;
+            fs::create_dir_all(dir.path().join("data/test.session").join(folder)).unwrap();
+            let manager = unsafe { libc::geteuid() };
+            let cmd = command(&manifest, dir.path(), manager, dir.path(), dir.path(), "test").unwrap();
+            let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+            for argument in [
+                format!("--setenv=XDG_RUNTIME_DIR=/run/user/{manager}"),
+                format!("--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{manager}/bus"),
+                format!("--property=After=user@{manager}.service"),
+            ] {
+                assert_eq!(args.contains(&argument), expected, "{argument}");
+            }
+        }
+    }
     #[test]
     fn captured_status_does_not_wait_for_inherited_stdout() {
         let output = command_output_timeout(

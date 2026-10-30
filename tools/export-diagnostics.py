@@ -143,7 +143,7 @@ def collect(state, commands=True, runtime=pathlib.Path('/run/user'), installer_l
             except (OSError, ValueError, TypeError, AttributeError) as error:
                 report['warnings'].append('apk/summary.json: ' + str(error))
 
-            def recent_logs(directory, pattern, limit, prefix):
+            def recent_logs(directory, pattern, limit, prefix, priority=()):
                 try:
                     if directory.is_symlink():
                         raise ValueError('Diagnostic log directory must not be a symlink')
@@ -152,9 +152,16 @@ def collect(state, commands=True, runtime=pathlib.Path('/run/user'), installer_l
                         return
                     paths = [p for p in directory.glob(pattern)
                              if not p.is_symlink() and not p.parent.is_symlink() and p.is_file()]
-                    paths.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                    # Preserve fatal evidence from other contexts before one
+                    # busy app's main/system/kernel logs consume the file limit.
+                    paths.sort(key=lambda p: (p.name in priority, p.stat().st_mtime), reverse=True)
                     for path in paths[:limit]:
-                        tail(path, prefix + '/' + path.relative_to(directory).as_posix())
+                        name = prefix + '/' + path.relative_to(directory).as_posix()
+                        tail(path, name)
+                        if path.name in priority:
+                            text = entries.get(name, b'').decode('utf-8', errors='replace')
+                            if 'logcat: Logcat read failure:' in text:
+                                report['warnings'].append(name + ': saved crash log could not be read; absence of a crash is unverified')
                     if len(paths) > limit:
                         report['warnings'].append(prefix + ': only the ' + str(limit) + ' newest logs included')
                 except (OSError, ValueError) as error:
@@ -165,7 +172,7 @@ def collect(state, commands=True, runtime=pathlib.Path('/run/user'), installer_l
             if not steam.is_dir():
                 steam = steam_home / '.steam/steam'
             # Only known diagnostic files, never media, APKs, saves or tombstones.
-            recent_logs(steam / 'logs/lepton-logcats', '*/logcat-*.log', 12, 'apk/android-saved')
+            recent_logs(steam / 'logs/lepton-logcats', '*/logcat-*.log', 20, 'apk/android-saved', ('logcat-crash.log',))
             if commands and steam_user is not None:
                 prefix = []
                 if os.geteuid() == 0:
@@ -175,10 +182,17 @@ def collect(state, commands=True, runtime=pathlib.Path('/run/user'), installer_l
                 listing = command('apk/containers.txt', prefix + ['ps', '-a', '--filter', 'name=^lepton-', '--format', '{{.Names}}\t{{.Status}}'])
                 if listing:
                     active = []
+                    containers = []
                     for line in listing.splitlines():
                         name, _, status = line.partition('\t')
-                        if re.fullmatch(r'lepton-[A-Za-z0-9_.-]+', name) and status.startswith('Up '):
-                            active.append(name)
+                        if re.fullmatch(r'lepton-[A-Za-z0-9_.-]+', name):
+                            containers.append(name)
+                            if status.startswith('Up '):
+                                active.append(name)
+                    if containers:
+                        # State only: never export container configuration,
+                        # environment, bind credentials or complete inspect data.
+                        command('apk/container-states.txt', prefix + ['inspect', '--format', '{{.Name}} {{json .State}}'] + (active + [n for n in containers if n not in active])[:12])
                     for name in active[:4]:
                         # A single read-only exec per active container bounds export
                         # latency and works even when PackageManager is not ready.

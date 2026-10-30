@@ -155,6 +155,29 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertIn('XDG_RUNTIME_DIR=/run/user/1000', executions[0])
             self.assertNotIn('start', executions[0])
             self.assertTrue(any('partial output' in w for w in json.loads(archive.read('report.json'))['warnings']))
+            inspections = [a for a in calls if 'inspect' in a]
+            self.assertEqual(len(inspections), 1)
+            self.assertIn('{{.Name}} {{json .State}}', inspections[0])
+            self.assertEqual(inspections[0][-2:], ['lepton-active', 'lepton-stopped'])
+
+    def test_saved_crashes_survive_busy_contexts_and_read_failures_are_reported(self):
+        import os
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            home = root / 'user'
+            saved = home / '.local/share/Steam/logs/lepton-logcats'
+            for context in range(6):
+                directory = saved / str(context)
+                directory.mkdir(parents=True)
+                for buffer in ('main', 'system', 'radio', 'kernel', 'crash'):
+                    path = directory / ('logcat-' + buffer + '.log')
+                    path.write_text('logcat: Logcat read failure: No such file or directory' if context == 0 and buffer == 'crash' else f'{context} {buffer}')
+                    os.utime(path, (context + 1, context + 1))
+            result = diag.collect(root, commands=False, runtime=root/'runtime', steam_home=home)
+            archive = zipfile.ZipFile(io.BytesIO(base64.b64decode(result['data'])))
+            for context in range(6):
+                self.assertIn(f'apk/android-saved/{context}/logcat-crash.log', archive.namelist())
+            self.assertTrue(any('absence of a crash is unverified' in w for w in json.loads(archive.read('report.json'))['warnings']))
 
 if __name__ == '__main__':
     unittest.main()
