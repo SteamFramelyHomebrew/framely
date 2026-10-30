@@ -15,9 +15,9 @@ function run_app_commands() {
     local APP_ID="${1:-$(get_app_id)}"
     local APP_ACTIVITY="${2:-$(get_app_activity)}"
     if app_wants_flatscreen; then
-        print "am start -S --windowingMode 1 ${APP_ID}/${APP_ACTIVITY} && /system/bin/sh /vendor/share/framely-window.sh ${APP_ID}"
+        print "${FRAMELY_AFME_COMMAND:-:} && am start -S --windowingMode 1 ${APP_ID}/${APP_ACTIVITY} && /system/bin/sh /vendor/share/framely-window.sh ${APP_ID}"
     else
-        print "am start -S ${APP_ID}/${APP_ACTIVITY}"
+        print "${FRAMELY_AFME_COMMAND:-:} && am start -S ${APP_ID}/${APP_ACTIVITY}"
     fi
 }
 function get_app_hash() { extract_app_hash; }
@@ -447,6 +447,7 @@ esac
                 .env("FRAMELY_NATIVE_LAUNCH", "true")
                 .env("FRAMELY_NATIVE_MOUNT", "/data/app/test")
                 .env("FRAMELY_NATIVE_ACTIVITY", "test.Selected")
+                .env("FRAMELY_AFME_COMMAND", "setprop debug.afme20.bypass 1")
                 .env("APP_WANTS_FLATSCREEN", if flat { "true" } else { "false" })
                 .env("TEST_DATA", &data)
                 .env("LEPTON_PREFIX", &prefix)
@@ -465,6 +466,8 @@ esac
                 "am start -S test.Package/test.Selected"
             };
             assert!(String::from_utf8_lossy(&out.stdout).contains(expected));
+            assert!(String::from_utf8_lossy(&out.stdout)
+                .contains(&format!("setprop debug.afme20.bypass 1 && {expected}")));
             assert_eq!(fs::read(&save).unwrap(), b"saved game");
             assert_eq!(fs::read(&download).unwrap(), b"resume-me");
             assert!(!prefix.exists(), "Temporary prefix must still be cleaned up");

@@ -32,6 +32,12 @@ class InstallRetry(unittest.TestCase):
             package.mkdir()
             for folder in ['bin', 'lib/cef', 'share', 'tools']:
                 (package / folder).mkdir(parents=True)
+            kernel = base / 'overcommit_memory'
+            kernel.write_text('0\n')
+            policy_source = (pathlib.Path(__file__).parents[1] / 'tools/android-memory.py').read_text()
+            policy_source = policy_source.replace('/etc/sysctl.d/99-framely-overcommit.conf', str(etc / 'sysctl.d/99-framely-overcommit.conf'))
+            policy_source = policy_source.replace('/proc/sys/vm/overcommit_memory', str(kernel))
+            (package / 'tools/android-memory.py').write_text(policy_source)
             (package / 'VERSION').write_text('test-version\n')
             (package / 'SHA256SUMS').write_text('')
             (package / 'lib/cef/framely-vr').write_text('mock')
@@ -89,6 +95,8 @@ class InstallRetry(unittest.TestCase):
             first = subprocess.run(['bash', str(script), 'steam'], env=env, capture_output=True, text=True)
             self.assertNotEqual(first.returncode, 0, first.stdout + first.stderr)
             self.assertIn('restoring previous', first.stderr)
+            self.assertEqual(kernel.read_text(), '0\n')
+            self.assertFalse((etc / 'sysctl.d/99-framely-overcommit.conf').exists())
             self.assertFalse((store / 'releases/test-version').exists())
             self.assertTrue(state.is_symlink())
             if legacy:
@@ -97,6 +105,8 @@ class InstallRetry(unittest.TestCase):
             failure.unlink()
             second = subprocess.run(['bash', str(script), 'steam'], env=env, capture_output=True, text=True)
             self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+            self.assertEqual(kernel.read_text(), '1\n')
+            self.assertEqual((store / 'state/overcommit-original.txt').read_text(), '0\n')
             self.assertTrue((store / 'releases/test-version').is_dir())
             if split:
                 self.assertTrue((store / 'releases/test-version/lib/cef/libcef.so').is_symlink())
@@ -178,6 +188,8 @@ class InstallRetry(unittest.TestCase):
             binary.write_text('#!/bin/sh\nexit 0\n')
             removed = subprocess.run(['bash', str(uninstall)], env=env, capture_output=True, text=True)
             self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+            self.assertEqual(kernel.read_text(), '0\n')
+            self.assertFalse((etc / 'sysctl.d/99-framely-overcommit.conf').exists())
             self.assertFalse((store / 'releases').exists())
             self.assertFalse((store / 'cef').exists())
             self.assertFalse((store / 'repair.sh').exists())

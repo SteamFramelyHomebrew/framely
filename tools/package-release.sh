@@ -90,7 +90,7 @@ cp -a assets/branding "$stage/tools/source/assets/"
 cp -a examples/showcase "$stage/tools/source/examples/"
 cp -a ui/src ui/locales ui/index.html ui/package.json "$stage/tools/source/ui/"
 cp tools/build-ui.mjs tools/build-code-editor.mjs tools/build-branding.mjs tools/plugin-dev.mjs "$stage/tools/source/tools/"
-cp tools/extract-release.py tools/bootstrap.py tools/cef-runtime.py tools/q2f-runtime.py tools/export-diagnostics.py "$stage/tools/"
+cp tools/android-memory.py tools/extract-release.py tools/bootstrap.py tools/cef-runtime.py tools/q2f-runtime.py tools/export-diagnostics.py "$stage/tools/"
 find "$stage/tools/source" -type d -name __pycache__ -prune -exec rm -rf -- {} +
 cp -a docs "$stage/share/"
 printf '%s\n' "$build_id" > "$stage/VERSION"

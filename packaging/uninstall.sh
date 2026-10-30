@@ -26,6 +26,7 @@ done
 "$root/current/bin/framely" prepare-uninstall --approve
 trap - ERR
 # Only remove the manager after every plugin has been disabled and uninstalled.
+python3 "$root/current/tools/android-memory.py" uninstall --state "$root"
 systemctl disable --now framely-session.service framely.service
 systemctl stop 'framely-plugin-*.service' 'framely-backend-*.service' 'framely-hook-*.service' 2>/dev/null || true
 rm -f /etc/systemd/system/framely.service /etc/systemd/system/framely-session.service

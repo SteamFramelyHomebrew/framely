@@ -160,6 +160,7 @@ rollback_on_failure() {
   local code=$?
   trap - ERR
   echo 'Installation failed; restoring previous services and release.' >&2
+  python3 "$base/tools/android-memory.py" rollback --state "$root" || echo 'Memory policy rollback failed; inspect install-backup/android-memory.json.' >&2
   systemctl stop framely-session.service framely.service 2>/dev/null || true
   rm -f "$root/current.rollback"
   if [[ -n $old ]]; then ln -s "$old" "$root/current.rollback"; mv -Tf "$root/current.rollback" "$root/current"; else rm -f "$root/current"; fi
@@ -175,6 +176,8 @@ rollback_on_failure() {
   exit "$code"
 }
 trap rollback_on_failure ERR
+# Apply and persist the global reservation policy as part of this transaction.
+python3 "$base/tools/android-memory.py" apply --state "$root"
 # Retire the temporary user UI used to recover an interrupted installation.
 systemctl --user --machine="$steam_user@" stop framely-ui-recovery.service 2>/dev/null || true
 systemctl stop framely-session.service framely.service 2>/dev/null || true
@@ -256,6 +259,7 @@ printf '%s\n' "$steam_user" > "$root/steam-user"
 cp "$release/repair.sh" "$store/repair.sh"
 chown root:root "$store/repair.sh"
 chmod 755 "$store/repair.sh"
+python3 "$base/tools/android-memory.py" commit --state "$root"
 installed=true
 trap - ERR
 echo "Installed Framely $version. Open SteamVR Dashboard and look for the Framely icon beside the Dock."

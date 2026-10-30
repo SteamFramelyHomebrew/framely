@@ -1,9 +1,24 @@
-//! Per-application GLES workaround. The library is inert unless Android's
-//! debug-layer loader selects this exact package at process startup.
+//! Per-application graphics workarounds, applied before the app starts.
+//! The GLES layer is inert unless Android selects this exact package.
 use super::*;
 
 pub(super) const HOOKS: &str = include_str!("../../native/android/fbo-compat.sh");
 const LAYER: &str = "libFramelyFBOCompat.so";
+
+// AFME 1.8.1 assumes Qualcomm's proprietary GL_VERSION format. On Mesa its
+// unchecked substring parsing throws std::out_of_range in the render thread.
+// Use AFME's own pass-through implementation instead of spoofing the driver or
+// modifying the APK. The marker lets another app in a shared container restore
+// our override without clearing an independently configured property.
+fn afme_command(package: &str) -> &'static str {
+    if package == "com.hottagames.yh.laohu" {
+        "{ setprop debug.afme20.bypass 1 && setprop framely.afme_bypass 1; }"
+    } else {
+        // Avoid nested double quotes: Lepton embeds this in init's quoted sh -c
+        // argument. A case word also handles an unset property without splitting.
+        "{ case $(getprop framely.afme_bypass) in 1) setprop debug.afme20.bypass 0 && setprop framely.afme_bypass 0;; esac; }"
+    }
+}
 
 pub(super) fn library(required: bool) -> Result<Option<PathBuf>> {
     let exe = std::env::current_exe()?;
@@ -44,6 +59,7 @@ pub(super) fn configure_environment(env: &mut Value, enabled: bool, package: &st
         "Invalid APK package"
     );
     env["FRAMELY_FBO_PACKAGE"] = json!(if enabled { package } else { "" });
+    env["FRAMELY_AFME_COMMAND"] = json!(afme_command(package));
     Ok(())
 }
 pub(super) fn mounted(c: &Container, log: &Path) -> Result<bool> {
@@ -65,6 +81,10 @@ pub(super) fn apply(c: &Container, a: &App, log: &Path) -> Result<()> {
         apk_metadata::valid_package(&a.metadata.package),
         "Invalid APK package"
     );
+    podman(
+        &["exec", &format!("lepton-{}", c.name), "sh", "-c", afme_command(&a.metadata.package)],
+        Some(log),
+    )?;
     // Reusing a container is safe: restart only the selected app if its loader
     // configuration changed, and clear only our own layer when disabling it.
     let script = r#"
@@ -111,6 +131,37 @@ fi
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn afme_bypass_is_scoped_and_restored_for_shared_container_launches() {
+        let script = format!(
+            r#"set -euo pipefail
+declare -A properties
+getprop() {{ printf '%s' "${{properties[$1]:-}}"; }}
+setprop() {{ properties[$1]=$2; }}
+# An unrelated override must survive an ordinary app launch.
+properties[debug.afme20.bypass]=custom
+{ordinary}
+[[ ${{properties[debug.afme20.bypass]}} == custom ]]
+{game}
+[[ ${{properties[debug.afme20.bypass]}} == 1 && ${{properties[framely.afme_bypass]}} == 1 ]]
+{game}
+{ordinary}
+[[ ${{properties[debug.afme20.bypass]}} == 0 && ${{properties[framely.afme_bypass]}} == 0 ]]
+setprop() {{ return 42; }}
+if {game}; then exit 1; fi
+"#,
+            ordinary = afme_command("com.example.other"),
+            game = afme_command("com.hottagames.yh.laohu"),
+        );
+        let result = Command::new("bash").args(["-c", &script]).output().unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        let mut env = json!({});
+        configure_environment(&mut env, false, "com.hottagames.yh.laohu").unwrap();
+        assert_eq!(env["FRAMELY_AFME_COMMAND"], afme_command("com.hottagames.yh.laohu"));
+        configure_environment(&mut env, false, "com.example.other").unwrap();
+        assert_eq!(env["FRAMELY_AFME_COMMAND"], afme_command("com.example.other"));
+        assert_eq!(env["FRAMELY_FBO_PACKAGE"], "");
+    }
     #[test]
     fn compiled_layer_preserves_calls_and_handles_missing_symbols() {
         let dir = tempfile::tempdir().unwrap();

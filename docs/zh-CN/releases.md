@@ -30,6 +30,16 @@ framely call system.source.save '{"source":{"url":"https://example.org/framely-r
 
 官方 GitHub `releases/latest/download/framely-release.json` 更新源会查询仓库 Release 列表，按渠道严格筛选，选择带本体包和清单的最高 SemVer 标签；跳过草稿、安装器标签和附件不完整的发行。没有匹配版本时显示该渠道暂无发行，包括只有 Preview 时检查正式版的情况。清单必须与所选标签、包地址和长度一致。自定义 HTTPS 清单地址仍直接读取，其版本必须属于所选渠道；发行者需要配置相应渠道的清单 URL。
 
+## Android 虚拟内存兼容策略
+
+正常安装、更新和修复流程会设置全局 `vm.overcommit_memory=1`，并写入 `/etc/sysctl.d/99-framely-overcommit.conf`，以支持 Unreal 等引擎预留大块虚拟地址。物理页仍按使用分配；策略影响整台设备，实际内存耗尽时仍可能触发 OOM。
+
+首次修改前的内核值保存在 `/home/.framely/state/overcommit-original.txt`；后续更新保留该原值。安装失败会恢复此次安装前的配置文件及内核值。正常卸载在配置仍由 Framely 管理且未被管理员修改时删除配置，并恢复原值；管理员后来修改的内核值会保留。该策略由完整发行包的原版安装器管理，不通过替换设备上的单个脚本部署。
+
+## Android AFME 兼容处理
+
+Android 启动流程为异环（`com.hottagames.yh.laohu`）应用独立的 AFME 兼容处理。其内置 AFME 1.8.1 库按高通专有驱动的版本格式解析字符串，在 Mesa 上会崩溃。Framely 在启动前通过非持久属性 `debug.afme20.bypass=1` 选择库内置的旁路模式，关闭 AFME 补帧，保留正常渲染，不修改 APK。共享容器启动其他应用时仅清除 Framely 自己设置的旁路覆盖；Steam 启动和直接启动均适用。
+
 ## SteamOS 更新后的恢复
 
 安装器将整个管理目录保存在 `/home/.framely/state`，包括 `state.json`、更新源、日志、当前/上一发行链接、Steam 用户名和 Framely 账号 UID；`/var/lib/framely` 仅作兼容链接。旧安装会在停止服务后迁移。两份状态冲突时停止，不自动覆盖任何一份。

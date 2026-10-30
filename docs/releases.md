@@ -4,6 +4,16 @@
 
 Plugin catalogs and device-update sources are separate settings. Current initialization adds community stable/testing catalogs, subject to server availability. The distributor preconfigures device updates; About offers check/download/install/rollback. Without a source, use a release package. Packages do not require signatures or public keys.
 
+## Android virtual memory compatibility policy
+
+Normal installation, updates and repair set the global `vm.overcommit_memory=1` policy and persist it in `/etc/sysctl.d/99-framely-overcommit.conf`. This supports engines such as Unreal that reserve large virtual address ranges. Physical pages remain allocated on demand; the policy affects the entire device and does not prevent OOM under real memory pressure.
+
+The initial kernel value is retained in `/home/.framely/state/overcommit-original.txt` across updates. A failed install restores the configuration and live value from before that attempt. Normal uninstall removes the unchanged Framely configuration and restores the initial value unless an administrator subsequently changed the live value. Administrator-edited configuration is retained. This is managed by the unmodified installer inside the complete release package.
+
+## Android AFME compatibility
+
+Android launch applies a package-specific AFME workaround for NTE (`com.hottagames.yh.laohu`). Its bundled AFME 1.8.1 library assumes the proprietary Qualcomm driver-version format and crashes on Mesa. Framely selects the library's built-in bypass using the non-persistent `debug.afme20.bypass=1` property before launch. This disables AFME frame interpolation, preserves normal rendering and leaves the APK unchanged. When another app starts in the same container, Framely clears only its own override. Both Steam and direct launches use this policy.
+
 ## Update descriptors
 
 After building an archive, generate a plain JSON descriptor containing version, architecture, URL, size and SHA256:
