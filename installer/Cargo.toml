@@ -1,6 +1,6 @@
 [package]
 name = "framely-installer"
-version = "0.4.3"
+version = "0.4.4"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -34,6 +34,7 @@ zeroize = "1"
 directories = "6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+ssh2 = { version = "0.9", features = ["openssl-on-win32"] }
 winreg = "=0.55.0"
 
 [build-dependencies]

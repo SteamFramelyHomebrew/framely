@@ -42,12 +42,23 @@ Rust + GPUI Kit 的桌面安装器，连接 Steam Frame，安装、更新、修�
 
 Linux 需要 C/C++ 构建工具、CMake、pkg-config、Fontconfig/Freetype、X11/XCB、XKBCommon、Wayland 和 Vulkan 开发库。macOS 需要 Xcode 命令行工具；Windows 需要 MSVC、CMake 和 Perl（用于内置 OpenSSL）。GPUI Kit 固定为 0.7.0，配套依赖由 `Cargo.lock` 锁定。
 
+Windows 显式同时启用 `ssh2` 的 `openssl-on-win32` 和 `vendored-openssl`。仅启用后者不会在 Windows 上选用 OpenSSL SSH 后端；默认 WinCNG 构建缺少 OpenSSH 10 服务端默认配置所需的曲线密钥交换算法。发行 CI 设置 `LIBSSH2_NO_VCPKG=1`，防止本机 vcpkg 中的 libssh2 覆盖指定后端；本地 Windows 构建也应设置此环境变量以保证可复现。切换后端可能为同一设备选择另一把主机密钥，如指纹变化，应通过现有确认流程核实后再连接。
+
 ```bash
 cargo test --manifest-path installer/Cargo.toml --locked --no-default-features --lib
 cargo check --manifest-path installer/Cargo.toml --locked
 cargo run --manifest-path installer/Cargo.toml --locked
 cargo build --manifest-path installer/Cargo.toml --locked --release
 ```
+
+发行 CI 在各平台还会连接仅监听回环地址的 SSH 测试服务。服务只提供 `curve25519-sha256` 和临时 Ed25519 主机密钥，测试核对实际协商算法，并与服务通过独立通道提供的指纹比较；全程不登录、不操作已保存的信任记录。AsyncSSH 仅供测试使用：
+
+```bash
+python -m pip install asyncssh==2.24.1
+python tools/test-installer-ssh.py
+```
+
+开发时可执行 `python tools/test-installer-ssh.py --profile dev --no-default-features`，复用无界面的调试构建。此测试仍需配合 Frame 真机验收。
 
 可配置 `CARGO_TARGET_DIR` 将构建产物放入其他目录，打包工具也会读取此设置。默认读取 `installer/target/release/framely-installer`，CI 构建时无需配置此变量。
 
@@ -64,7 +75,7 @@ FRAMELY_INSTALLER_PREVIEW_DIR=installer/dist/previews installer/target/debug/fra
 
 预览依赖可用的 GPU 或软件 Vulkan 渲染器；默认发行构建不包含此预览功能。
 
-安装器版本由本目录的 `Cargo.toml` 和 `Cargo.lock` 独立管理，不跟随 Framely 本体版本。推送 `installer-v<版本>` 标签（当前 `installer-v0.4.3`）触发 `.github/workflows/installer-release.yml`，只构建并发布安装器；本体使用 `v<版本>` 标签和独立工作流。也可在 Actions 手动运行安装器工作流，仅生成构建产物。安装器 Release 不占用仓库的 Latest，以免影响 Frame 的默认安装和更新地址。
+安装器版本由本目录的 `Cargo.toml` 和 `Cargo.lock` 独立管理，不跟随 Framely 本体版本。推送 `installer-v<版本>` 标签（当前 `installer-v0.4.4`）触发 `.github/workflows/installer-release.yml`，只构建并发布安装器；本体使用 `v<版本>` 标签和独立工作流。也可在 Actions 手动运行安装器工作流，仅生成构建产物。安装器 Release 不占用仓库的 Latest，以免影响 Frame 的默认安装和更新地址。
 
 Actions 构建 Linux x64/ARM64、Windows x64、macOS Intel/Apple Silicon。macOS 输出 `.app` ZIP，Windows 输出 EXE ZIP，Linux 输出 tar.gz。当前未配置 Apple 公证或 Windows 代码签名，发布前应分别验证系统的首次启动体验。
 

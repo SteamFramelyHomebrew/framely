@@ -486,6 +486,32 @@ pub fn operate(
 mod tests {
     use super::*;
     #[test]
+    fn ssh_backend_supports_curve25519() {
+        let session = Session::new().unwrap();
+        let algorithms = session.supported_algs(ssh2::MethodType::Kex).unwrap();
+        assert!(
+            algorithms.contains(&"curve25519-sha256"),
+            "SSH 后端缺少新版 OpenSSH 所需的 curve25519-sha256：{algorithms:?}"
+        );
+    }
+    #[test]
+    #[ignore = "Run tools/test-installer-ssh.py to start the isolated SSH fixture"]
+    fn curve25519_handshake_matches_trusted_fingerprint() {
+        let port = std::env::var("FRAMELY_TEST_SSH_PORT")
+            .expect("测试服务必须提供临时端口")
+            .parse::<u16>()
+            .expect("测试服务端口必须有效");
+        let expected = std::env::var("FRAMELY_TEST_SSH_FINGERPRINT")
+            .expect("测试服务必须通过独立通道提供主机指纹");
+        let session = handshake("127.0.0.1", port).expect("现代 SSH 握手必须成功");
+        assert_eq!(
+            session.methods(ssh2::MethodType::Kex),
+            Some("curve25519-sha256")
+        );
+        assert_eq!(fingerprint(&session).unwrap(), expected);
+        assert!(!session.authenticated());
+    }
+    #[test]
     fn quoting_preserves_shell_literals() {
         assert_eq!(quote("a'b;$()"), "'a'\\''b;$()'");
     }

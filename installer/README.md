@@ -42,12 +42,23 @@ Release queries, checksum files and package downloads automatically use the comp
 
 Linux requires C/C++ build tools, CMake, pkg-config, and development libraries for Fontconfig/Freetype, X11/XCB, XKBCommon, Wayland, and Vulkan. macOS requires Xcode command-line tools. Windows requires MSVC, CMake, and Perl for built-in OpenSSL. GPUI Kit is pinned to 0.7.0; matching dependencies are locked in `Cargo.lock`.
 
+Windows explicitly enables `ssh2`'s `openssl-on-win32` together with `vendored-openssl`. The latter alone does not select the OpenSSL SSH backend on Windows: the default WinCNG build lacks the curve-based key exchange needed by OpenSSH 10's default server configuration. Release CI sets `LIBSSH2_NO_VCPKG=1` to prevent an installed vcpkg copy of libssh2 from overriding this backend; use the same environment variable for reproducible local Windows builds. Switching backends can select a different host key on an existing device, so verify any changed fingerprint through the normal confirmation flow.
+
 ```bash
 cargo test --manifest-path installer/Cargo.toml --locked --no-default-features --lib
 cargo check --manifest-path installer/Cargo.toml --locked
 cargo run --manifest-path installer/Cargo.toml --locked
 cargo build --manifest-path installer/Cargo.toml --locked --release
 ```
+
+Release CI on every platform also performs a real handshake against a loopback-only SSH fixture which offers only `curve25519-sha256` and an ephemeral Ed25519 host key. It checks the negotiated algorithm and compares the fingerprint with the fixture's independently supplied value, without logging in or touching saved trust records. AsyncSSH is a test-only dependency:
+
+```bash
+python -m pip install asyncssh==2.24.1
+python tools/test-installer-ssh.py
+```
+
+For a headless development check, run `python tools/test-installer-ssh.py --profile dev --no-default-features`. This fixture complements, rather than replaces, acceptance testing against Frame hardware.
 
 Set `CARGO_TARGET_DIR` to use another build-output directory; packaging also reads this variable. By default, packaging reads `installer/target/release/framely-installer`. CI requires no override.
 
@@ -64,7 +75,7 @@ FRAMELY_INSTALLER_PREVIEW_DIR=installer/dist/previews installer/target/debug/fra
 
 Preview requires an available GPU or software Vulkan renderer. Default release builds do not include preview support.
 
-Installer versions are managed independently in this directory's `Cargo.toml` and `Cargo.lock`. Pushing an `installer-v<VERSION>` tag (currently `installer-v0.4.3`) triggers `.github/workflows/installer-release.yml` to build and publish only the installer. The core uses `v<VERSION>` tags and a separate workflow. Manual Actions runs produce build artifacts only. Installer releases do not become the repository's Latest release, preserving Frame's default install/update URLs.
+Installer versions are managed independently in this directory's `Cargo.toml` and `Cargo.lock`. Pushing an `installer-v<VERSION>` tag (currently `installer-v0.4.4`) triggers `.github/workflows/installer-release.yml` to build and publish only the installer. The core uses `v<VERSION>` tags and a separate workflow. Manual Actions runs produce build artifacts only. Installer releases do not become the repository's Latest release, preserving Frame's default install/update URLs.
 
 Actions builds Linux x64/ARM64, Windows x64, and macOS Intel/Apple Silicon. macOS produces an `.app` ZIP, Windows an EXE ZIP, and Linux a tar.gz. Apple notarization and Windows code signing are not configured; verify first-launch behavior on each system before publishing.
 

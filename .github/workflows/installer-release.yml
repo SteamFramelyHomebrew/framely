@@ -26,9 +26,16 @@ jobs:
           - os: macos-15-intel
             platform: macos-x64
     runs-on: ${{ matrix.os }}
+    env:
+      LIBSSH2_NO_VCPKG: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install SSH test fixture
+        run: python -m pip install asyncssh==2.24.1
       - name: Cache Cargo dependencies and build artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -54,6 +61,8 @@ jobs:
         run: |
           cargo test --manifest-path installer/Cargo.toml --locked --no-default-features --lib
           cargo build --manifest-path installer/Cargo.toml --locked --release
+      - name: Verify release SSH handshake and host fingerprint
+        run: python tools/test-installer-ssh.py
       - name: Package installer
         env:
           INSTALLER_PLATFORM: ${{ matrix.platform }}
